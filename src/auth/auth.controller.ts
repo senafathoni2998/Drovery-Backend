@@ -1,0 +1,37 @@
+import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+
+import { Public } from '../common/decorators/public.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../common/decorators/current-user.decorator';
+import { AuthService } from './auth.service';
+import { LoginDto, RefreshTokenDto, SignupDto } from './dto';
+import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Public()
+  @Post('signup')
+  signup(@Body() dto: SignupDto) {
+    return this.authService.signup(dto);
+  }
+
+  @Public()
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  login(@Body() dto: LoginDto) {
+    return this.authService.login(dto);
+  }
+
+  @Public()
+  @UseGuards(JwtRefreshGuard)
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  refresh(
+    @Body() _dto: RefreshTokenDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.authService.refreshTokens(user.sub);
+  }
+}

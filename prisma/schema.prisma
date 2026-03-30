@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==================== USER ====================
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  phone        String?
+  address      String?
+  bio          String?
+  avatarUrl    String?
+  passwordHash String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries     Delivery[]
+  paymentMethods PaymentMethod[]
+  devices        Device[]
+  notifications  Notification[]
+
+  @@map("users")
+}
+
+// ==================== DELIVERY ====================
+
+enum DeliveryStatus {
+  PENDING
+  CONFIRMED
+  DRONE_ASSIGNED
+  PICKUP_IN_PROGRESS
+  IN_TRANSIT
+  DELIVERED
+  CANCELED
+}
+
+model Delivery {
+  id         String @id @default(uuid())
+  trackingId String @unique
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status DeliveryStatus @default(PENDING)
+
+  fromAddress String
+  toAddress   String
+  fromLat     Float?
+  fromLng     Float?
+  toLat       Float?
+  toLng       Float?
+
+  receiver      String
+  packages      String
+  packageSize   String
+  packageWeight Float
+  packageTypes  String[]
+
+  pickupDate        DateTime
+  pickupTime        String
+  estimatedDelivery DateTime?
+  estimatedPrice    Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tracking      DeliveryTracking?
+  workflowSteps WorkflowStepCompletion[]
+  payment       Payment?
+
+  @@index([userId])
+  @@index([status])
+  @@index([trackingId])
+  @@map("deliveries")
+}
+
+// ==================== TRACKING ====================
+
+model DeliveryTracking {
+  id         String @id @default(uuid())
+  deliveryId String @unique
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  droneLat    Float?
+  droneLng    Float?
+  droneStatus String?
+  routeJson   Json?
+  eta         DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("delivery_tracking")
+}
+
+// ==================== WORKFLOW ====================
+
+model WorkflowStepCompletion {
+  id         String @id @default(uuid())
+  deliveryId String
+  workflowId String
+  stepId     String
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  completedAt DateTime @default(now())
+
+  @@unique([deliveryId, workflowId, stepId])
+  @@map("workflow_step_completions")
+}
+
+// ==================== PAYMENT ====================
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model PaymentMethod {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripePaymentMethodId String
+  network               String
+  last4                 String
+  holderName            String
+  expiry                String
+  isDefault             Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("payment_methods")
+}
+
+model Payment {
+  id         String @id @default(uuid())
+  deliveryId String @unique
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  stripePaymentIntentId String?
+  amount                Float
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+
+  @@map("payments")
+}
+
+// ==================== NOTIFICATIONS ====================
+
+model Device {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  pushToken String
+  platform  String
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, pushToken])
+  @@map("devices")
+}
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title String
+  body  String
+  data  Json?
+  read  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@map("notifications")
+}
