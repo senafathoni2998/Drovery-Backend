@@ -34,6 +34,7 @@ Make sure the following are installed on your machine before starting:
 | [Node.js](https://nodejs.org) | >= 20.x | Use [nvm](https://github.com/nvm-sh/nvm) to manage versions |
 | [npm](https://npmjs.com) | >= 10.x | Comes bundled with Node.js |
 | [PostgreSQL](https://postgresql.org) | >= 15.x | Running locally or via Docker |
+| [Redis](https://redis.io) | >= 6.x | **Required** — backs the BullMQ delivery-simulation queue (`REDIS_HOST`/`REDIS_PORT`). e.g. `redis-server --port 6379` |
 | [Git](https://git-scm.com) | any | To clone the repo |
 
 **Optional but recommended:**

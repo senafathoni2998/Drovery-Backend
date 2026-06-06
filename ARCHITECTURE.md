@@ -30,22 +30,23 @@ why it breaks at scale, and the concrete fix.
 
 ---
 
-## 1. 🔴 Delivery simulation must leave process memory  *(the #1 blocker)*
+## 1. ✅ Delivery simulation now runs on a durable queue  *(was the #1 blocker — DONE)*
 
-**Now:** `src/deliveries/simulation/simulation.service.ts` schedules `setTimeout`s in the
-Node process and stores timers in a `Map`. This means:
-- You **cannot run more than one API instance** — only the instance that created a delivery advances it; behind a load balancer most deliveries would freeze.
-- A **restart/redeploy strands every in-flight delivery** forever (the timers are gone).
-- Memory grows with concurrent deliveries.
+**Before:** `simulation.service.ts` scheduled `setTimeout`s in the Node process and stored
+timers in a `Map`, so you couldn't run more than one instance and a restart stranded every
+in-flight delivery.
 
-**Fix — move progression to a durable job queue.** Redis is *already half-configured*
-(`REDIS_HOST/PORT` in `.env`, `redis` in `config/configuration.ts`). Use **BullMQ**:
-- On create, enqueue delayed jobs (or one self-rescheduling job) for each transition + position tick.
-- A separate **worker tier** consumes them, updates `DeliveryTracking`, writes notifications, and publishes realtime events.
-- Jobs are persisted in Redis → survive restarts; any worker can pick them up → horizontal scale.
-- Add idempotency (job key = `deliveryId:stage`) so retries don't double-fire.
+**Now (implemented):** the lifecycle is **delayed BullMQ jobs in Redis**.
+- `SimulationService.startSimulation` enqueues one delayed `stage` job per transition + `position` jobs for the movement ticks (deterministic `jobId = deliveryId:stage:i` / `:pos:j` → idempotent; cancel removes them).
+- `SimulationProcessor` (`@Processor`) is the **worker** that advances status, upserts tracking, writes/pushes notifications, broadcasts, and records proof on `DELIVERED`. It guards on `CANCELED`/`DELIVERED` so stale jobs no-op.
+- `BullModule.forRootAsync` wires the Redis connection from config (`REDIS_HOST/PORT`).
+- Jobs persist in Redis → **survive restarts**; any worker instance drains the queue → **horizontal scale**.
 
-> When real drones replace the simulation, the same worker tier ingests telemetry from a drone-gateway/MQTT broker instead of computing positions — the API and mobile contracts don't change.
+> **Verified**: created a delivery (17 delayed jobs), killed the API mid-flight (jobs remained in Redis), started a fresh instance — the delivery still reached `DELIVERED` with proof recorded.
+
+**Remaining for true multi-tier scale:** run the processor as a **standalone worker deployment** (`@Processor` already isolates it — split into its own `main.worker.ts` / `npm run worker` so API and workers scale independently). When real drones replace the simulation, the same worker ingests telemetry from a drone-gateway/MQTT broker — the API and mobile contracts don't change.
+
+> ⚠️ **Redis is now required** to run the backend (the queue connects on boot). `redis-server` on `:6379` (or `REDIS_HOST/PORT`).
 
 ## 2. 🔴 Geocoding: replace public Nominatim + cache
 
@@ -130,10 +131,11 @@ Introduce Redis as a first-class cache, not just a queue:
 | Phase | Users | Must-do |
 |------|-------|---------|
 | **0 — now** | <1k | Single API + Postgres + polling. Already works. Add config validation + rate limiting + Sentry. |
-| **1** | ~10k | **BullMQ worker tier** (move simulation off `setTimeout`), **PgBouncer**, **Redis cache** (geocode + tracking snapshot), commercial geocoder, refresh-token revocation. |
+| **1** | ~10k | ✅ **BullMQ worker tier** (simulation now on Redis jobs — done). Remaining: **PgBouncer**, **Redis cache** (geocode + tracking snapshot), commercial geocoder, refresh-token revocation, split the processor into a standalone worker deployment. |
 | **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, structured logging + metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
 
-**The single most important change is Phase 1's worker tier** — until the delivery
-lifecycle lives in Redis/BullMQ instead of one process's `setTimeout`s, the system
-cannot run more than one instance, which caps everything else.
+**Phase 1's worker tier is now in place** — the delivery lifecycle lives in Redis/BullMQ
+instead of one process's `setTimeout`s, so the API can run multiple instances and survive
+restarts. The next lever is splitting the in-process `SimulationProcessor` into its own
+worker deployment so API and workers scale independently.

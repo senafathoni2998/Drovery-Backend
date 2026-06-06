@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import configuration from './config/configuration';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -20,6 +21,19 @@ import { SupportModule } from './support/support.module';
     ConfigModule.forRoot({
       isGlobal: true,
       load: [configuration],
+    }),
+
+    // Redis-backed job queue (durable delivery simulation / worker tier)
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: {
+          host: config.get<string>('redis.host', 'localhost'),
+          port: config.get<number>('redis.port', 6379),
+          // Required by BullMQ workers so commands don't error during reconnects.
+          maxRetriesPerRequest: null,
+        },
+      }),
     }),
 
     // Database

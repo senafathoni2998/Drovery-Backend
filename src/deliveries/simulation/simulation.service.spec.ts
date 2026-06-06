@@ -1,112 +1,78 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getQueueToken } from '@nestjs/bullmq';
 
 import { SimulationService } from './simulation.service';
-import { PrismaService } from '../../prisma/prisma.service';
-import { TrackingService } from '../tracking/tracking.service';
-import { TrackingGateway } from '../tracking/tracking.gateway';
-import { NotificationsService } from '../../notifications/notifications.service';
-import { ProofService } from '../proof/proof.service';
-import { createMockPrismaService } from '../../test/prisma-mock';
+import {
+  POSITION_TICK_COUNT,
+  SIM_QUEUE,
+  STAGES,
+} from './simulation.constants';
 
 describe('SimulationService', () => {
   let service: SimulationService;
-  let prisma: ReturnType<typeof createMockPrismaService>;
-  let trackingService: { updateTracking: jest.Mock; getTracking: jest.Mock };
-  let trackingGateway: { broadcastTrackingUpdate: jest.Mock };
-  let notificationsService: { create: jest.Mock };
+  let queue: { addBulk: jest.Mock; remove: jest.Mock };
 
   beforeEach(async () => {
-    jest.useFakeTimers();
-    prisma = createMockPrismaService();
-    trackingService = {
-      updateTracking: jest.fn().mockResolvedValue({}),
-      getTracking: jest.fn(),
+    queue = {
+      addBulk: jest.fn().mockResolvedValue([]),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
-    trackingGateway = { broadcastTrackingUpdate: jest.fn() };
-    notificationsService = { create: jest.fn().mockResolvedValue({}) };
-    const proofService = { createAutoProof: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SimulationService,
-        { provide: PrismaService, useValue: prisma },
-        { provide: TrackingService, useValue: trackingService },
-        { provide: TrackingGateway, useValue: trackingGateway },
-        { provide: NotificationsService, useValue: notificationsService },
-        { provide: ProofService, useValue: proofService },
+        { provide: getQueueToken(SIM_QUEUE), useValue: queue },
       ],
     }).compile();
 
     service = module.get<SimulationService>(SimulationService);
   });
 
-  afterEach(() => {
-    service.onModuleDestroy();
-    jest.useRealTimers();
-    jest.clearAllMocks();
-  });
+  afterEach(() => jest.clearAllMocks());
 
   describe('startSimulation', () => {
-    it('should schedule timers for delivery progression', () => {
-      service.startSimulation('delivery-1', 'user-1', {
-        fromLat: -6.903,
-        fromLng: 107.615,
-        toLat: -6.922,
-        toLng: 107.607,
+    it('enqueues a delayed job per stage plus the position ticks', async () => {
+      await service.startSimulation('d-1', 'u-1', {
+        fromLat: -6.9,
+        fromLng: 107.6,
+        toLat: -6.92,
+        toLng: 107.62,
       });
 
-      // There should be pending timers (stage transitions + position updates)
-      expect(jest.getTimerCount()).toBeGreaterThan(0);
+      expect(queue.addBulk).toHaveBeenCalledTimes(1);
+      const jobs = queue.addBulk.mock.calls[0][0];
+      const stageJobs = jobs.filter((j: any) => j.name === 'stage');
+      const posJobs = jobs.filter((j: any) => j.name === 'position');
+
+      expect(stageJobs).toHaveLength(STAGES.length);
+      expect(posJobs).toHaveLength(POSITION_TICK_COUNT);
+      // deterministic job ids + delay for idempotency / cancellation
+      expect(stageJobs[0].opts.jobId).toBe('d-1:stage:0');
+      expect(stageJobs[0].opts.delay).toBe(STAGES[0].delayMs);
+      expect(posJobs[0].opts.jobId).toBe('d-1:pos:0');
     });
 
-    it('should use default coords when none provided', () => {
-      service.startSimulation('delivery-1', 'user-1');
-
-      expect(jest.getTimerCount()).toBeGreaterThan(0);
+    it('falls back to default coords when none are provided', async () => {
+      await service.startSimulation('d-2', 'u-1');
+      expect(queue.addBulk).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('stopSimulation', () => {
-    it('should clear all timers for the delivery', () => {
-      service.startSimulation('delivery-1', 'user-1');
-      const timerCountBefore = jest.getTimerCount();
-      expect(timerCountBefore).toBeGreaterThan(0);
+    it("removes the delivery's stage and position jobs", async () => {
+      await service.stopSimulation('d-1');
 
-      service.stopSimulation('delivery-1');
-
-      expect(jest.getTimerCount()).toBe(0);
+      const removed = queue.remove.mock.calls.map((c) => c[0]);
+      expect(removed).toContain('d-1:stage:0');
+      expect(removed).toContain('d-1:pos:0');
+      expect(queue.remove).toHaveBeenCalledTimes(
+        STAGES.length + POSITION_TICK_COUNT,
+      );
     });
 
-    it('should do nothing if no simulation is running', () => {
-      expect(() => service.stopSimulation('nonexistent')).not.toThrow();
-    });
-  });
-
-  describe('onModuleDestroy', () => {
-    it('should clean up all active simulations', () => {
-      service.startSimulation('delivery-1', 'user-1');
-      service.startSimulation('delivery-2', 'user-2');
-
-      service.onModuleDestroy();
-
-      expect(jest.getTimerCount()).toBe(0);
-    });
-  });
-
-  describe('stage transitions', () => {
-    it('should skip transition if delivery was canceled', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        id: 'delivery-1',
-        status: 'CANCELED',
-      });
-
-      service.startSimulation('delivery-1', 'user-1');
-
-      // Advance to first stage (CONFIRMED at 10s)
-      jest.advanceTimersByTime(10_000);
-      await Promise.resolve(); // flush microtasks
-
-      expect(prisma.delivery.update).not.toHaveBeenCalled();
+    it('swallows errors from removing non-existent jobs', async () => {
+      queue.remove.mockRejectedValue(new Error('not found'));
+      await expect(service.stopSimulation('d-1')).resolves.toBeUndefined();
     });
   });
 });

@@ -100,8 +100,15 @@ export class DeliveriesService {
       );
     }
 
-    // Start the delivery simulation (auto-progresses PENDING → DELIVERED)
-    this.simulationService.startSimulation(delivery.id, userId, coords);
+    // Queue the delivery simulation (auto-progresses PENDING → DELIVERED).
+    // Best-effort: a queue/Redis hiccup must not fail delivery creation.
+    try {
+      await this.simulationService.startSimulation(delivery.id, userId, coords);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to queue simulation for delivery ${delivery.id}: ${(error as Error).message}`,
+      );
+    }
 
     return delivery;
   }
@@ -263,8 +270,12 @@ export class DeliveriesService {
       );
     }
 
-    // Stop the running simulation
-    this.simulationService.stopSimulation(deliveryId);
+    // Remove the delivery's pending simulation jobs (best-effort).
+    try {
+      await this.simulationService.stopSimulation(deliveryId);
+    } catch {
+      // The processor also guards on CANCELED status, so this is non-fatal.
+    }
 
     return this.prisma.delivery.update({
       where: { id: deliveryId },
