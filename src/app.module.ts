@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import configuration from './config/configuration';
+import { CacheModule } from './cache/cache.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
@@ -35,6 +36,9 @@ import { SupportModule } from './support/support.module';
         },
       }),
     }),
+
+    // Redis-backed cache (geocoding, etc.)
+    CacheModule,
 
     // Database
     PrismaModule,

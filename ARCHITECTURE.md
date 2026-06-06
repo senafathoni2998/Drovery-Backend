@@ -50,16 +50,20 @@ in-flight delivery.
 
 > ⚠️ **Redis is now required** to run the backend (the queue connects on boot). `redis-server` on `:6379` (or `REDIS_HOST/PORT`).
 
-## 2. 🔴 Geocoding: replace public Nominatim + cache
+## 2. 🟡 Geocoding: Redis cache done; provider swap remaining
 
-**Now:** `GeoService` calls `nominatim.openstreetmap.org`, and we geocode **on every delivery create**.
-Public Nominatim's usage policy is **~1 request/second** and bans heavy use — a hard ceiling far below 100k users, and a single point of failure.
+**Now:** `GeoService` caches `address → {lat,lng}` (and reverse) in **Redis** via `CacheService` —
+30-day TTL for hits, 1-hour negative cache for misses, normalized keys (`geo:fwd:*` / `geo:rev:*`),
+fail-open on a cache outage. Repeat addresses no longer hit Nominatim (verified: a cached lookup
+returns in ~9 ms vs ~840 ms for a live call). This removes most calls and gets us well under
+Nominatim's ~1 req/sec ceiling for typical (repetitive) address traffic.
 
-**Fix:**
-- Use a **commercial/self-hosted geocoder** (Google, Mapbox, or self-hosted Nominatim/Photon) behind the existing `GeoService` abstraction (`geocoding.provider` already exists in config).
-- **Cache aggressively**: addresses repeat. Cache `address → {lat,lng}` in Redis (and/or a `geocode_cache` table) with a long TTL. This alone removes most calls.
+**Remaining:**
+- Swap the upstream to a **commercial/self-hosted geocoder** (Google, Mapbox, or self-hosted Nominatim/Photon) behind the existing `GeoService` abstraction (`geocoding.provider` already in config) — for the cold-cache tail and SLA.
 - Make geocoding **async/non-blocking** for create latency: accept the delivery immediately, geocode in the worker, backfill coords. (Today it's awaited inline.)
 - Prefer **client-supplied coordinates** from the map picker so the server rarely needs to geocode at all.
+
+> The new `CacheService` is generic — reuse it next for **tracking snapshots** (absorb polling) and **`/users/me` + stats**.
 
 ## 3. 🔴 Real-time tracking at scale (WS/SSE + Redis pub/sub)
 
@@ -133,7 +137,7 @@ Introduce Redis as a first-class cache, not just a queue:
 | Phase | Users | Must-do |
 |------|-------|---------|
 | **0 — now** | <1k | Single API + Postgres + polling. Already works. Add config validation + rate limiting + Sentry. |
-| **1** | ~10k | ✅ **BullMQ worker tier** (simulation on Redis jobs + **standalone `worker` process** + `PROCESS_ROLE` split — done). Remaining: **PgBouncer**, **Redis cache** (geocode + tracking snapshot), commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
+| **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`). Remaining: **PgBouncer**, cache tracking-snapshots/stats, commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
 | **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, structured logging + metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
 
