@@ -7,11 +7,13 @@ import { ConfigService } from '@nestjs/config';
 
 import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { StripeService } from '../stripe/stripe.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let prisma: ReturnType<typeof createMockPrismaService>;
+  let stripe: { createPaymentIntent: jest.Mock; isMock: boolean };
 
   const userId = 'user-1';
 
@@ -29,12 +31,23 @@ describe('PaymentsService', () => {
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
+    stripe = {
+      isMock: true,
+      createPaymentIntent: jest.fn().mockResolvedValue({
+        id: 'pi_mock_d1',
+        clientSecret: 'pi_mock_d1_secret_mock',
+        status: 'succeeded',
+        amount: 1800,
+        currency: 'usd',
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentsService,
         { provide: PrismaService, useValue: prisma },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: StripeService, useValue: stripe },
       ],
     }).compile();
 
@@ -183,6 +196,83 @@ describe('PaymentsService', () => {
       await expect(service.setDefault(userId, 'pm-1')).rejects.toThrow(
         ForbiddenException,
       );
+    });
+  });
+
+  describe('createDeliveryPayment', () => {
+    it('creates a PaymentIntent and a Payment row for the delivery', async () => {
+      prisma.payment.findUnique.mockResolvedValue(null);
+      prisma.payment.create.mockResolvedValue({ id: 'pay-1', status: 'COMPLETED' });
+
+      const result = await service.createDeliveryPayment('d-1', 18);
+
+      expect(stripe.createPaymentIntent).toHaveBeenCalledWith({
+        amount: 1800, // dollars → cents
+        currency: 'usd',
+        metadata: { deliveryId: 'd-1' },
+      });
+      const createArg = prisma.payment.create.mock.calls[0][0];
+      expect(createArg.data).toEqual(
+        expect.objectContaining({
+          deliveryId: 'd-1',
+          stripePaymentIntentId: 'pi_mock_d1',
+          amount: 18,
+          currency: 'usd',
+          status: 'COMPLETED', // mapped from 'succeeded'
+        }),
+      );
+      expect(result).toEqual({ id: 'pay-1', status: 'COMPLETED' });
+    });
+
+    it('is idempotent — returns the existing payment without re-charging', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-existing' });
+
+      const result = await service.createDeliveryPayment('d-1', 18);
+
+      expect(stripe.createPaymentIntent).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(result).toEqual({ id: 'pay-existing' });
+    });
+  });
+
+  describe('handleWebhookEvent', () => {
+    it('marks the payment COMPLETED on payment_intent.succeeded', async () => {
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.handleWebhookEvent({
+        type: 'payment_intent.succeeded',
+        data: { object: { id: 'pi_123' } },
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: { stripePaymentIntentId: 'pi_123' },
+        data: { status: 'COMPLETED' },
+      });
+      expect(result).toEqual({ received: true });
+    });
+
+    it('marks the payment FAILED on payment_intent.payment_failed', async () => {
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.handleWebhookEvent({
+        type: 'payment_intent.payment_failed',
+        data: { object: { id: 'pi_123' } },
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: { stripePaymentIntentId: 'pi_123' },
+        data: { status: 'FAILED' },
+      });
+    });
+
+    it('ignores unrelated event types', async () => {
+      const result = await service.handleWebhookEvent({
+        type: 'charge.refunded',
+        data: { object: { id: 'pi_123' } },
+      });
+
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ received: true });
     });
   });
 });

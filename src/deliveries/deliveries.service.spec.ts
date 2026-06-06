@@ -8,6 +8,7 @@ import { DeliveryStatus } from '@prisma/client';
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
+import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { SimulationService } from './simulation/simulation.service';
 import { createMockPrismaService } from '../test/prisma-mock';
@@ -20,6 +21,7 @@ describe('DeliveriesService', () => {
   let simulationService: { startSimulation: jest.Mock; stopSimulation: jest.Mock };
   let geoService: { geocode: jest.Mock };
   let pricingService: { estimate: jest.Mock };
+  let paymentsService: { createDeliveryPayment: jest.Mock };
 
   const userId = 'user-1';
 
@@ -69,6 +71,9 @@ describe('DeliveriesService', () => {
         total: 18,
       }),
     };
+    paymentsService = {
+      createDeliveryPayment: jest.fn().mockResolvedValue({ id: 'pay-1' }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -77,6 +82,7 @@ describe('DeliveriesService', () => {
         { provide: SimulationService, useValue: simulationService },
         { provide: GeoService, useValue: geoService },
         { provide: PricingService, useValue: pricingService },
+        { provide: PaymentsService, useValue: paymentsService },
       ],
     }).compile();
 
@@ -105,6 +111,11 @@ describe('DeliveriesService', () => {
       expect(createCall.data.estimatedPrice).toBe(18); // pricing.total
       expect(createCall.data.status).toBe(DeliveryStatus.PENDING);
       expect(createCall.data.trackingId).toBe('AAAAAAAA');
+      // charges the delivery via PaymentsService for the priced total
+      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
+        mockDelivery.id,
+        18,
+      );
     });
 
     it('should start simulation after creation', async () => {

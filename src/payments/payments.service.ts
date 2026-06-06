@@ -5,11 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PaymentStatus } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { StripeService, StripeEvent } from '../stripe/stripe.service';
 import { AddPaymentMethodDto } from './dto';
-
-// TODO: Initialize Stripe client when STRIPE_SECRET_KEY is configured
 
 @Injectable()
 export class PaymentsService {
@@ -18,6 +18,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly stripe: StripeService,
   ) {}
 
   async findAll(userId: string) {
@@ -118,5 +119,84 @@ export class PaymentsService {
     return this.prisma.paymentMethod.findUnique({
       where: { id: paymentMethodId },
     });
+  }
+
+  // ── Charges (PaymentIntents) ──────────────────────────────────────────────
+
+  /**
+   * Creates a Stripe PaymentIntent for a delivery and records a Payment row.
+   * Idempotent per delivery (the Payment.deliveryId is unique), so retries and
+   * re-creates don't double-charge.
+   */
+  async createDeliveryPayment(deliveryId: string, amount: number) {
+    const existing = await this.prisma.payment.findUnique({
+      where: { deliveryId },
+    });
+    if (existing) return existing;
+
+    const intent = await this.stripe.createPaymentIntent({
+      amount: Math.round(amount * 100), // dollars → cents
+      currency: 'usd',
+      metadata: { deliveryId },
+    });
+
+    const payment = await this.prisma.payment.create({
+      data: {
+        deliveryId,
+        stripePaymentIntentId: intent.id,
+        amount,
+        currency: intent.currency,
+        status: this.mapIntentStatus(intent.status),
+      },
+    });
+
+    this.logger.log(
+      `Payment ${payment.id} (${intent.status}) created for delivery ${deliveryId}` +
+        (this.stripe.isMock ? ' [mock]' : ''),
+    );
+
+    return payment;
+  }
+
+  /**
+   * Applies a verified Stripe webhook event to the matching Payment row.
+   */
+  async handleWebhookEvent(event: StripeEvent) {
+    const intentId = event?.data?.object?.id;
+    if (!intentId) return { received: true };
+
+    const statusByType: Record<string, PaymentStatus> = {
+      'payment_intent.succeeded': PaymentStatus.COMPLETED,
+      'payment_intent.payment_failed': PaymentStatus.FAILED,
+      'payment_intent.processing': PaymentStatus.PROCESSING,
+      'payment_intent.canceled': PaymentStatus.FAILED,
+    };
+
+    const status = statusByType[event.type];
+    if (status) {
+      const result = await this.prisma.payment.updateMany({
+        where: { stripePaymentIntentId: intentId },
+        data: { status },
+      });
+      this.logger.log(
+        `Webhook ${event.type} → ${result.count} payment(s) set to ${status}`,
+      );
+    }
+
+    return { received: true };
+  }
+
+  private mapIntentStatus(stripeStatus: string): PaymentStatus {
+    switch (stripeStatus) {
+      case 'succeeded':
+        return PaymentStatus.COMPLETED;
+      case 'processing':
+        return PaymentStatus.PROCESSING;
+      case 'canceled':
+        return PaymentStatus.FAILED;
+      default:
+        // requires_payment_method | requires_confirmation | requires_action
+        return PaymentStatus.PENDING;
+    }
   }
 }

@@ -11,13 +11,14 @@ impact-to-effort. ✅ = already added in the latest round of work.
 - **Support tickets persisted** + signed (HMAC + expiry) QR codes.
 - **✅ Distance-based pricing (P0)** — `PricingService` now adds a haversine `distanceFee` ($1.50/km) from coords or geocoded addresses; `DeliveriesService` delegates to it so the quote and the stored price always agree. Mobile sends the addresses and shows a distance line.
 - **✅ Password reset (P0)** — `POST /auth/forgot-password` + `/auth/reset-password` with hashed, single-use, 1-hour tokens (no email enumeration). Email send is behind `MailService` (logs the link in dev; swap in SendGrid/SES). Mobile has Forgot/Reset Password screens + a wired "Forgot password?" link, with deep-link token prefill.
+- **✅ Real Stripe payments (P0)** — `StripeService` uses the live Stripe SDK when `STRIPE_SECRET_KEY` is set and a deterministic **mock** otherwise. Creating a delivery now creates a **PaymentIntent** + a `Payment` row (idempotent per delivery); `POST /payments/webhook` verifies the signature and drives `Payment.status`. Mobile shows the payment status on the delivery. *(Last mile for production: native `@stripe/stripe-react-native` card entry — backend is ready for it.)*
 
 ---
 
 ## P0 — Close the "real product" gaps (high impact, the app feels broken without these)
 
 1. ~~**Password reset.**~~ ✅ **Done** — see "Just shipped". (Still open: **email verification** on signup, which reuses the same token pattern.)
-2. **Real payments (Stripe).** Today cards are fake metadata (`manual_<ts>`) and no charge happens; the `Payment` model is unused and the FAQ falsely claims Stripe encryption. Implement: tokenize card on device → PaymentIntent on create → webhook (signature-verified) → write `Payment`. Add receipts.
+2. ~~**Real payments (Stripe).**~~ ✅ **Done (backend)** — see "Just shipped". PaymentIntent on create + signature-verified webhook + `Payment` lifecycle, real-or-mock. **Still open:** native on-device card entry (`@stripe/stripe-react-native`), saved cards as real Stripe PaymentMethods, and receipts; fix the FAQ's Stripe-encryption claim.
 3. ~~**Distance-based pricing.**~~ ✅ **Done** — see "Just shipped". (Next: zone/surge multipliers + a per-km rate that varies by region.)
 4. **Proof of delivery.** On `DELIVERED`, capture a **drop photo** + timestamp + final GPS, shown in the app. The biggest trust driver for autonomous delivery.
 

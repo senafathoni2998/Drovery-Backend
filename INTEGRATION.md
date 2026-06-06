@@ -99,6 +99,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | QR scanner | `POST /workflows/qr/validate` | jwt | `{payload}` → `{valid,deliveryId?,reason?}` (HMAC-signed, 5-min expiry) |
 | Push registration (after login) | `POST /notifications/devices` | jwt | `{pushToken,platform}` → registers Expo token |
 | Payment methods | `GET/POST /payment-methods`, `DELETE /payment-methods/{id}`, `PATCH /payment-methods/{id}/default` | jwt | saved-card CRUD |
+| (Stripe → server) | `POST /payments/webhook` | public (signed) | PaymentIntent events drive `Payment.status` |
 | Notifications | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/{id}/read`, `PATCH /notifications/read-all` | jwt | in-app notifications |
 | Help & support | `GET /support/faq` (public), `GET/POST /support/tickets` (jwt) | mixed | FAQ + persisted tickets |
 
@@ -155,10 +156,10 @@ curl -s -X POST http://localhost:3000/api/v1/auth/login \
 
 ## 8. Status of known gaps
 
-**Fixed (this round):** live drone tracking (polling + animated marker), status-change notifications (local + remote Expo push + device registration), **geocode-on-create**, **Cancel delivery** UI, **persisted support tickets**, **HMAC-signed QR** with expiry.
+**Fixed (this round):** live drone tracking (polling + animated marker), status-change notifications (local + remote Expo push + device registration), **geocode-on-create**, **Cancel delivery** UI, **persisted support tickets**, **HMAC-signed QR** with expiry, **distance-based pricing**, **password reset**, and **real Stripe payments** (PaymentIntent on create + signature-verified `POST /payments/webhook`, real when `STRIPE_SECRET_KEY` is set, deterministic mock otherwise; mobile shows payment status).
 
 **Still open:**
-- **Payments are fake** — no `stripe` package; cards stored as plain metadata (`stripePaymentMethodId = manual_<ts>`); the `Payment` model is unused.
+- **On-device card entry** — saved cards are still plain metadata (`manual_<ts>`); production needs `@stripe/stripe-react-native` so cards become real Stripe PaymentMethods (the backend PaymentIntent/webhook flow is ready for it).
 - **`GET /deliveries/track`** is authed but not ownership-scoped (any logged-in user can look up any tracking ID).
 - **JWT secrets fall back to `change-me`**; logout is local-only (no refresh-token revocation).
 - **In-memory simulation** doesn't survive a restart and blocks horizontal scaling.

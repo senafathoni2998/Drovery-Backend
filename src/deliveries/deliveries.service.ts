@@ -1,12 +1,14 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { DeliveryStatus, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 
 import { GeoService } from '../geo/geo.service';
+import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SimulationService } from './simulation/simulation.service';
@@ -34,11 +36,14 @@ const CANCELABLE_STATUSES: DeliveryStatus[] = [
 
 @Injectable()
 export class DeliveriesService {
+  private readonly logger = new Logger(DeliveriesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly simulationService: SimulationService,
     private readonly geoService: GeoService,
     private readonly pricingService: PricingService,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -81,6 +86,19 @@ export class DeliveriesService {
         estimatedPrice: pricing.total,
       },
     });
+
+    // Create the payment (Stripe PaymentIntent) for the delivery. Best-effort:
+    // a payment hiccup must not block the delivery from being created.
+    try {
+      await this.paymentsService.createDeliveryPayment(
+        delivery.id,
+        pricing.total,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Payment creation failed for delivery ${delivery.id}: ${(error as Error).message}`,
+      );
+    }
 
     // Start the delivery simulation (auto-progresses PENDING → DELIVERED)
     this.simulationService.startSimulation(delivery.id, userId, coords);
