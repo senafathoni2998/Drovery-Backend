@@ -3,9 +3,12 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
+import { randomUUID } from 'crypto';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
 import { CacheModule } from './cache/cache.module';
+import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
@@ -30,6 +33,26 @@ import { SupportModule } from './support/support.module';
 
     // Rate limiting — 100 req / 60s per IP by default (tighter on auth routes).
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+
+    // Structured (pino) logging with per-request correlation ids.
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level: process.env.LOG_LEVEL ?? 'info',
+        genReqId: (req, res) => {
+          const incoming = req.headers['x-request-id'];
+          const id =
+            (Array.isArray(incoming) ? incoming[0] : incoming) || randomUUID();
+          res.setHeader('X-Request-Id', id);
+          return id;
+        },
+        // Never log secrets.
+        redact: ['req.headers.authorization', 'req.headers.cookie'],
+        transport:
+          process.env.NODE_ENV !== 'production'
+            ? { target: 'pino-pretty', options: { singleLine: true } }
+            : undefined,
+      },
+    }),
 
     // Redis-backed job queue (durable delivery simulation / worker tier)
     BullModule.forRootAsync({
@@ -60,6 +83,7 @@ import { SupportModule } from './support/support.module';
     NotificationsModule,
     GeoModule,
     SupportModule,
+    HealthModule,
   ],
   providers: [
     // Rate-limit first (before auth) — global per-IP throttle.

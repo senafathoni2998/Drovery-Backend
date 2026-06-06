@@ -5,14 +5,21 @@ import 'dotenv/config';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
   // rawBody: true preserves the unparsed request body so Stripe webhook
-  // signatures can be verified (req.rawBody).
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  // signatures can be verified (req.rawBody). bufferLogs holds startup logs
+  // until the pino logger takes over.
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+    bufferLogs: true,
+  });
+  // Route all Nest logs through pino (structured JSON + request ids).
+  app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);
 
   // Global prefix: api/v1

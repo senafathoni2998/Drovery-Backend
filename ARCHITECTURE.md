@@ -113,16 +113,16 @@ Introduce Redis as a first-class cache, not just a queue:
 
 ## 9. Rate limiting, resilience, abuse control
 
-- Add **`@nestjs/throttler`** (Redis-backed) — protect `auth/*`, `pricing/estimate`, `support/tickets`, geocoding.
-- Timeouts + **circuit breakers** on outbound calls (geocoder, Expo, Stripe).
+- ✅ **`@nestjs/throttler`** — 100/min/IP global, 10/min on `/auth`. *(Use a Redis storage adapter for multi-instance correctness.)*
+- Timeouts + **circuit breakers** on outbound calls (geocoder, Expo, Stripe). *(Geocode + enqueue already have timeouts/fail-open.)*
 - Idempotency keys on `POST /deliveries` and payments to survive client retries.
-- Fix CORS for web: `origin:'*'` + `credentials:true` is rejected by browsers — use an allowlist.
+- ✅ CORS allowlist (`CORS_ORIGINS`).
 
 ## 10. Observability (you can't scale what you can't see)
 
-- **Structured logging** (pino) with request IDs; ship to a log store.
-- **Metrics** (Prometheus/OpenTelemetry): p50/p95/p99 latency, error rate, queue depth/lag, DB pool saturation, push success rate.
-- **Tracing** across API → worker → DB. **Error tracking** (Sentry). **Dashboards + alerts** on SLOs.
+- ✅ **Structured logging** (pino via `nestjs-pino`) with per-request correlation ids (`X-Request-Id`, propagated/echoed), auth header redaction, pretty in dev / JSON in prod. Ship the JSON to a log store.
+- ✅ **Health probes**: `GET /health` (liveness) + `GET /health/ready` (DB + Redis, 503 when down) — public, un-throttled, k8s-ready.
+- **Remaining**: **Metrics** (Prometheus/OpenTelemetry — p50/95/99 latency, error rate, queue depth/lag, DB pool, push success); **tracing** API → worker → DB; **error tracking** (Sentry); dashboards + alerts on SLOs.
 
 ## 11. Delivery/CI & cost
 
@@ -136,9 +136,9 @@ Introduce Redis as a first-class cache, not just a queue:
 
 | Phase | Users | Must-do |
 |------|-------|---------|
-| **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking. Remaining: Sentry/metrics. |
+| **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking, ✅ structured logging (pino + request ids), ✅ health/readiness probes. Remaining: Sentry + Prometheus metrics. |
 | **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`). Remaining: **PgBouncer**, cache tracking-snapshots/stats, commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
-| **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, structured logging + metrics/alerts. |
+| **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, ✅ structured logging — add metrics/alerts + Redis-backed throttler storage. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
 
 **Phase 1's worker tier is in place** — the delivery lifecycle lives in Redis/BullMQ

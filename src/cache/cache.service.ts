@@ -31,4 +31,13 @@ export class CacheService {
       this.logger.warn(`cache set failed [${key}]: ${(error as Error).message}`);
     }
   }
+
+  /** Liveness check for the Redis connection (used by readiness probes). */
+  async ping(): Promise<boolean> {
+    try {
+      return (await this.redis.ping()) === 'PONG';
+    } catch {
+      return false;
+    }
+  }
 }
