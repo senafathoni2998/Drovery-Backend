@@ -10,12 +10,13 @@ impact-to-effort. ✅ = already added in the latest round of work.
 - **Geocode-on-create** — real pickup/dropoff coordinates → a real flight path.
 - **Support tickets persisted** + signed (HMAC + expiry) QR codes.
 - **✅ Distance-based pricing (P0)** — `PricingService` now adds a haversine `distanceFee` ($1.50/km) from coords or geocoded addresses; `DeliveriesService` delegates to it so the quote and the stored price always agree. Mobile sends the addresses and shows a distance line.
+- **✅ Password reset (P0)** — `POST /auth/forgot-password` + `/auth/reset-password` with hashed, single-use, 1-hour tokens (no email enumeration). Email send is behind `MailService` (logs the link in dev; swap in SendGrid/SES). Mobile has Forgot/Reset Password screens + a wired "Forgot password?" link, with deep-link token prefill.
 
 ---
 
 ## P0 — Close the "real product" gaps (high impact, the app feels broken without these)
 
-1. **Password reset & email verification.** There is currently **no way to recover an account** (no forgot-password, no email verify). Add `POST /auth/forgot-password` + `reset-password` (emailed token) and email verification. Table stakes for real users.
+1. ~~**Password reset.**~~ ✅ **Done** — see "Just shipped". (Still open: **email verification** on signup, which reuses the same token pattern.)
 2. **Real payments (Stripe).** Today cards are fake metadata (`manual_<ts>`) and no charge happens; the `Payment` model is unused and the FAQ falsely claims Stripe encryption. Implement: tokenize card on device → PaymentIntent on create → webhook (signature-verified) → write `Payment`. Add receipts.
 3. ~~**Distance-based pricing.**~~ ✅ **Done** — see "Just shipped". (Next: zone/surge multipliers + a per-km rate that varies by region.)
 4. **Proof of delivery.** On `DELIVERED`, capture a **drop photo** + timestamp + final GPS, shown in the app. The biggest trust driver for autonomous delivery.

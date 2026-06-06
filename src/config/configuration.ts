@@ -31,4 +31,10 @@ export default () => ({
   expo: {
     accessToken: process.env.EXPO_ACCESS_TOKEN,
   },
+
+  mail: {
+    // When unset, MailService logs emails instead of sending (dev mode).
+    provider: process.env.MAIL_PROVIDER,
+    from: process.env.MAIL_FROM ?? 'no-reply@drovery.com',
+  },
 });

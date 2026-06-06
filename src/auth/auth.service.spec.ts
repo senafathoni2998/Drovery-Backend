@@ -1,10 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 
 import { AuthService } from './auth.service';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
@@ -16,16 +21,19 @@ describe('AuthService', () => {
   let service: AuthService;
   let prisma: ReturnType<typeof createMockPrismaService>;
   let jwtService: { signAsync: jest.Mock };
+  let mailService: { sendPasswordResetEmail: jest.Mock };
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
     jwtService = { signAsync: jest.fn().mockResolvedValue('mock-token') };
+    mailService = { sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: PrismaService, useValue: prisma },
         { provide: JwtService, useValue: jwtService },
+        { provide: MailService, useValue: mailService },
         {
           provide: ConfigService,
           useValue: {
@@ -180,6 +188,91 @@ describe('AuthService', () => {
           expiresIn: '7d',
         }),
       );
+    });
+  });
+
+  describe('forgotPassword', () => {
+    it('issues a reset token and emails it when the user exists', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'john@test.com',
+      });
+      prisma.passwordResetToken.updateMany.mockResolvedValue({ count: 0 });
+      prisma.passwordResetToken.create.mockResolvedValue({ id: 'tok-1' });
+
+      const result = await service.forgotPassword('john@test.com');
+
+      expect(result).toEqual({ success: true });
+      expect(prisma.passwordResetToken.create).toHaveBeenCalled();
+      // stores a HASH, not the raw token
+      const created = prisma.passwordResetToken.create.mock.calls[0][0];
+      expect(created.data.tokenHash).toEqual(expect.any(String));
+      expect(mailService.sendPasswordResetEmail).toHaveBeenCalledWith(
+        'john@test.com',
+        expect.any(String),
+      );
+    });
+
+    it('succeeds silently (no token, no email) for an unknown email', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      const result = await service.forgotPassword('nobody@test.com');
+
+      expect(result).toEqual({ success: true });
+      expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+      expect(mailService.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('updates the password and consumes the token for a valid token', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      (mockedBcrypt.hash as jest.Mock).mockResolvedValue('new-hash');
+
+      const result = await service.resetPassword('raw-token', 'newpass123');
+
+      expect(result).toEqual({ success: true });
+      expect(mockedBcrypt.hash).toHaveBeenCalledWith('newpass123', 12);
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
+    it('rejects an unknown token', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword('bad', 'newpass123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects an expired token', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: null,
+        expiresAt: new Date(Date.now() - 1_000),
+      });
+
+      await expect(
+        service.resetPassword('raw', 'newpass123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects an already-used token', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      await expect(
+        service.resetPassword('raw', 'newpass123'),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });
