@@ -13,7 +13,14 @@ import { createMockPrismaService } from '../test/prisma-mock';
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let prisma: ReturnType<typeof createMockPrismaService>;
-  let stripe: { createPaymentIntent: jest.Mock; isMock: boolean };
+  let stripe: {
+    createPaymentIntent: jest.Mock;
+    createCustomer: jest.Mock;
+    createSetupSession: jest.Mock;
+    listCards: jest.Mock;
+    isMock: boolean;
+    publishableKey: string | null;
+  };
 
   const userId = 'user-1';
 
@@ -33,6 +40,7 @@ describe('PaymentsService', () => {
     prisma = createMockPrismaService();
     stripe = {
       isMock: true,
+      publishableKey: null,
       createPaymentIntent: jest.fn().mockResolvedValue({
         id: 'pi_mock_d1',
         clientSecret: 'pi_mock_d1_secret_mock',
@@ -40,6 +48,13 @@ describe('PaymentsService', () => {
         amount: 1800,
         currency: 'usd',
       }),
+      createCustomer: jest.fn().mockResolvedValue('cus_mock_user-1'),
+      createSetupSession: jest.fn().mockResolvedValue({
+        setupIntentClientSecret: 'seti_mock_secret',
+        ephemeralKeySecret: 'ek_mock',
+        customerId: 'cus_mock_user-1',
+      }),
+      listCards: jest.fn().mockResolvedValue([]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -273,6 +288,88 @@ describe('PaymentsService', () => {
 
       expect(prisma.payment.updateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ received: true });
+    });
+  });
+
+  describe('createSetupSession', () => {
+    it('creates a Stripe customer on first use and returns a setup session', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'a@b.com',
+        name: 'A',
+        stripeCustomerId: null,
+      });
+      prisma.user.update.mockResolvedValue({});
+
+      const result = await service.createSetupSession('user-1');
+
+      expect(stripe.createCustomer).toHaveBeenCalledWith({
+        email: 'a@b.com',
+        name: 'A',
+        metadata: { userId: 'user-1' },
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { stripeCustomerId: 'cus_mock_user-1' },
+      });
+      expect(stripe.createSetupSession).toHaveBeenCalledWith('cus_mock_user-1');
+      expect(result).toMatchObject({
+        setupIntentClientSecret: 'seti_mock_secret',
+        mock: true,
+      });
+    });
+
+    it('reuses an existing Stripe customer', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'a@b.com',
+        name: 'A',
+        stripeCustomerId: 'cus_existing',
+      });
+
+      await service.createSetupSession('user-1');
+
+      expect(stripe.createCustomer).not.toHaveBeenCalled();
+      expect(stripe.createSetupSession).toHaveBeenCalledWith('cus_existing');
+    });
+  });
+
+  describe('syncCards', () => {
+    it('creates local rows for new Stripe cards', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        name: 'A',
+        stripeCustomerId: 'cus_1',
+      });
+      stripe.listCards.mockResolvedValue([
+        { id: 'pm_1', brand: 'visa', last4: '4242', expMonth: 12, expYear: 2030 },
+      ]);
+      prisma.paymentMethod.findFirst.mockResolvedValue(null);
+      prisma.paymentMethod.count.mockResolvedValue(0);
+      prisma.paymentMethod.create.mockResolvedValue({});
+      prisma.paymentMethod.findMany.mockResolvedValue([{ id: 'pm-local' }]);
+
+      const result = await service.syncCards('user-1');
+
+      const arg = prisma.paymentMethod.create.mock.calls[0][0];
+      expect(arg.data).toMatchObject({
+        userId: 'user-1',
+        stripePaymentMethodId: 'pm_1',
+        last4: '4242',
+        expiry: '12/2030',
+        isDefault: true,
+      });
+      expect(result).toEqual([{ id: 'pm-local' }]);
+    });
+
+    it('returns existing cards when the user has no Stripe customer', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1', stripeCustomerId: null });
+      prisma.paymentMethod.findMany.mockResolvedValue([mockPaymentMethod]);
+
+      const result = await service.syncCards('user-1');
+
+      expect(stripe.listCards).not.toHaveBeenCalled();
+      expect(result).toEqual([mockPaymentMethod]);
     });
   });
 });

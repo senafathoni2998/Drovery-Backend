@@ -48,4 +48,24 @@ describe('StripeService (mock mode)', () => {
     expect(event.type).toBe('payment_intent.succeeded');
     expect(event.data.object.id).toBe('pi_1');
   });
+
+  it('createCustomer returns a deterministic mock id', async () => {
+    const id = await service.createCustomer({
+      email: 'a@b.com',
+      metadata: { userId: 'u1' },
+    });
+    expect(id).toBe('cus_mock_u1');
+  });
+
+  it('createSetupSession returns deterministic mock secrets', async () => {
+    const s = await service.createSetupSession('cus_1');
+    expect(s.setupIntentClientSecret).toContain('seti_mock');
+    expect(s.ephemeralKeySecret).toContain('ek_mock');
+    expect(s.customerId).toBe('cus_1');
+  });
+
+  it('listCards is empty and publishableKey is null in mock mode', async () => {
+    expect(await service.listCards('cus_1')).toEqual([]);
+    expect(service.publishableKey).toBeNull();
+  });
 });

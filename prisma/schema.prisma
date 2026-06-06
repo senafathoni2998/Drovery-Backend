@@ -16,9 +16,10 @@ model User {
   address         String?
   bio             String?
   avatarUrl       String?
-  passwordHash    String
-  emailVerified   Boolean   @default(false)
-  emailVerifiedAt DateTime?
+  passwordHash     String
+  emailVerified    Boolean   @default(false)
+  emailVerifiedAt  DateTime?
+  stripeCustomerId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

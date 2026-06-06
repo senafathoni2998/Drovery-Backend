@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -19,6 +21,18 @@ export class PaymentsController {
   @Get()
   findAll(@CurrentUser('sub') userId: string) {
     return this.paymentsService.findAll(userId);
+  }
+
+  @Post('setup-intent')
+  @HttpCode(HttpStatus.OK)
+  createSetupIntent(@CurrentUser('sub') userId: string) {
+    return this.paymentsService.createSetupSession(userId);
+  }
+
+  @Post('sync')
+  @HttpCode(HttpStatus.OK)
+  sync(@CurrentUser('sub') userId: string) {
+    return this.paymentsService.syncCards(userId);
   }
 
   @Post()

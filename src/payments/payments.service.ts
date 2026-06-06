@@ -199,4 +199,72 @@ export class PaymentsService {
         return PaymentStatus.PENDING;
     }
   }
+
+  // ── Native card entry (Stripe PaymentSheet) ───────────────────────────────
+
+  /**
+   * Returns everything the mobile Stripe PaymentSheet needs to save a card:
+   * ensures the user has a Stripe Customer, then mints a SetupIntent + ephemeral
+   * key. In mock mode these are deterministic fakes.
+   */
+  async createSetupSession(userId: string) {
+    const customerId = await this.ensureStripeCustomer(userId);
+    const session = await this.stripe.createSetupSession(customerId);
+    return {
+      ...session,
+      publishableKey: this.stripe.publishableKey,
+      mock: this.stripe.isMock,
+    };
+  }
+
+  /**
+   * Reconciles the user's locally-stored cards with Stripe (call after the
+   * PaymentSheet saves a card). No-op in mock mode (Stripe returns no cards).
+   */
+  async syncCards(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.stripeCustomerId) return this.findAll(userId);
+
+    const cards = await this.stripe.listCards(user.stripeCustomerId);
+    for (const card of cards) {
+      const existing = await this.prisma.paymentMethod.findFirst({
+        where: { userId, stripePaymentMethodId: card.id },
+      });
+      if (!existing) {
+        const count = await this.prisma.paymentMethod.count({ where: { userId } });
+        await this.prisma.paymentMethod.create({
+          data: {
+            userId,
+            stripePaymentMethodId: card.id,
+            network: card.brand,
+            last4: card.last4,
+            holderName: user.name,
+            expiry: `${String(card.expMonth).padStart(2, '0')}/${card.expYear}`,
+            isDefault: count === 0,
+          },
+        });
+      }
+    }
+
+    return this.findAll(userId);
+  }
+
+  private async ensureStripeCustomer(userId: string): Promise<string> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.stripeCustomerId) return user.stripeCustomerId;
+
+    const customerId = await this.stripe.createCustomer({
+      email: user.email,
+      name: user.name,
+      metadata: { userId },
+    });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { stripeCustomerId: customerId },
+    });
+    return customerId;
+  }
 }

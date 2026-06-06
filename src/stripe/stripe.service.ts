@@ -80,6 +80,86 @@ export class StripeService {
     };
   }
 
+  get publishableKey(): string | null {
+    return this.config.get<string>('stripe.publishableKey') ?? null;
+  }
+
+  /** Creates (or in mock mode fakes) a Stripe Customer and returns its id. */
+  async createCustomer(params: {
+    email: string;
+    name?: string;
+    metadata?: Record<string, string>;
+  }): Promise<string> {
+    if (this.isMock || !this.stripe) {
+      return `cus_mock_${params.metadata?.userId ?? 'x'}`;
+    }
+    const customer = await this.stripe.customers.create({
+      email: params.email,
+      name: params.name,
+      metadata: params.metadata,
+    });
+    return customer.id;
+  }
+
+  /**
+   * Creates a SetupIntent + ephemeral key so the mobile PaymentSheet can save a
+   * card to the customer. In mock mode returns deterministic fakes.
+   */
+  async createSetupSession(customerId: string): Promise<{
+    setupIntentClientSecret: string;
+    ephemeralKeySecret: string | null;
+    customerId: string;
+  }> {
+    if (this.isMock || !this.stripe) {
+      return {
+        setupIntentClientSecret: `seti_mock_${customerId}_secret`,
+        ephemeralKeySecret: `ek_mock_${customerId}`,
+        customerId,
+      };
+    }
+
+    const setupIntent = await this.stripe.setupIntents.create({
+      customer: customerId,
+      automatic_payment_methods: { enabled: true },
+    });
+    const ephemeralKey = await this.stripe.ephemeralKeys.create(
+      { customer: customerId },
+      { apiVersion: '2024-06-20' },
+    );
+
+    return {
+      setupIntentClientSecret: setupIntent.client_secret ?? '',
+      ephemeralKeySecret: ephemeralKey.secret ?? null,
+      customerId,
+    };
+  }
+
+  /** Lists the customer's saved cards (normalized). Empty in mock mode. */
+  async listCards(customerId: string): Promise<
+    {
+      id: string;
+      brand: string;
+      last4: string;
+      expMonth: number;
+      expYear: number;
+    }[]
+  > {
+    if (this.isMock || !this.stripe) {
+      return [];
+    }
+    const methods = await this.stripe.paymentMethods.list({
+      customer: customerId,
+      type: 'card',
+    });
+    return methods.data.map((pm) => ({
+      id: pm.id,
+      brand: pm.card?.brand ?? 'card',
+      last4: pm.card?.last4 ?? '0000',
+      expMonth: pm.card?.exp_month ?? 0,
+      expYear: pm.card?.exp_year ?? 0,
+    }));
+  }
+
   /**
    * Verifies and parses a Stripe webhook. In mock mode the signature check is
    * skipped and the raw JSON body is parsed directly.
