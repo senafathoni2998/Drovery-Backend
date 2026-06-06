@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { GeoModule } from '../geo/geo.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
@@ -8,7 +9,7 @@ import { TrackingGateway } from './tracking/tracking.gateway';
 import { TrackingService } from './tracking/tracking.service';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, GeoModule],
   controllers: [DeliveriesController],
   providers: [
     DeliveriesService,

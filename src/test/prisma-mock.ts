@@ -10,6 +10,7 @@ type MockPrismaService = {
     | 'notification'
     | 'device'
     | 'workflowStepCompletion'
+    | 'supportTicket'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -50,6 +51,7 @@ export function createMockPrismaService(): MockPrismaService {
     notification: createModelMock(),
     device: createModelMock(),
     workflowStepCompletion: createModelMock(),
+    supportTicket: createModelMock(),
     $transaction: jest.fn((args) =>
       Array.isArray(args) ? Promise.all(args) : args(),
     ),

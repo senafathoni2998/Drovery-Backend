@@ -1,24 +1,34 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
 
+import { PrismaService } from '../prisma/prisma.service';
 import { FAQS } from './data/faqs';
 
 @Injectable()
 export class SupportService {
   private readonly logger = new Logger(SupportService.name);
 
+  constructor(private readonly prisma: PrismaService) {}
+
   getFaqs() {
     return FAQS;
   }
 
-  submitTicket(userId: string, message: string) {
-    const ticketId = uuidv4();
+  async submitTicket(userId: string, message: string) {
+    const ticket = await this.prisma.supportTicket.create({
+      data: { userId, message },
+    });
 
-    // TODO: Persist ticket to database and integrate with actual ticketing system
     this.logger.log(
-      `Support ticket ${ticketId} submitted by user ${userId}: ${message.slice(0, 100)}`,
+      `Support ticket ${ticket.id} submitted by user ${userId}`,
     );
 
-    return { success: true, ticketId };
+    return { success: true, ticketId: ticket.id };
+  }
+
+  async getTickets(userId: string) {
+    return this.prisma.supportTicket.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

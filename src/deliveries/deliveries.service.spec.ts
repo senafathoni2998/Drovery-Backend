@@ -7,6 +7,7 @@ import { DeliveryStatus } from '@prisma/client';
 
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { GeoService } from '../geo/geo.service';
 import { SimulationService } from './simulation/simulation.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
@@ -16,6 +17,7 @@ describe('DeliveriesService', () => {
   let service: DeliveriesService;
   let prisma: ReturnType<typeof createMockPrismaService>;
   let simulationService: { startSimulation: jest.Mock; stopSimulation: jest.Mock };
+  let geoService: { geocode: jest.Mock };
 
   const userId = 'user-1';
 
@@ -53,12 +55,14 @@ describe('DeliveriesService', () => {
       startSimulation: jest.fn(),
       stopSimulation: jest.fn(),
     };
+    geoService = { geocode: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DeliveriesService,
         { provide: PrismaService, useValue: prisma },
         { provide: SimulationService, useValue: simulationService },
+        { provide: GeoService, useValue: geoService },
       ],
     }).compile();
 
@@ -94,6 +98,36 @@ describe('DeliveriesService', () => {
           toLat: createDto.toLat,
           toLng: createDto.toLng,
         },
+      );
+      // Coords supplied → no geocoding needed
+      expect(geoService.geocode).not.toHaveBeenCalled();
+    });
+
+    it('should geocode missing coordinates from addresses', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      geoService.geocode
+        .mockResolvedValueOnce({ lat: 1.1, lng: 2.2 }) // fromAddress
+        .mockResolvedValueOnce({ lat: 3.3, lng: 4.4 }); // toAddress
+
+      const dtoNoCoords = {
+        ...createDto,
+        fromLat: undefined,
+        fromLng: undefined,
+        toLat: undefined,
+        toLng: undefined,
+      };
+
+      await service.create(userId, dtoNoCoords as any);
+
+      expect(geoService.geocode).toHaveBeenCalledWith(createDto.fromAddress);
+      expect(geoService.geocode).toHaveBeenCalledWith(createDto.toAddress);
+      const createCall = prisma.delivery.create.mock.calls[0][0];
+      expect(createCall.data.fromLat).toBe(1.1);
+      expect(createCall.data.toLng).toBe(4.4);
+      expect(simulationService.startSimulation).toHaveBeenCalledWith(
+        mockDelivery.id,
+        userId,
+        { fromLat: 1.1, fromLng: 2.2, toLat: 3.3, toLng: 4.4 },
       );
     });
   });

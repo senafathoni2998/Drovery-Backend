@@ -2,6 +2,8 @@
 
 A drone delivery platform API built with [NestJS](https://nestjs.com), [Prisma](https://prisma.io), and PostgreSQL.
 
+> **Companion app:** this API is consumed by the **drovery-mobile** Expo / React Native app (sibling repo at `../drovery-mobile`). For the full mobile↔backend contract — endpoint map, auth/token lifecycle, response envelope, and how to point the app at this server — see **[INTEGRATION.md](./INTEGRATION.md)**.
+
 ---
 
 ## Table of Contents

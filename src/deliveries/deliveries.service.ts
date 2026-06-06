@@ -6,9 +6,17 @@ import {
 import { DeliveryStatus, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 
+import { GeoService } from '../geo/geo.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SimulationService } from './simulation/simulation.service';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
+
+interface ResolvedCoords {
+  fromLat?: number;
+  fromLng?: number;
+  toLat?: number;
+  toLng?: number;
+}
 
 const ACTIVE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.PENDING,
@@ -45,6 +53,7 @@ export class DeliveriesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly simulationService: SimulationService,
+    private readonly geoService: GeoService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -58,6 +67,11 @@ export class DeliveriesService {
     );
     const estimatedPrice = BASE_FEE + sizeFee + weightFee + typeFee;
 
+    // Resolve pickup/dropoff coordinates so the drone can fly a real route.
+    // Uses client-provided coords when present; otherwise geocodes the
+    // addresses (best-effort — geocoding failures leave coords undefined).
+    const coords = await this.resolveCoords(dto);
+
     const delivery = await this.prisma.delivery.create({
       data: {
         trackingId,
@@ -65,10 +79,10 @@ export class DeliveriesService {
         status: DeliveryStatus.PENDING,
         fromAddress: dto.fromAddress,
         toAddress: dto.toAddress,
-        fromLat: dto.fromLat,
-        fromLng: dto.fromLng,
-        toLat: dto.toLat,
-        toLng: dto.toLng,
+        fromLat: coords.fromLat,
+        fromLng: coords.fromLng,
+        toLat: coords.toLat,
+        toLng: coords.toLng,
         receiver: dto.receiver,
         packages: dto.packages,
         packageSize: dto.packageSize,
@@ -81,14 +95,37 @@ export class DeliveriesService {
     });
 
     // Start the delivery simulation (auto-progresses PENDING → DELIVERED)
-    this.simulationService.startSimulation(delivery.id, userId, {
-      fromLat: dto.fromLat,
-      fromLng: dto.fromLng,
-      toLat: dto.toLat,
-      toLng: dto.toLng,
-    });
+    this.simulationService.startSimulation(delivery.id, userId, coords);
 
     return delivery;
+  }
+
+  /**
+   * Fills in pickup/dropoff coordinates. Client-supplied coords win; any
+   * missing pair is geocoded from its address via the geo provider.
+   * Best-effort: a failed geocode simply leaves the coordinate undefined
+   * (the simulation then falls back to its default route).
+   */
+  private async resolveCoords(dto: CreateDeliveryDto): Promise<ResolvedCoords> {
+    let { fromLat, fromLng, toLat, toLng } = dto;
+
+    if ((fromLat == null || fromLng == null) && dto.fromAddress) {
+      const geo = await this.geoService.geocode(dto.fromAddress);
+      if (geo) {
+        fromLat = geo.lat;
+        fromLng = geo.lng;
+      }
+    }
+
+    if ((toLat == null || toLng == null) && dto.toAddress) {
+      const geo = await this.geoService.geocode(dto.toAddress);
+      if (geo) {
+        toLat = geo.lat;
+        toLng = geo.lng;
+      }
+    }
+
+    return { fromLat, fromLng, toLat, toLng };
   }
 
   async findAll(userId: string, query: DeliveryQueryDto) {

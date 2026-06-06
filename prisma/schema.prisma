@@ -25,6 +25,7 @@ model User {
   paymentMethods PaymentMethod[]
   devices        Device[]
   notifications  Notification[]
+  supportTickets SupportTicket[]
 
   @@map("users")
 }
@@ -159,6 +160,31 @@ model Payment {
   createdAt DateTime @default(now())
 
   @@map("payments")
+}
+
+// ==================== SUPPORT ====================
+
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  message String
+  status  SupportTicketStatus @default(OPEN)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("support_tickets")
 }
 
 // ==================== NOTIFICATIONS ====================

@@ -112,39 +112,76 @@ describe('WorkflowsService', () => {
   });
 
   describe('generateQrPayload', () => {
-    it('should return JSON string with deliveryId and timestamp', () => {
+    it('should return a signed JSON string with deliveryId, timestamp and sig', () => {
       const result = service.generateQrPayload('delivery-1');
       const parsed = JSON.parse(result);
 
       expect(parsed.deliveryId).toBe('delivery-1');
       expect(parsed.timestamp).toBeDefined();
+      expect(parsed.sig).toBeDefined();
     });
   });
 
   describe('validateQrPayload', () => {
-    it('should return valid for correct payload', () => {
-      const payload = JSON.stringify({
-        deliveryId: 'delivery-1',
-        timestamp: Date.now(),
-      });
+    it('should return valid for a freshly generated (signed) payload', () => {
+      const payload = service.generateQrPayload('delivery-1');
 
       const result = service.validateQrPayload(payload);
 
       expect(result).toEqual({ valid: true, deliveryId: 'delivery-1' });
     });
 
-    it('should return invalid for payload missing fields', () => {
+    it('should reject an unsigned payload missing fields', () => {
       const payload = JSON.stringify({ deliveryId: 'delivery-1' });
 
       const result = service.validateQrPayload(payload);
 
-      expect(result).toEqual({ valid: false });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('malformed');
+    });
+
+    it('should reject a payload with a tampered signature', () => {
+      const payload = JSON.stringify({
+        deliveryId: 'delivery-1',
+        timestamp: Date.now(),
+        sig: 'deadbeef',
+      });
+
+      const result = service.validateQrPayload(payload);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('bad_signature');
+    });
+
+    it('should reject a tampered deliveryId (signature no longer matches)', () => {
+      const payload = JSON.parse(service.generateQrPayload('delivery-1'));
+      payload.deliveryId = 'delivery-HACKED';
+
+      const result = service.validateQrPayload(JSON.stringify(payload));
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('bad_signature');
+    });
+
+    it('should reject an expired QR payload', () => {
+      const payload = service.generateQrPayload('delivery-1');
+      const realNow = Date.now();
+      const spy = jest
+        .spyOn(Date, 'now')
+        .mockReturnValue(realNow + 6 * 60 * 1000);
+
+      const result = service.validateQrPayload(payload);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('expired');
+      spy.mockRestore();
     });
 
     it('should return invalid for malformed JSON', () => {
       const result = service.validateQrPayload('not-json');
 
-      expect(result).toEqual({ valid: false });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('malformed');
     });
   });
 });

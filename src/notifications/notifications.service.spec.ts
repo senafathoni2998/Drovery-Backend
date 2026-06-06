@@ -4,6 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { ConfigService } from '@nestjs/config';
+
 import { NotificationsService } from './notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { createMockPrismaService } from '../test/prisma-mock';
@@ -31,6 +33,7 @@ describe('NotificationsService', () => {
       providers: [
         NotificationsService,
         { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 
@@ -143,6 +146,40 @@ describe('NotificationsService', () => {
           data: { deliveryId: 'd-1' },
         },
       });
+    });
+
+    it('should push to registered Expo devices and ignore non-Expo tokens', async () => {
+      prisma.notification.create.mockResolvedValue(mockNotification);
+      prisma.device.findMany.mockResolvedValue([
+        { pushToken: 'ExponentPushToken[abc]', platform: 'ios' },
+        { pushToken: 'fcm-raw-token', platform: 'android' },
+      ]);
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true });
+      (global as any).fetch = fetchMock;
+
+      await service.create(userId, 'Title', 'Body', { deliveryId: 'd-1' });
+      // let the fire-and-forget push microtask run
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, opts] = fetchMock.mock.calls[0];
+      expect(url).toContain('exp.host');
+      const sent = JSON.parse(opts.body);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].to).toBe('ExponentPushToken[abc]');
+      expect(sent[0].title).toBe('Title');
+    });
+
+    it('should not call the push service when no devices are registered', async () => {
+      prisma.notification.create.mockResolvedValue(mockNotification);
+      prisma.device.findMany.mockResolvedValue([]);
+      const fetchMock = jest.fn();
+      (global as any).fetch = fetchMock;
+
+      await service.create(userId, 'Title', 'Body');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

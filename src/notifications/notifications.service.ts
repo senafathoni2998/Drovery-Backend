@@ -4,15 +4,21 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDeviceDto } from './dto';
+
+const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   async findAll(userId: string) {
     return this.prisma.notification.findMany({
@@ -86,13 +92,69 @@ export class NotificationsService {
       },
     });
 
-    // TODO: Send push notification via Expo when expo-server-sdk is configured
+    // Fan out to the user's registered devices as a real push (fire-and-forget;
+    // a failed/absent push must never break notification creation).
+    void this.sendPushToUser(userId, title, body, data);
 
     this.logger.log(
       `Notification "${title}" created for user ${userId}`,
     );
 
     return notification;
+  }
+
+  /**
+   * Sends an Expo push notification to every device the user has registered.
+   * Best-effort: skips silently when there are no Expo tokens, and never throws.
+   */
+  private async sendPushToUser(
+    userId: string,
+    title: string,
+    body: string,
+    data?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const devices = (await this.prisma.device.findMany({
+        where: { userId },
+      })) ?? [];
+
+      const messages = devices
+        .map((d) => d.pushToken)
+        .filter(
+          (token) =>
+            typeof token === 'string' &&
+            (token.startsWith('ExponentPushToken') ||
+              token.startsWith('ExpoPushToken')),
+        )
+        .map((to) => ({ to, title, body, data, sound: 'default' as const }));
+
+      if (messages.length === 0) return;
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      };
+      const accessToken = this.config.get<string>('expo.accessToken');
+      if (accessToken) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+
+      const res = await fetch(EXPO_PUSH_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(messages),
+      });
+
+      if (!res.ok) {
+        this.logger.warn(
+          `Expo push request failed with status ${res.status}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Push send failed for user ${userId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   async getUnreadCount(userId: string) {
