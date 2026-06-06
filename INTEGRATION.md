@@ -100,6 +100,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Push registration (after login) | `POST /notifications/devices` | jwt | `{pushToken,platform}` → registers Expo token |
 | Payment methods | `GET/POST /payment-methods`, `DELETE /payment-methods/{id}`, `PATCH /payment-methods/{id}/default` | jwt | saved-card CRUD |
 | (Stripe → server) | `POST /payments/webhook` | public (signed) | PaymentIntent events drive `Payment.status` |
+| Delivery detail (proof card) | `GET /deliveries/{id}/proof`, `POST /deliveries/{id}/proof` | jwt | view / submit proof of delivery (also embedded in `GET /deliveries/{id}`) |
 | Notifications | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/{id}/read`, `PATCH /notifications/read-all` | jwt | in-app notifications |
 | Help & support | `GET /support/faq` (public), `GET/POST /support/tickets` (jwt) | mixed | FAQ + persisted tickets |
 
@@ -156,7 +157,7 @@ curl -s -X POST http://localhost:3000/api/v1/auth/login \
 
 ## 8. Status of known gaps
 
-**Fixed (this round):** live drone tracking (polling + animated marker), status-change notifications (local + remote Expo push + device registration), **geocode-on-create**, **Cancel delivery** UI, **persisted support tickets**, **HMAC-signed QR** with expiry, **distance-based pricing**, **password reset**, and **real Stripe payments** (PaymentIntent on create + signature-verified `POST /payments/webhook`, real when `STRIPE_SECRET_KEY` is set, deterministic mock otherwise; mobile shows payment status).
+**Fixed (this round):** live drone tracking (polling + animated marker), status-change notifications (local + remote Expo push + device registration), **geocode-on-create**, **Cancel delivery** UI, **persisted support tickets**, **HMAC-signed QR** with expiry, **distance-based pricing**, **password reset**, **real Stripe payments** (PaymentIntent on create + signature-verified `POST /payments/webhook`, real when `STRIPE_SECRET_KEY` is set, deterministic mock otherwise; mobile shows payment status), and **proof of delivery** (auto-recorded on `DELIVERED` with photo + final GPS; `StorageService` is real-or-mock; mobile shows a proof card).
 
 **Still open:**
 - **On-device card entry** — saved cards are still plain metadata (`manual_<ts>`); production needs `@stripe/stripe-react-native` so cards become real Stripe PaymentMethods (the backend PaymentIntent/webhook flow is ready for it).

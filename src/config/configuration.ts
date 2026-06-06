@@ -37,4 +37,11 @@ export default () => ({
     provider: process.env.MAIL_PROVIDER,
     from: process.env.MAIL_FROM ?? 'no-reply@drovery.com',
   },
+
+  storage: {
+    // When unset, StorageService persists photos inline (data URLs) + placeholders.
+    provider: process.env.STORAGE_PROVIDER,
+    placeholderBase:
+      process.env.POD_PLACEHOLDER_BASE ?? 'https://picsum.photos/seed',
+  },
 });

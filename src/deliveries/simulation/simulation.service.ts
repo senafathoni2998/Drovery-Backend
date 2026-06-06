@@ -3,6 +3,7 @@ import { DeliveryStatus } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { ProofService } from '../proof/proof.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 
@@ -79,6 +80,7 @@ export class SimulationService implements OnModuleDestroy {
     private readonly trackingService: TrackingService,
     private readonly trackingGateway: TrackingGateway,
     private readonly notificationsService: NotificationsService,
+    private readonly proofService: ProofService,
   ) {}
 
   // ── Public API ────────────────────────────────────────────
@@ -190,8 +192,19 @@ export class SimulationService implements OnModuleDestroy {
 
       this.logger.log(`Delivery ${deliveryId} → ${stage.status}`);
 
-      // Cleanup on final stage
+      // On delivery: record proof of delivery (final GPS + photo) and stop.
       if (stage.status === DeliveryStatus.DELIVERED) {
+        try {
+          await this.proofService.createAutoProof(deliveryId, {
+            lat: coords.toLat,
+            lng: coords.toLng,
+            recipientName: delivery.receiver,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Proof creation failed [${deliveryId}]: ${(error as Error).message}`,
+          );
+        }
         this.activeTimers.delete(deliveryId);
       }
     } catch (error) {

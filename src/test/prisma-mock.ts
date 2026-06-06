@@ -12,6 +12,7 @@ type MockPrismaService = {
     | 'workflowStepCompletion'
     | 'supportTicket'
     | 'passwordResetToken'
+    | 'proofOfDelivery'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -54,6 +55,7 @@ export function createMockPrismaService(): MockPrismaService {
     workflowStepCompletion: createModelMock(),
     supportTicket: createModelMock(),
     passwordResetToken: createModelMock(),
+    proofOfDelivery: createModelMock(),
     $transaction: jest.fn((args) =>
       Array.isArray(args) ? Promise.all(args) : args(),
     ),

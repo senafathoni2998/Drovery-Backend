@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { ProofService } from '../proof/proof.service';
 import { createMockPrismaService } from '../../test/prisma-mock';
 
 describe('SimulationService', () => {
@@ -23,6 +24,7 @@ describe('SimulationService', () => {
     };
     trackingGateway = { broadcastTrackingUpdate: jest.fn() };
     notificationsService = { create: jest.fn().mockResolvedValue({}) };
+    const proofService = { createAutoProof: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -31,6 +33,7 @@ describe('SimulationService', () => {
         { provide: TrackingService, useValue: trackingService },
         { provide: TrackingGateway, useValue: trackingGateway },
         { provide: NotificationsService, useValue: notificationsService },
+        { provide: ProofService, useValue: proofService },
       ],
     }).compile();
 

@@ -91,14 +91,34 @@ model Delivery {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tracking      DeliveryTracking?
-  workflowSteps WorkflowStepCompletion[]
-  payment       Payment?
+  tracking        DeliveryTracking?
+  workflowSteps   WorkflowStepCompletion[]
+  payment         Payment?
+  proofOfDelivery ProofOfDelivery?
 
   @@index([userId])
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
+}
+
+// ==================== PROOF OF DELIVERY ====================
+
+model ProofOfDelivery {
+  id         String @id @default(uuid())
+  deliveryId String @unique
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  photoUrl      String
+  recipientName String?
+  lat           Float?
+  lng           Float?
+  notes         String?
+
+  capturedAt DateTime @default(now())
+
+  @@map("proof_of_delivery")
 }
 
 // ==================== TRACKING ====================

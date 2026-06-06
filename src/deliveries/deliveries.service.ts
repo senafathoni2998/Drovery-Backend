@@ -191,6 +191,7 @@ export class DeliveriesService {
         tracking: true,
         workflowSteps: true,
         payment: true,
+        proofOfDelivery: true,
       },
     });
 
@@ -210,6 +211,7 @@ export class DeliveriesService {
         tracking: true,
         workflowSteps: true,
         payment: true,
+        proofOfDelivery: true,
       },
     });
 
@@ -271,6 +273,7 @@ export class DeliveriesService {
         tracking: true,
         workflowSteps: true,
         payment: true,
+        proofOfDelivery: true,
       },
     });
   }

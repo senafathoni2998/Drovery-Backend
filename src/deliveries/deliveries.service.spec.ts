@@ -252,7 +252,12 @@ describe('DeliveriesService', () => {
       expect(result.id).toBe('delivery-1');
       expect(prisma.delivery.findUnique).toHaveBeenCalledWith({
         where: { id: 'delivery-1' },
-        include: { tracking: true, workflowSteps: true, payment: true },
+        include: {
+          tracking: true,
+          workflowSteps: true,
+          payment: true,
+          proofOfDelivery: true,
+        },
       });
     });
 
