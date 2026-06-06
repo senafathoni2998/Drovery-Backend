@@ -9,6 +9,7 @@ impact-to-effort. ✅ = already added in the latest round of work.
 - **Cancel delivery** UI wired to the existing endpoint.
 - **Geocode-on-create** — real pickup/dropoff coordinates → a real flight path.
 - **Support tickets persisted** + signed (HMAC + expiry) QR codes.
+- **✅ Distance-based pricing (P0)** — `PricingService` now adds a haversine `distanceFee` ($1.50/km) from coords or geocoded addresses; `DeliveriesService` delegates to it so the quote and the stored price always agree. Mobile sends the addresses and shows a distance line.
 
 ---
 
@@ -16,7 +17,7 @@ impact-to-effort. ✅ = already added in the latest round of work.
 
 1. **Password reset & email verification.** There is currently **no way to recover an account** (no forgot-password, no email verify). Add `POST /auth/forgot-password` + `reset-password` (emailed token) and email verification. Table stakes for real users.
 2. **Real payments (Stripe).** Today cards are fake metadata (`manual_<ts>`) and no charge happens; the `Payment` model is unused and the FAQ falsely claims Stripe encryption. Implement: tokenize card on device → PaymentIntent on create → webhook (signature-verified) → write `Payment`. Add receipts.
-3. **Distance-based pricing.** `pricing/estimate` accepts `fromAddress/toAddress` but **ignores them** — price is size+weight+type only. Now that we geocode, price by **distance** (haversine over the resolved coords) + zone surcharges. Directly affects revenue correctness.
+3. ~~**Distance-based pricing.**~~ ✅ **Done** — see "Just shipped". (Next: zone/surge multipliers + a per-km rate that varies by region.)
 4. **Proof of delivery.** On `DELIVERED`, capture a **drop photo** + timestamp + final GPS, shown in the app. The biggest trust driver for autonomous delivery.
 
 ## P1 — Trust, safety & retention

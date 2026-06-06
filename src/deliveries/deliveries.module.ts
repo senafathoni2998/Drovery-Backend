@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { GeoModule } from '../geo/geo.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PricingModule } from '../pricing/pricing.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
 import { SimulationService } from './simulation/simulation.service';
@@ -9,7 +10,7 @@ import { TrackingGateway } from './tracking/tracking.gateway';
 import { TrackingService } from './tracking/tracking.service';
 
 @Module({
-  imports: [NotificationsModule, GeoModule],
+  imports: [NotificationsModule, GeoModule, PricingModule],
   controllers: [DeliveriesController],
   providers: [
     DeliveriesService,

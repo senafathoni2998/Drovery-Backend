@@ -8,6 +8,7 @@ import { DeliveryStatus } from '@prisma/client';
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
+import { PricingService } from '../pricing/pricing.service';
 import { SimulationService } from './simulation/simulation.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
@@ -18,6 +19,7 @@ describe('DeliveriesService', () => {
   let prisma: ReturnType<typeof createMockPrismaService>;
   let simulationService: { startSimulation: jest.Mock; stopSimulation: jest.Mock };
   let geoService: { geocode: jest.Mock };
+  let pricingService: { estimate: jest.Mock };
 
   const userId = 'user-1';
 
@@ -56,6 +58,17 @@ describe('DeliveriesService', () => {
       stopSimulation: jest.fn(),
     };
     geoService = { geocode: jest.fn() };
+    pricingService = {
+      estimate: jest.fn().mockResolvedValue({
+        baseFee: 2,
+        sizeFee: 6,
+        weightFee: 6,
+        typeFee: 4,
+        distanceKm: 0,
+        distanceFee: 0,
+        total: 18,
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -63,6 +76,7 @@ describe('DeliveriesService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: SimulationService, useValue: simulationService },
         { provide: GeoService, useValue: geoService },
+        { provide: PricingService, useValue: pricingService },
       ],
     }).compile();
 
@@ -72,14 +86,23 @@ describe('DeliveriesService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('create', () => {
-    it('should create a delivery with correct price calculation', async () => {
+    it('should price via PricingService and store the returned total', async () => {
       prisma.delivery.create.mockResolvedValue(mockDelivery);
 
       await service.create(userId, createDto);
 
+      // Delegates pricing to the single source of truth, passing coords
+      expect(pricingService.estimate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          packageSize: 'Medium',
+          packageWeight: 2,
+          packageTypes: ['electronics', 'fragile'],
+          fromLat: createDto.fromLat,
+          toLng: createDto.toLng,
+        }),
+      );
       const createCall = prisma.delivery.create.mock.calls[0][0];
-      // BASE_FEE(2) + SIZE_FEE.Medium(6) + weight(2)*3(6) + electronics(2) + fragile(2) = 18
-      expect(createCall.data.estimatedPrice).toBe(18);
+      expect(createCall.data.estimatedPrice).toBe(18); // pricing.total
       expect(createCall.data.status).toBe(DeliveryStatus.PENDING);
       expect(createCall.data.trackingId).toBe('AAAAAAAA');
     });

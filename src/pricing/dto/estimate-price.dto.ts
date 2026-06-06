@@ -33,4 +33,22 @@ export class EstimatePriceDto {
   @ArrayMinSize(1)
   @IsString({ each: true })
   packageTypes: string[];
+
+  // Optional coordinates — when supplied, used directly for distance pricing
+  // (avoids a geocoding round-trip).
+  @IsOptional()
+  @IsNumber()
+  fromLat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  fromLng?: number;
+
+  @IsOptional()
+  @IsNumber()
+  toLat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  toLng?: number;
 }

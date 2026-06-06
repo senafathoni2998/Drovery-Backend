@@ -7,6 +7,7 @@ import { DeliveryStatus, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 
 import { GeoService } from '../geo/geo.service';
+import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SimulationService } from './simulation/simulation.service';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
@@ -31,46 +32,33 @@ const CANCELABLE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.CONFIRMED,
 ];
 
-const SIZE_FEE: Record<string, number> = {
-  Small: 3,
-  Medium: 6,
-  Large: 10,
-  XL: 16,
-};
-
-const TYPE_FEE: Record<string, number> = {
-  fragile: 2,
-  electronics: 2,
-  food: 1,
-  healthcare: 1,
-};
-
-const BASE_FEE = 2;
-const WEIGHT_MULTIPLIER = 3;
-
 @Injectable()
 export class DeliveriesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly simulationService: SimulationService,
     private readonly geoService: GeoService,
+    private readonly pricingService: PricingService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
 
-    const sizeFee = SIZE_FEE[dto.packageSize] ?? 0;
-    const weightFee = dto.packageWeight * WEIGHT_MULTIPLIER;
-    const typeFee = dto.packageTypes.reduce(
-      (sum, type) => sum + (TYPE_FEE[type] ?? 0),
-      0,
-    );
-    const estimatedPrice = BASE_FEE + sizeFee + weightFee + typeFee;
-
     // Resolve pickup/dropoff coordinates so the drone can fly a real route.
     // Uses client-provided coords when present; otherwise geocodes the
     // addresses (best-effort — geocoding failures leave coords undefined).
     const coords = await this.resolveCoords(dto);
+
+    // Price via the single source of truth (PricingService) so the stored
+    // price always matches the quote — including the distance component.
+    const pricing = await this.pricingService.estimate({
+      packageSize: dto.packageSize,
+      packageWeight: dto.packageWeight,
+      packageTypes: dto.packageTypes,
+      fromAddress: dto.fromAddress,
+      toAddress: dto.toAddress,
+      ...coords,
+    });
 
     const delivery = await this.prisma.delivery.create({
       data: {
@@ -90,7 +78,7 @@ export class DeliveriesService {
         packageTypes: dto.packageTypes,
         pickupDate: new Date(dto.pickupDate),
         pickupTime: dto.pickupTime,
-        estimatedPrice: Math.round(estimatedPrice * 100) / 100,
+        estimatedPrice: pricing.total,
       },
     });
 
