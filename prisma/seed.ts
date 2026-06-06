@@ -14,7 +14,7 @@ async function main() {
 
   const user = await prisma.user.upsert({
     where: { email: 'demo@drovery.com' },
-    update: {},
+    update: { emailVerified: true, emailVerifiedAt: new Date() },
     create: {
       email: 'demo@drovery.com',
       name: 'Sena',
@@ -22,6 +22,8 @@ async function main() {
       address:
         'Jalan Ahmad Yani 1 No. 77 RT 12 RW 13, Tanjung Duren, Jakarta',
       passwordHash,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
     },
   });
 

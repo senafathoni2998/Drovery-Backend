@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,9 +16,12 @@ import { LoginDto, SignupDto } from './dto';
 
 const BCRYPT_SALT_ROUNDS = 12;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -43,6 +47,15 @@ export class AuthService {
         passwordHash,
       },
     });
+
+    // Kick off email verification (best-effort — never block signup on email).
+    try {
+      await this.issueEmailVerification(user.id, user.email);
+    } catch (error) {
+      this.logger.warn(
+        `Verification email failed for ${user.email}: ${(error as Error).message}`,
+      );
+    }
 
     const tokens = await this.generateTokens(user.id, user.email);
 
@@ -163,6 +176,59 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  // ── Email verification ────────────────────────────────────────────────────
+
+  /** Issues a fresh verification token and emails it (invalidating prior ones). */
+  private async issueEmailVerification(userId: string, email: string) {
+    await this.prisma.emailVerificationToken.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    await this.prisma.emailVerificationToken.create({
+      data: {
+        userId,
+        tokenHash: this.hashToken(rawToken),
+        expiresAt: new Date(Date.now() + VERIFY_TOKEN_TTL_MS),
+      },
+    });
+
+    await this.mail.sendVerificationEmail(email, rawToken);
+  }
+
+  async verifyEmail(token: string): Promise<{ success: true }> {
+    const record = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash: this.hashToken(token) },
+    });
+
+    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: { emailVerified: true, emailVerifiedAt: new Date() },
+      }),
+      this.prisma.emailVerificationToken.updateMany({
+        where: { userId: record.userId, usedAt: null },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    return { success: true };
+  }
+
+  /** Re-sends verification to the authenticated user (no-op if already verified). */
+  async resendVerification(userId: string): Promise<{ success: true }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (user && !user.emailVerified) {
+      await this.issueEmailVerification(user.id, user.email);
+    }
+    return { success: true };
   }
 
   private async generateTokens(

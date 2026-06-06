@@ -23,6 +23,15 @@ export class MailService {
     );
   }
 
+  async sendVerificationEmail(to: string, token: string): Promise<void> {
+    const deepLink = `droverymobile://verify-email?token=${token}`;
+    await this.send(
+      to,
+      'Verify your Drovery email',
+      `Welcome to Drovery! Tap to verify your email: ${deepLink}\n\nOr enter this code in the app: ${token}\n\nThis link expires in 24 hours.`,
+    );
+  }
+
   private async send(to: string, subject: string, body: string): Promise<void> {
     const provider = this.config.get<string>('mail.provider');
 

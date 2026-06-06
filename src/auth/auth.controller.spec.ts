@@ -11,6 +11,8 @@ describe('AuthController', () => {
     refreshTokens: jest.Mock;
     forgotPassword: jest.Mock;
     resetPassword: jest.Mock;
+    verifyEmail: jest.Mock;
+    resendVerification: jest.Mock;
   };
 
   const mockAuthResult = {
@@ -29,6 +31,8 @@ describe('AuthController', () => {
       }),
       forgotPassword: jest.fn().mockResolvedValue({ success: true }),
       resetPassword: jest.fn().mockResolvedValue({ success: true }),
+      verifyEmail: jest.fn().mockResolvedValue({ success: true }),
+      resendVerification: jest.fn().mockResolvedValue({ success: true }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -90,6 +94,24 @@ describe('AuthController', () => {
       });
 
       expect(authService.resetPassword).toHaveBeenCalledWith('tok', 'newpass123');
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('should delegate the token to authService.verifyEmail', async () => {
+      const result = await controller.verifyEmail({ token: 'tok' });
+
+      expect(authService.verifyEmail).toHaveBeenCalledWith('tok');
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('should delegate the user id to authService.resendVerification', async () => {
+      const result = await controller.resendVerification('user-1');
+
+      expect(authService.resendVerification).toHaveBeenCalledWith('user-1');
       expect(result).toEqual({ success: true });
     });
   });

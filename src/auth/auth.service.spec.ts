@@ -21,12 +21,18 @@ describe('AuthService', () => {
   let service: AuthService;
   let prisma: ReturnType<typeof createMockPrismaService>;
   let jwtService: { signAsync: jest.Mock };
-  let mailService: { sendPasswordResetEmail: jest.Mock };
+  let mailService: {
+    sendPasswordResetEmail: jest.Mock;
+    sendVerificationEmail: jest.Mock;
+  };
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
     jwtService = { signAsync: jest.fn().mockResolvedValue('mock-token') };
-    mailService = { sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined) };
+    mailService = {
+      sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
+      sendVerificationEmail: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -91,6 +97,11 @@ describe('AuthService', () => {
       });
       expect(result.accessToken).toBe('mock-token');
       expect(result.refreshToken).toBe('mock-token');
+      // sends a verification email on signup
+      expect(mailService.sendVerificationEmail).toHaveBeenCalledWith(
+        dto.email,
+        expect.any(String),
+      );
     });
 
     it('should throw ConflictException if email already exists', async () => {
@@ -273,6 +284,70 @@ describe('AuthService', () => {
       await expect(
         service.resetPassword('raw', 'newpass123'),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('marks the user verified and consumes the token', async () => {
+      prisma.emailVerificationToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const result = await service.verifyEmail('raw-token');
+
+      expect(result).toEqual({ success: true });
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
+    it('rejects an unknown / expired / used token', async () => {
+      prisma.emailVerificationToken.findUnique.mockResolvedValue(null);
+      await expect(service.verifyEmail('bad')).rejects.toThrow(
+        BadRequestException,
+      );
+
+      prisma.emailVerificationToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: null,
+        expiresAt: new Date(Date.now() - 1_000),
+      });
+      await expect(service.verifyEmail('expired')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('issues a new verification email for an unverified user', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'john@test.com',
+        emailVerified: false,
+      });
+
+      const result = await service.resendVerification('user-1');
+
+      expect(result).toEqual({ success: true });
+      expect(mailService.sendVerificationEmail).toHaveBeenCalledWith(
+        'john@test.com',
+        expect.any(String),
+      );
+    });
+
+    it('is a no-op for an already-verified user', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'john@test.com',
+        emailVerified: true,
+      });
+
+      const result = await service.resendVerification('user-1');
+
+      expect(result).toEqual({ success: true });
+      expect(mailService.sendVerificationEmail).not.toHaveBeenCalled();
     });
   });
 });

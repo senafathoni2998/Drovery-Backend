@@ -10,6 +10,7 @@ import {
   RefreshTokenDto,
   ResetPasswordDto,
   SignupDto,
+  VerifyEmailDto,
 } from './dto';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 
@@ -53,5 +54,18 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.newPassword);
+  }
+
+  @Public()
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  resendVerification(@CurrentUser('sub') userId: string) {
+    return this.authService.resendVerification(userId);
   }
 }

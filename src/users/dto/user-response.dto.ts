@@ -6,6 +6,8 @@ export class UserResponseDto {
   address: string | null;
   bio: string | null;
   avatarUrl: string | null;
+  emailVerified: boolean;
+  emailVerifiedAt: Date | null;
   createdAt: Date;
 
   static from(user: {
@@ -16,6 +18,8 @@ export class UserResponseDto {
     address: string | null;
     bio: string | null;
     avatarUrl: string | null;
+    emailVerified?: boolean;
+    emailVerifiedAt?: Date | null;
     createdAt: Date;
   }): UserResponseDto {
     const dto = new UserResponseDto();
@@ -26,6 +30,8 @@ export class UserResponseDto {
     dto.address = user.address;
     dto.bio = user.bio;
     dto.avatarUrl = user.avatarUrl;
+    dto.emailVerified = user.emailVerified ?? false;
+    dto.emailVerifiedAt = user.emailVerifiedAt ?? null;
     dto.createdAt = user.createdAt;
     return dto;
   }

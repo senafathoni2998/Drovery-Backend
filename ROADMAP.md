@@ -18,7 +18,7 @@ impact-to-effort. ✅ = already added in the latest round of work.
 
 ## P0 — Close the "real product" gaps (high impact, the app feels broken without these)
 
-1. ~~**Password reset.**~~ ✅ **Done** — see "Just shipped". (Still open: **email verification** on signup, which reuses the same token pattern.)
+1. ~~**Password reset & email verification.**~~ ✅ **Done.** Email verification: signup sends a hashed, single-use, 24h verification token (`MailService`); `POST /auth/verify-email` + `/auth/resend-verification`; `emailVerified` on the user; mobile has a Verify Email screen (deep-link auto-verify) + a home banner with resend.
 2. ~~**Real payments (Stripe).**~~ ✅ **Done (backend)** — see "Just shipped". PaymentIntent on create + signature-verified webhook + `Payment` lifecycle, real-or-mock. **Still open:** native on-device card entry (`@stripe/stripe-react-native`), saved cards as real Stripe PaymentMethods, and receipts; fix the FAQ's Stripe-encryption claim.
 3. ~~**Distance-based pricing.**~~ ✅ **Done** — see "Just shipped". (Next: zone/surge multipliers + a per-km rate that varies by region.)
 4. ~~**Proof of delivery.**~~ ✅ **Done** — see "Just shipped". (Next: real on-device photo capture/upload from the operator/unload workflow, and a configured storage provider.)
