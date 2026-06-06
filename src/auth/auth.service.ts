@@ -17,6 +17,7 @@ import { LoginDto, SignupDto } from './dto';
 const BCRYPT_SALT_ROUNDS = 12;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (matches JWT)
 
 @Injectable()
 export class AuthService {
@@ -99,18 +100,48 @@ export class AuthService {
     };
   }
 
-  async refreshTokens(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+  /**
+   * Rotates refresh tokens: validates the presented token against the store
+   * (must exist, be owned by the user, and not be revoked/expired), revokes it,
+   * and issues a fresh pair. A stolen-but-already-rotated token is rejected.
+   */
+  async refreshTokens(userId: string, refreshToken: string) {
+    const record = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hashToken(refreshToken) },
     });
 
+    if (
+      !record ||
+      record.revokedAt ||
+      record.userId !== userId ||
+      record.expiresAt.getTime() < Date.now()
+    ) {
+      throw new UnauthorizedException(
+        'Refresh token is invalid or has been revoked',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException('User no longer exists');
     }
 
-    const tokens = await this.generateTokens(user.id, user.email);
+    // Revoke the used token (rotation), then issue + persist a new pair.
+    await this.prisma.refreshToken.update({
+      where: { id: record.id },
+      data: { revokedAt: new Date() },
+    });
 
-    return tokens;
+    return this.generateTokens(user.id, user.email);
+  }
+
+  /** Revokes the presented refresh token (real, server-side logout). */
+  async logout(refreshToken: string): Promise<{ success: true }> {
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash: this.hashToken(refreshToken), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { success: true };
   }
 
   /**
@@ -235,7 +266,9 @@ export class AuthService {
     userId: string,
     email: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
-    const payload = { sub: userId, email };
+    // jti makes every token unique, so two tokens issued in the same second
+    // (e.g. login then an immediate refresh) don't collide on the stored hash.
+    const payload = { sub: userId, email, jti: crypto.randomUUID() };
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwt.signAsync(payload, {
@@ -247,6 +280,15 @@ export class AuthService {
         expiresIn: this.config.get<string>('jwt.refreshExpiresIn') as string,
       } as any),
     ]);
+
+    // Persist the refresh token (hashed) so it can be rotated/revoked.
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash: this.hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      },
+    });
 
     return { accessToken, refreshToken };
   }

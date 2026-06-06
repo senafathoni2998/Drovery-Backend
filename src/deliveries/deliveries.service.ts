@@ -211,7 +211,7 @@ export class DeliveriesService {
     return delivery;
   }
 
-  async findByTrackingId(trackingId: string) {
+  async findByTrackingId(userId: string, trackingId: string) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { trackingId },
       include: {
@@ -222,7 +222,8 @@ export class DeliveriesService {
       },
     });
 
-    if (!delivery) {
+    // Ownership-scoped: don't leak other users' deliveries by tracking id.
+    if (!delivery || delivery.userId !== userId) {
       throw new NotFoundException(
         `Delivery with tracking id "${trackingId}" not found`,
       );

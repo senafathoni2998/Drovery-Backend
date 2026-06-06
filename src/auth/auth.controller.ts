@@ -1,4 +1,5 @@
 import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -14,6 +15,8 @@ import {
 } from './dto';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 
+// Tighter limit on auth endpoints (brute-force / abuse protection): 10 / 60s per IP.
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -36,10 +39,17 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   refresh(
-    @Body() _dto: RefreshTokenDto,
+    @Body() dto: RefreshTokenDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.authService.refreshTokens(user.sub);
+    return this.authService.refreshTokens(user.sub, dto.refreshToken);
+  }
+
+  @Public()
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  logout(@Body() dto: RefreshTokenDto) {
+    return this.authService.logout(dto.refreshToken);
   }
 
   @Public()

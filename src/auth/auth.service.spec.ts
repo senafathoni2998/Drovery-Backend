@@ -154,51 +154,106 @@ describe('AuthService', () => {
   });
 
   describe('refreshTokens', () => {
-    it('should return new tokens for existing user', async () => {
+    const validRecord = {
+      id: 'rt-1',
+      userId: 'user-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+
+    it('rotates: validates the stored token, revokes it, and issues a new pair', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(validRecord);
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-1',
         email: 'john@test.com',
       });
 
-      const result = await service.refreshTokens('user-1');
+      const result = await service.refreshTokens('user-1', 'raw-refresh');
 
       expect(result.accessToken).toBe('mock-token');
       expect(result.refreshToken).toBe('mock-token');
+      // old token revoked (rotation), new token persisted
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith({
+        where: { id: 'rt-1' },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(prisma.refreshToken.create).toHaveBeenCalled();
     });
 
-    it('should throw UnauthorizedException if user no longer exists', async () => {
+    it('rejects an unknown / revoked / expired / mismatched token', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(null);
+      await expect(
+        service.refreshTokens('user-1', 'bad'),
+      ).rejects.toThrow(UnauthorizedException);
+
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        ...validRecord,
+        revokedAt: new Date(),
+      });
+      await expect(
+        service.refreshTokens('user-1', 'revoked'),
+      ).rejects.toThrow(UnauthorizedException);
+
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        ...validRecord,
+        userId: 'someone-else',
+      });
+      await expect(
+        service.refreshTokens('user-1', 'stolen'),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws if the user no longer exists', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(validRecord);
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(service.refreshTokens('deleted-user')).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        service.refreshTokens('user-1', 'raw-refresh'),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('logout', () => {
+    it('revokes the presented refresh token', async () => {
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.logout('raw-refresh');
+
+      expect(result).toEqual({ success: true });
+      const arg = prisma.refreshToken.updateMany.mock.calls[0][0];
+      expect(arg.where.revokedAt).toBeNull();
+      expect(arg.data.revokedAt).toEqual(expect.any(Date));
     });
   });
 
   describe('generateTokens', () => {
-    it('should call jwtService.signAsync with correct params', async () => {
+    it('signs access + refresh and persists the refresh token', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-1',
         email: 'john@test.com',
       });
 
-      await service.refreshTokens('user-1');
+      await service.refreshTokens('user-1', 'raw-refresh');
 
-      expect(jwtService.signAsync).toHaveBeenCalledTimes(2);
       expect(jwtService.signAsync).toHaveBeenCalledWith(
-        { sub: 'user-1', email: 'john@test.com' },
-        expect.objectContaining({
-          secret: 'test-secret',
-          expiresIn: '15m',
-        }),
+        expect.objectContaining({ sub: 'user-1', email: 'john@test.com' }),
+        expect.objectContaining({ secret: 'test-secret', expiresIn: '15m' }),
       );
       expect(jwtService.signAsync).toHaveBeenCalledWith(
-        { sub: 'user-1', email: 'john@test.com' },
+        expect.objectContaining({ sub: 'user-1', email: 'john@test.com' }),
         expect.objectContaining({
           secret: 'test-refresh-secret',
           expiresIn: '7d',
         }),
       );
+      // refresh token persisted (hashed) for later rotation/revocation
+      expect(prisma.refreshToken.create).toHaveBeenCalled();
     });
   });
 

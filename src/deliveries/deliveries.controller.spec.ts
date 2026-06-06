@@ -78,10 +78,13 @@ describe('DeliveriesController', () => {
   });
 
   describe('findByTrackingId', () => {
-    it('should delegate to deliveriesService.findByTrackingId', async () => {
-      const result = await controller.findByTrackingId('ABC123');
+    it('should delegate to deliveriesService.findByTrackingId with the user id', async () => {
+      const result = await controller.findByTrackingId(userId, 'ABC123');
 
-      expect(deliveriesService.findByTrackingId).toHaveBeenCalledWith('ABC123');
+      expect(deliveriesService.findByTrackingId).toHaveBeenCalledWith(
+        userId,
+        'ABC123',
+      );
       expect(result).toEqual(mockDelivery);
     });
   });

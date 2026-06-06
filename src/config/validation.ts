@@ -29,5 +29,17 @@ export function validate(config: Record<string, unknown>) {
     throw new Error(errors.toString());
   }
 
+  // In production, refuse to boot with a weak/default JWT secret.
+  if (config.NODE_ENV === 'production') {
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET'] as const) {
+      const value = String(config[key] ?? '');
+      if (value.length < 24 || /change|example|xxxx|placeholder/i.test(value)) {
+        throw new Error(
+          `${key} is weak or a placeholder — set a strong (>=24 char) secret in production`,
+        );
+      }
+    }
+  }
+
   return validated;
 }

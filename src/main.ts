@@ -19,12 +19,18 @@ async function bootstrap() {
   const prefix = config.get<string>('apiPrefix', 'api/v1');
   app.setGlobalPrefix(prefix);
 
-  // CORS
-  app.enableCors({
-    origin: '*',
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true,
-  });
+  // CORS — use an allowlist (with credentials) when configured; otherwise a
+  // wildcard WITHOUT credentials (browsers reject `*` + credentials).
+  const corsOrigins = config.get<string>('corsOrigins');
+  app.enableCors(
+    corsOrigins
+      ? {
+          origin: corsOrigins.split(',').map((o) => o.trim()),
+          methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+          credentials: true,
+        }
+      : { origin: '*', methods: 'GET,HEAD,PUT,PATCH,POST,DELETE' },
+  );
 
   // Global pipes
   app.useGlobalPipes(

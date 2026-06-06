@@ -282,10 +282,10 @@ describe('DeliveriesService', () => {
   });
 
   describe('findByTrackingId', () => {
-    it('should return delivery by tracking ID', async () => {
+    it('should return the delivery by tracking ID for its owner', async () => {
       prisma.delivery.findUnique.mockResolvedValue(mockDelivery);
 
-      const result = await service.findByTrackingId('AAAAAAAA');
+      const result = await service.findByTrackingId(userId, 'AAAAAAAA');
 
       expect(result).toEqual(mockDelivery);
     });
@@ -293,7 +293,18 @@ describe('DeliveriesService', () => {
     it('should throw NotFoundException if tracking ID not found', async () => {
       prisma.delivery.findUnique.mockResolvedValue(null);
 
-      await expect(service.findByTrackingId('INVALID')).rejects.toThrow(
+      await expect(service.findByTrackingId(userId, 'INVALID')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('should throw NotFoundException if it belongs to another user (no leak)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        userId: 'other-user',
+      });
+
+      await expect(service.findByTrackingId(userId, 'AAAAAAAA')).rejects.toThrow(
         NotFoundException,
       );
     });

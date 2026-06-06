@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import configuration from './config/configuration';
+import { validate } from './config/validation';
 import { CacheModule } from './cache/cache.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -18,11 +20,16 @@ import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
-    // Configuration — loads .env and config/configuration.ts
+    // Configuration — loads .env and config/configuration.ts (validates env;
+    // fails boot on weak JWT secrets in production).
     ConfigModule.forRoot({
       isGlobal: true,
       load: [configuration],
+      validate,
     }),
+
+    // Rate limiting — 100 req / 60s per IP by default (tighter on auth routes).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
 
     // Redis-backed job queue (durable delivery simulation / worker tier)
     BullModule.forRootAsync({
@@ -55,6 +62,11 @@ import { SupportModule } from './support/support.module';
     SupportModule,
   ],
   providers: [
+    // Rate-limit first (before auth) — global per-IP throttle.
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
     // Apply JWT auth guard globally — use @Public() to opt out
     {
       provide: APP_GUARD,

@@ -13,6 +13,7 @@ describe('AuthController', () => {
     resetPassword: jest.Mock;
     verifyEmail: jest.Mock;
     resendVerification: jest.Mock;
+    logout: jest.Mock;
   };
 
   const mockAuthResult = {
@@ -33,6 +34,7 @@ describe('AuthController', () => {
       resetPassword: jest.fn().mockResolvedValue({ success: true }),
       verifyEmail: jest.fn().mockResolvedValue({ success: true }),
       resendVerification: jest.fn().mockResolvedValue({ success: true }),
+      logout: jest.fn().mockResolvedValue({ success: true }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -66,14 +68,26 @@ describe('AuthController', () => {
   });
 
   describe('refresh', () => {
-    it('should delegate to authService.refreshTokens', async () => {
+    it('should delegate the user id + refresh token to authService.refreshTokens', async () => {
       const result = await controller.refresh(
         { refreshToken: 'old-token' },
         { sub: 'user-1', email: 'john@test.com' },
       );
 
-      expect(authService.refreshTokens).toHaveBeenCalledWith('user-1');
+      expect(authService.refreshTokens).toHaveBeenCalledWith(
+        'user-1',
+        'old-token',
+      );
       expect(result.accessToken).toBe('new-access');
+    });
+  });
+
+  describe('logout', () => {
+    it('should delegate the refresh token to authService.logout', async () => {
+      const result = await controller.logout({ refreshToken: 'old-token' });
+
+      expect(authService.logout).toHaveBeenCalledWith('old-token');
+      expect(result).toEqual({ success: true });
     });
   });
 

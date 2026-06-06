@@ -96,12 +96,12 @@ Introduce Redis as a first-class cache, not just a queue:
 
 - The API is already close to stateless (JWT auth, no session store) — **once §1/§3 in-process state is gone, it autoscales cleanly**.
 - Containerize, run on **Kubernetes / ECS / Cloud Run** with HPA on CPU + p95 latency. Health/readiness probes. Rolling deploys.
-- **Validate config on boot**: `JWT_SECRET`/`JWT_REFRESH_SECRET` currently fall back to `change-me`. Wire `ConfigModule.forRoot({ validate })` to **refuse to boot** in prod without strong secrets.
+- ✅ **Config validated on boot** — `validate` refuses to boot in production with weak/placeholder JWT secrets.
 
 ## 7. Auth at scale
 
-- Access tokens are stateless JWT (good — no per-request DB hit). Keep access tokens short (15m, already set).
-- **Refresh-token store + rotation + revocation** (currently none, and logout is local-only): store hashed refresh tokens in Postgres/Redis so you can invalidate on logout/theft. Needed for security *and* so a compromised token isn't valid for 7 days.
+- Access tokens are stateless JWT (good — no per-request DB hit). Access tokens short (15m), with a unique `jti`.
+- ✅ **Refresh-token store + rotation + revocation** done (`RefreshToken` table; hashed; rotated on every refresh; `POST /auth/logout` revokes). A stolen-but-rotated/expired token is rejected. *(Next: prune expired/revoked rows on a schedule; optionally move the store to Redis.)*
 - Consider moving auth to a managed IdP (Cognito/Auth0/Clerk) if you don't want to own this.
 
 ## 8. Push notifications at scale
@@ -136,7 +136,7 @@ Introduce Redis as a first-class cache, not just a queue:
 
 | Phase | Users | Must-do |
 |------|-------|---------|
-| **0 — now** | <1k | Single API + Postgres + polling. Already works. Add config validation + rate limiting + Sentry. |
+| **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking. Remaining: Sentry/metrics. |
 | **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`). Remaining: **PgBouncer**, cache tracking-snapshots/stats, commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
 | **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, structured logging + metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |

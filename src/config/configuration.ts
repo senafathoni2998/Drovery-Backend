@@ -2,6 +2,10 @@ export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   apiPrefix: process.env.API_PREFIX ?? 'api/v1',
 
+  // Comma-separated allowlist for browser CORS (e.g. https://app.drovery.com).
+  // Unset → wildcard (fine for the native app; lock down before a web client).
+  corsOrigins: process.env.CORS_ORIGINS,
+
   database: {
     url: process.env.DATABASE_URL,
   },

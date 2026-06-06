@@ -160,11 +160,11 @@ curl -s -X POST http://localhost:3000/api/v1/auth/login \
 
 **Fixed (this round):** live drone tracking (polling + animated marker), status-change notifications (local + remote Expo push + device registration), **geocode-on-create**, **Cancel delivery** UI, **persisted support tickets**, **HMAC-signed QR** with expiry, **distance-based pricing**, **password reset**, **real Stripe payments** (PaymentIntent on create + signature-verified `POST /payments/webhook`, real when `STRIPE_SECRET_KEY` is set, deterministic mock otherwise; mobile shows payment status), and **proof of delivery** (auto-recorded on `DELIVERED` with photo + final GPS; `StorageService` is real-or-mock; mobile shows a proof card).
 
+**Also done since:** durable BullMQ/Redis simulation + standalone worker, Redis geocode cache, email verification, native Stripe PaymentSheet, real proof-photo capture, and a **security pass** — refresh-token rotation + revocation + real `POST /auth/logout`, rate limiting (`@nestjs/throttler`), owner-scoped `GET /deliveries/track`, prod weak-secret boot guard, and a CORS allowlist (`CORS_ORIGINS`).
+
 **Still open:**
-- **Stripe go-live** — set `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (backend) and `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` (mobile, dev build) to switch the now-built PaymentIntent + PaymentSheet flows from mock to real. Manual-metadata cards remain as the no-key fallback.
-- **`GET /deliveries/track`** is authed but not ownership-scoped (any logged-in user can look up any tracking ID).
-- **JWT secrets fall back to `change-me`**; logout is local-only (no refresh-token revocation).
-- **In-memory simulation** doesn't survive a restart and blocks horizontal scaling.
-- Dead mobile code (`features/auth/services/authService.ts`, `authApi.ts`); CORS `origin:'*'` + `credentials:true` breaks browser clients.
+- **Provider go-live** — set the keys to flip mocks to real: `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` + `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` (payments), `MAIL_PROVIDER` (email), `STORAGE_PROVIDER` (proof photos), `EXPO_ACCESS_TOKEN` (push).
+- Observability (logs/metrics/Sentry/alerts); PgBouncer/read replicas; realtime tier to replace polling. (See ARCHITECTURE.md.)
+- Dead mobile code (`features/auth/services/authService.ts`, `authApi.ts`).
 
 ➡️ **Feature priorities:** see **[ROADMAP.md](./ROADMAP.md)**. **Scaling to 100k+ users:** see **[ARCHITECTURE.md](./ARCHITECTURE.md)** (the in-memory simulation is the #1 blocker).

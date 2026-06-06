@@ -44,8 +44,11 @@ export class DeliveriesController {
   }
 
   @Get('track')
-  findByTrackingId(@Query('trackingId') trackingId: string) {
-    return this.deliveriesService.findByTrackingId(trackingId);
+  findByTrackingId(
+    @CurrentUser('sub') userId: string,
+    @Query('trackingId') trackingId: string,
+  ) {
+    return this.deliveriesService.findByTrackingId(userId, trackingId);
   }
 
   @Get(':id')
