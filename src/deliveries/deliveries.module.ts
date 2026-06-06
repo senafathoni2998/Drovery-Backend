@@ -16,6 +16,11 @@ import { SimulationService } from './simulation/simulation.service';
 import { TrackingGateway } from './tracking/tracking.gateway';
 import { TrackingService } from './tracking/tracking.service';
 
+// The queue consumer runs everywhere except API-only instances (PROCESS_ROLE=api),
+// which only enqueue jobs. Default ('all') keeps the single-process dev setup working;
+// the standalone `worker` entrypoint also includes it.
+const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+
 @Module({
   imports: [
     NotificationsModule,
@@ -30,7 +35,7 @@ import { TrackingService } from './tracking/tracking.service';
     DeliveriesService,
     ProofService,
     SimulationService,
-    SimulationProcessor,
+    ...(RUN_PROCESSOR ? [SimulationProcessor] : []),
     TrackingService,
     TrackingGateway,
   ],

@@ -312,7 +312,9 @@ All routes are prefixed with `/api/v1`. Routes marked **Public** do not require 
 |--------|-------------|
 | `npm run start` | Start the server |
 | `npm run start:dev` | Start with hot reload (development) |
-| `npm run start:prod` | Start compiled production build |
+| `npm run start:prod` | Start compiled production build (API) |
+| `npm run worker` | Start the BullMQ queue worker (dev, watch) |
+| `npm run worker:prod` | Start the compiled queue worker (no HTTP) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run lint` | Lint and auto-fix source files |
 | `npm run format` | Format files with Prettier |
@@ -336,7 +338,8 @@ NestJS is written in TypeScript. Node.js cannot run TypeScript directly, so the 
 | Mode | How it runs TypeScript | Use for |
 |------|----------------------|---------|
 | `start:dev` | Compiled in-memory on every file change | Local development only |
-| `start:prod` | Runs pre-compiled `dist/main.js` | Production |
+| `start:prod` | Runs pre-compiled `dist/src/main.js` | Production (API) |
+| `worker` / `worker:prod` | Runs the BullMQ queue consumer (no HTTP) | Production (worker tier) |
 
 ---
 
@@ -405,7 +408,16 @@ This compiles all TypeScript from `src/` into JavaScript in `dist/`. You only ne
 npm run start:prod
 ```
 
-This runs `node dist/main` directly — no TypeScript compiler involved, minimal memory usage, fast startup.
+This runs `node dist/src/main` directly — no TypeScript compiler involved, minimal memory usage, fast startup.
+
+> **Worker tier.** The delivery simulation runs on a Redis/BullMQ queue. By default the API process also consumes jobs (single-process). To scale, run dedicated workers and tell the API not to consume:
+> ```bash
+> # API instances (enqueue only)
+> PROCESS_ROLE=api npm run start:prod
+> # one or more worker instances (consume jobs; no HTTP)
+> npm run worker:prod
+> ```
+> `SIM_WORKER_CONCURRENCY` (default 10) tunes per-worker parallelism. **Redis must be running** for either to boot.
 
 ---
 
@@ -434,7 +446,9 @@ npm install -g pm2
 **Start the app with PM2:**
 
 ```bash
-pm2 start dist/main.js --name drovery-api
+pm2 start dist/src/main.js --name drovery-api
+# and a worker process (queue consumer):
+pm2 start dist/src/worker.js --name drovery-worker
 ```
 
 **Useful PM2 commands:**
@@ -476,7 +490,7 @@ COPY prisma ./prisma
 ENV NODE_ENV=production
 
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
 ```
 
 Build and run the image:

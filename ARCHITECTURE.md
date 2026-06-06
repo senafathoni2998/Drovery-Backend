@@ -44,7 +44,9 @@ in-flight delivery.
 
 > **Verified**: created a delivery (17 delayed jobs), killed the API mid-flight (jobs remained in Redis), started a fresh instance — the delivery still reached `DELIVERED` with proof recorded.
 
-**Remaining for true multi-tier scale:** run the processor as a **standalone worker deployment** (`@Processor` already isolates it — split into its own `main.worker.ts` / `npm run worker` so API and workers scale independently). When real drones replace the simulation, the same worker ingests telemetry from a drone-gateway/MQTT broker — the API and mobile contracts don't change.
+**Standalone worker (done):** `src/worker.ts` boots the module graph as a Nest application context (no HTTP) and runs the processor — `npm run worker` / `worker:prod`. API instances opt out of consuming with `PROCESS_ROLE=api`, so API and workers scale independently. Worker concurrency is `SIM_WORKER_CONCURRENCY` (default 10); jobs retry with backoff (`attempts: 5`), transitions are an atomic monotonic compare-and-set (no resurrect/regress), and both API and worker `enableShutdownHooks()` to drain on SIGTERM.
+
+**Remaining for true multi-tier scale:** split the producer vs worker Redis connections (finite `maxRetriesPerRequest` + `enableOfflineQueue:false` on the producer so enqueues fail fast), add queue metrics/alerting, and — when real drones replace the simulation — have the same worker ingest telemetry from a drone-gateway/MQTT broker (the API and mobile contracts don't change).
 
 > ⚠️ **Redis is now required** to run the backend (the queue connects on boot). `redis-server` on `:6379` (or `REDIS_HOST/PORT`).
 
@@ -131,11 +133,13 @@ Introduce Redis as a first-class cache, not just a queue:
 | Phase | Users | Must-do |
 |------|-------|---------|
 | **0 — now** | <1k | Single API + Postgres + polling. Already works. Add config validation + rate limiting + Sentry. |
-| **1** | ~10k | ✅ **BullMQ worker tier** (simulation now on Redis jobs — done). Remaining: **PgBouncer**, **Redis cache** (geocode + tracking snapshot), commercial geocoder, refresh-token revocation, split the processor into a standalone worker deployment. |
+| **1** | ~10k | ✅ **BullMQ worker tier** (simulation on Redis jobs + **standalone `worker` process** + `PROCESS_ROLE` split — done). Remaining: **PgBouncer**, **Redis cache** (geocode + tracking snapshot), commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
 | **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, structured logging + metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
 
-**Phase 1's worker tier is now in place** — the delivery lifecycle lives in Redis/BullMQ
-instead of one process's `setTimeout`s, so the API can run multiple instances and survive
-restarts. The next lever is splitting the in-process `SimulationProcessor` into its own
-worker deployment so API and workers scale independently.
+**Phase 1's worker tier is in place** — the delivery lifecycle lives in Redis/BullMQ
+instead of one process's `setTimeout`s, with a **standalone worker process** (`npm run worker`)
+that scales independently of the API (`PROCESS_ROLE=api`). Verified: a delivery survives a
+backend restart mid-flight, and an API-only instance enqueues without processing while a
+worker drains the queue. The next levers are the **Redis cache** (geocoding is the next hard
+ceiling) and **PgBouncer + read replicas**.

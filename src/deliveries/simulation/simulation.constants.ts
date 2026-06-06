@@ -2,6 +2,29 @@ import { DeliveryStatus } from '@prisma/client';
 
 export const SIM_QUEUE = 'delivery-simulation';
 
+// Worker concurrency (jobs processed in parallel). Tune against the DB pool.
+export const SIM_WORKER_CONCURRENCY = parseInt(
+  process.env.SIM_WORKER_CONCURRENCY ?? '10',
+  10,
+);
+
+// Lifecycle order (incl. PENDING) — used for monotonic, forward-only status
+// transitions so a late/retried/stalled job can't regress or resurrect a delivery.
+export const STATUS_ORDER: DeliveryStatus[] = [
+  DeliveryStatus.PENDING,
+  DeliveryStatus.CONFIRMED,
+  DeliveryStatus.DRONE_ASSIGNED,
+  DeliveryStatus.PICKUP_IN_PROGRESS,
+  DeliveryStatus.IN_TRANSIT,
+  DeliveryStatus.DELIVERED,
+];
+
+/** Statuses strictly before `target` — the only states from which it may advance. */
+export function statusesBefore(target: DeliveryStatus): DeliveryStatus[] {
+  const i = STATUS_ORDER.indexOf(target);
+  return i <= 0 ? [] : STATUS_ORDER.slice(0, i);
+}
+
 export interface DeliveryCoords {
   fromLat: number;
   fromLng: number;

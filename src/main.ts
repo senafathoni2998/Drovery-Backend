@@ -1,3 +1,7 @@
+// Load .env into process.env before the module graph is imported, so flags read
+// at import time (e.g. PROCESS_ROLE in deliveries.module) honor .env.
+import 'dotenv/config';
+
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -35,6 +39,10 @@ async function bootstrap() {
   // Global filters & interceptors
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new TransformInterceptor());
+
+  // Drain in-process BullMQ workers + close the pg pool on SIGTERM/SIGINT so a
+  // rolling deploy finishes active jobs instead of orphaning them.
+  app.enableShutdownHooks();
 
   const port = config.get<number>('port', 3000);
   await app.listen(port);

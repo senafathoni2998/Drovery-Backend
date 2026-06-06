@@ -16,6 +16,8 @@ describe('SimulationProcessor', () => {
 
   beforeEach(() => {
     prisma = createMockPrismaService();
+    // Default: the atomic transition applies (1 row updated).
+    prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
     gateway = { broadcastTrackingUpdate: jest.fn() };
     notifications = { create: jest.fn().mockResolvedValue({}) };
@@ -38,7 +40,7 @@ describe('SimulationProcessor', () => {
       data: { deliveryId: 'd-1', userId: 'u-1', coords, stageIndex },
     }) as any;
 
-  it('advances status, tracks, notifies and broadcasts on a stage job', async () => {
+  it('advances status (atomic monotonic CAS), tracks, notifies and broadcasts', async () => {
     prisma.delivery.findUnique.mockResolvedValue({
       id: 'd-1',
       status: 'PENDING',
@@ -47,23 +49,33 @@ describe('SimulationProcessor', () => {
 
     await processor.process(stageJob(0));
 
-    expect(prisma.delivery.update).toHaveBeenCalledWith({
-      where: { id: 'd-1' },
-      data: { status: STAGES[0].status },
-    });
+    // Forward-only compare-and-set: only advance from a strictly earlier status.
+    const call = prisma.delivery.updateMany.mock.calls[0][0];
+    expect(call.where.id).toBe('d-1');
+    expect(call.where.status.in).toContain('PENDING');
+    expect(call.where.status.in).not.toContain(STAGES[0].status);
+    expect(call.data).toEqual({ status: STAGES[0].status });
     expect(tracking.updateTracking).toHaveBeenCalled();
     expect(notifications.create).toHaveBeenCalled();
     expect(gateway.broadcastTrackingUpdate).toHaveBeenCalled();
   });
 
-  it('skips a canceled (or deleted) delivery', async () => {
+  it('skips side effects when the CAS matches nothing (canceled / already advanced)', async () => {
     prisma.delivery.findUnique.mockResolvedValue({ id: 'd-1', status: 'CANCELED' });
-    await processor.process(stageJob(0));
-    expect(prisma.delivery.update).not.toHaveBeenCalled();
+    prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
 
-    prisma.delivery.findUnique.mockResolvedValue(null);
     await processor.process(stageJob(1));
-    expect(prisma.delivery.update).not.toHaveBeenCalled();
+
+    expect(notifications.create).not.toHaveBeenCalled();
+    expect(gateway.broadcastTrackingUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a deleted delivery (no CAS attempted)', async () => {
+    prisma.delivery.findUnique.mockResolvedValue(null);
+
+    await processor.process(stageJob(1));
+
+    expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
   });
 
   it('records proof of delivery on the DELIVERED stage', async () => {

@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { DeliveryStatus } from '@prisma/client';
 import { Job } from 'bullmq';
 
@@ -12,10 +12,12 @@ import {
   POSITION_JOB,
   PositionJobData,
   SIM_QUEUE,
+  SIM_WORKER_CONCURRENCY,
   STAGES,
   STAGE_JOB,
   StageJobData,
   dronePositionForStage,
+  statusesBefore,
 } from './simulation.constants';
 
 /**
@@ -23,7 +25,7 @@ import {
  * state lives in Redis + Postgres, it can be split into a standalone worker
  * deployment unchanged (see ARCHITECTURE.md §1).
  */
-@Processor(SIM_QUEUE)
+@Processor(SIM_QUEUE, { concurrency: SIM_WORKER_CONCURRENCY })
 export class SimulationProcessor extends WorkerHost {
   private readonly logger = new Logger(SimulationProcessor.name);
 
@@ -54,33 +56,44 @@ export class SimulationProcessor extends WorkerHost {
     const stage = STAGES[stageIndex];
     if (!stage) return;
 
-    // Guard: skip if the delivery was canceled or deleted.
     const delivery = await this.prisma.delivery.findUnique({
       where: { id: deliveryId },
     });
-    if (!delivery || delivery.status === DeliveryStatus.CANCELED) return;
+    if (!delivery) return;
 
-    await this.prisma.delivery.update({
-      where: { id: deliveryId },
+    // Atomic, monotonic, forward-only transition: only advance from a strictly
+    // earlier status. This is a compare-and-set at the DB, so it (a) skips a
+    // delivery canceled/delivered/already-advanced concurrently — closing the
+    // cancel/resurrection race — and (b) makes a re-run (retry / stalled job
+    // re-delivery) a no-op instead of a duplicate transition or regression.
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: statusesBefore(stage.status) } },
       data: { status: stage.status },
     });
+    if (count === 0) return;
 
     const dronePos = dronePositionForStage(stage.status, coords);
 
-    await this.trackingService.updateTracking(deliveryId, {
-      droneLat: dronePos?.lat,
-      droneLng: dronePos?.lng,
-      droneStatus: stage.droneStatus,
-      eta:
-        stage.status === DeliveryStatus.DELIVERED
-          ? undefined
-          : new Date(Date.now() + 60_000),
-    });
+    // Side effects are best-effort: a transient failure must not fail the
+    // already-applied transition (which would skip on retry via the CAS above).
+    await this.safe(() =>
+      this.trackingService.updateTracking(deliveryId, {
+        droneLat: dronePos?.lat,
+        droneLng: dronePos?.lng,
+        droneStatus: stage.droneStatus,
+        eta:
+          stage.status === DeliveryStatus.DELIVERED
+            ? undefined
+            : new Date(Date.now() + 60_000),
+      }),
+    );
 
-    await this.notificationsService.create(userId, stage.title, stage.body, {
-      deliveryId,
-      status: stage.status,
-    });
+    await this.safe(() =>
+      this.notificationsService.create(userId, stage.title, stage.body, {
+        deliveryId,
+        status: stage.status,
+      }),
+    );
 
     this.trackingGateway.broadcastTrackingUpdate(deliveryId, {
       deliveryId,
@@ -93,18 +106,29 @@ export class SimulationProcessor extends WorkerHost {
     this.logger.log(`Delivery ${deliveryId} → ${stage.status}`);
 
     if (stage.status === DeliveryStatus.DELIVERED) {
-      try {
-        await this.proofService.createAutoProof(deliveryId, {
+      await this.safe(() =>
+        this.proofService.createAutoProof(deliveryId, {
           lat: coords.toLat,
           lng: coords.toLng,
           recipientName: delivery.receiver,
-        });
-      } catch (error) {
-        this.logger.warn(
-          `Proof creation failed [${deliveryId}]: ${(error as Error).message}`,
-        );
-      }
+        }),
+      );
     }
+  }
+
+  private async safe(fn: () => Promise<unknown>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      this.logger.warn(`Stage side-effect failed: ${(error as Error).message}`);
+    }
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job, err: Error): void {
+    this.logger.error(
+      `Job ${job?.id} (${job?.name}) failed after ${job?.attemptsMade} attempt(s): ${err?.message}`,
+    );
   }
 
   private async handlePosition({
