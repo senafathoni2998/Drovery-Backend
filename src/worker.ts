@@ -1,4 +1,6 @@
 import 'dotenv/config';
+// Initialize Sentry before any app modules load (no-op without SENTRY_DSN).
+import './common/monitoring/sentry';
 
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';

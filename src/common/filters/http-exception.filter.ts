@@ -7,6 +7,8 @@ import {
   Logger,
 } from '@nestjs/common';
 
+import { captureException } from '../monitoring/sentry';
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
@@ -35,6 +37,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (status >= 500) {
       this.logger.error(`${request.method} ${request.url}`, exception);
+      // Report unexpected server errors to Sentry (no-op when disabled).
+      captureException(exception, {
+        method: request.method,
+        path: request.url,
+      });
     }
 
     response.status(status).json(body);

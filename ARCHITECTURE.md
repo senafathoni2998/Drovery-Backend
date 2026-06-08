@@ -122,7 +122,8 @@ Introduce Redis as a first-class cache, not just a queue:
 
 - ✅ **Structured logging** (pino via `nestjs-pino`) with per-request correlation ids (`X-Request-Id`, propagated/echoed), auth header redaction, pretty in dev / JSON in prod. Ship the JSON to a log store.
 - ✅ **Health probes**: `GET /health` (liveness) + `GET /health/ready` (DB + Redis, 503 when down) — public, un-throttled, k8s-ready.
-- **Remaining**: **Metrics** (Prometheus/OpenTelemetry — p50/95/99 latency, error rate, queue depth/lag, DB pool, push success); **tracing** API → worker → DB; **error tracking** (Sentry); dashboards + alerts on SLOs.
+- ✅ **Error tracking** (Sentry, `@sentry/node`) — unhandled 5xx reported from the global exception filter; DSN-gated (no-op without `SENTRY_DSN`); wired into both the API and worker entrypoints.
+- **Remaining**: **Metrics** (Prometheus/OpenTelemetry — p50/95/99 latency, error rate, queue depth/lag, DB pool, push success); **tracing** API → worker → DB; dashboards + alerts on SLOs.
 
 ## 11. Delivery/CI & cost
 
@@ -136,7 +137,7 @@ Introduce Redis as a first-class cache, not just a queue:
 
 | Phase | Users | Must-do |
 |------|-------|---------|
-| **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking, ✅ structured logging (pino + request ids), ✅ health/readiness probes. Remaining: Sentry + Prometheus metrics. |
+| **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking, ✅ structured logging (pino + request ids), ✅ health/readiness probes, ✅ Sentry error tracking. Remaining: Prometheus metrics. |
 | **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`); ✅ **PgBouncer** pooling tier (docker-compose); ✅ producer/worker/cache/throttler Redis connections split (shared options, per-role flags) + cloud-ready (auth/TLS). Remaining: cache tracking-snapshots/stats, commercial geocoder. |
 | **2** | ~50k | Multiple API instances + autoscaling (✅ **containerized**, multi-instance-safe: ✅ **Redis-backed throttler storage**, ✅ bounded pg pool + PgBouncer), **read replicas**, batched Expo push in worker, ✅ structured logging — add metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
@@ -150,8 +151,23 @@ counter stored in Redis), the pg pool is **bounded per instance** and fronted by
 Redis clients are **role-split + cloud-ready** (auth/TLS). `docker-compose.yml` runs the
 full topology locally — `docker compose up --build --scale worker=3 --scale api=2`.
 
-**Next:** Kubernetes manifests + HPA (api scales on CPU, worker on queue depth via KEDA),
-then metrics (Prometheus) + a k6 load test to put a real number behind "100k".
+### Planned next — the autoscaling milestone
+
+Concrete, ordered work to turn "designed for 100k" into demonstrable autoscaling
+(target: Kubernetes + HPA, provable on `kind`/`minikube` at $0 — no live mega-cluster):
+
+1. **Kubernetes manifests + HPA.** Deployments for `api` and `worker` (same image,
+   different command/`PROCESS_ROLE`), a Service + Ingress for the API, ConfigMap/Secrets,
+   and a migration `Job` (init). **HPA**: scale `api` on CPU/RPS; scale `worker` on
+   **BullMQ queue depth** via KEDA. This is the literal "scales automatically" artifact.
+2. **Prometheus `/metrics` + Grafana.** Default Node + HTTP histograms (p50/p95/p99,
+   error rate) plus custom gauges (queue depth/lag, DB pool saturation, push success).
+   Doubles as the **custom-metric source the worker HPA scales on**.
+3. **k6 load test.** Hit the create→track→deliver path; record throughput/latency and
+   show 2 API replicas ≈ 2× throughput with the shared rate-limit holding — turns
+   "100k-ready" from a design claim into a measured number.
+
+(✅ Sentry error tracking — done; see §10.)
 
 **Phase 1's worker tier** — the delivery lifecycle lives in Redis/BullMQ instead of one
 process's `setTimeout`s, with a **standalone worker** (`npm run worker`) that scales

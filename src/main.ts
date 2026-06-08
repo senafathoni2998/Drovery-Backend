@@ -1,6 +1,8 @@
 // Load .env into process.env before the module graph is imported, so flags read
 // at import time (e.g. PROCESS_ROLE in deliveries.module) honor .env.
 import 'dotenv/config';
+// Initialize Sentry before any app modules load (no-op without SENTRY_DSN).
+import { sentryEnabled } from './common/monitoring/sentry';
 
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -61,6 +63,9 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`Drovery API running on http://localhost:${port}/${prefix}`);
+  console.log(
+    `Sentry error tracking: ${sentryEnabled ? 'enabled' : 'disabled (no SENTRY_DSN)'}`,
+  );
 }
 
 bootstrap();

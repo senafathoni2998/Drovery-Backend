@@ -46,6 +46,13 @@ export default () => ({
     accessToken: process.env.EXPO_ACCESS_TOKEN,
   },
 
+  // Error tracking — unset SENTRY_DSN → reporting is a no-op (dev/local).
+  sentry: {
+    dsn: process.env.SENTRY_DSN,
+    release: process.env.SENTRY_RELEASE,
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0'),
+  },
+
   mail: {
     // When unset, MailService logs emails instead of sending (dev mode).
     provider: process.env.MAIL_PROVIDER,
