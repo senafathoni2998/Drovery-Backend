@@ -1,0 +1,124 @@
+# Full local stack mirroring the production topology:
+#
+#   client → api (scalable) ─┐
+#                            ├─ pgbouncer → postgres   (pooled DB tier)
+#   queue  → worker (scalable)┘
+#            api + worker  → redis            (queue + cache + rate-limit)
+#
+# Usage:
+#   docker compose up --build              # one api + one worker
+#   docker compose up --build --scale worker=3 --scale api=2
+#
+# The api/worker run in NODE_ENV=production to exercise the real prod path
+# (structured JSON logs, weak-secret boot guard). The JWT secrets below are
+# strong-enough-to-boot LOCAL values — never use them anywhere real.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: drovery
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d drovery']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Connection-pooling tier. Multiplexes many app clients onto a small Postgres
+  # server-side pool — this is what lets the API/worker tiers autoscale without
+  # exhausting Postgres `max_connections`.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: postgres
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: drovery
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+      LISTEN_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 5432 -U postgres']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: apply migrations + seed, then exit. Runs DIRECTLY against Postgres
+  # (DDL + migration advisory locks bypass the transaction pooler by design).
+  migrate:
+    build: .
+    command: ['sh', '-c', 'npx prisma migrate deploy && npx prisma db seed']
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/drovery?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build: .
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PROCESS_ROLE: api # enqueue-only — does NOT process jobs
+      # App traffic flows through PgBouncer, not Postgres directly.
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/drovery?schema=public
+      DATABASE_POOL_MAX: 10
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: drovery_local_access_secret_a1b2c3d4e5f6
+      JWT_REFRESH_SECRET: drovery_local_refresh_secret_f6e5d4c3b2a1
+    depends_on:
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - '3000:3000'
+
+  worker:
+    build: .
+    command: ['node', 'dist/src/worker']
+    environment:
+      NODE_ENV: production
+      PROCESS_ROLE: worker # processes the BullMQ queue
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/drovery?schema=public
+      DATABASE_POOL_MAX: 5
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SIM_WORKER_CONCURRENCY: 10
+      JWT_SECRET: drovery_local_access_secret_a1b2c3d4e5f6
+      JWT_REFRESH_SECRET: drovery_local_refresh_secret_f6e5d4c3b2a1
+    depends_on:
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  redisdata:

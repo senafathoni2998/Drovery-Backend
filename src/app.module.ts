@@ -1,12 +1,15 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
+import { buildRedisOptions } from './config/redis';
 import { CacheModule } from './cache/cache.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -32,7 +35,26 @@ import { SupportModule } from './support/support.module';
     }),
 
     // Rate limiting — 100 req / 60s per IP by default (tighter on auth routes).
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    // Redis-backed storage so the limit is shared across ALL API instances; an
+    // in-memory store would multiply the effective limit by the replica count.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const logger = new Logger('ThrottlerRedis');
+        const client = new Redis({
+          ...buildRedisOptions(config),
+          // Throttle checks must fail fast rather than hang on a Redis blip.
+          maxRetriesPerRequest: 2,
+        });
+        client.on('error', (err) =>
+          logger.warn(`throttler redis error: ${err.message}`),
+        );
+        return {
+          throttlers: [{ ttl: 60_000, limit: 100 }],
+          storage: new ThrottlerStorageRedisService(client),
+        };
+      },
+    }),
 
     // Structured (pino) logging with per-request correlation ids.
     LoggerModule.forRoot({
@@ -54,14 +76,15 @@ import { SupportModule } from './support/support.module';
       },
     }),
 
-    // Redis-backed job queue (durable delivery simulation / worker tier)
+    // Redis-backed job queue (durable delivery simulation / worker tier).
+    // BullMQ creates its own connection from these options (separate from the
+    // cache + throttler clients). maxRetriesPerRequest: null is required so
+    // queue commands don't error during reconnects.
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         connection: {
-          host: config.get<string>('redis.host', 'localhost'),
-          port: config.get<number>('redis.port', 6379),
-          // Required by BullMQ workers so commands don't error during reconnects.
+          ...buildRedisOptions(config),
           maxRetriesPerRequest: null,
         },
       }),

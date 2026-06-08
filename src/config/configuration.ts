@@ -8,6 +8,11 @@ export default () => ({
 
   database: {
     url: process.env.DATABASE_URL,
+    // Max connections PER instance in the pg pool. With N API/worker instances,
+    // keep N × poolMax under Postgres `max_connections` — or front Postgres with
+    // PgBouncer (see docker-compose) so it multiplexes thousands of clients onto
+    // a small server-side pool. This is the classic autoscaling failure mode.
+    poolMax: parseInt(process.env.DATABASE_POOL_MAX ?? '10', 10),
   },
 
   jwt: {
@@ -20,6 +25,10 @@ export default () => ({
   redis: {
     host: process.env.REDIS_HOST ?? 'localhost',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    // Managed Redis (ElastiCache/Upstash/etc.) typically needs auth + TLS.
+    password: process.env.REDIS_PASSWORD || undefined,
+    db: parseInt(process.env.REDIS_DB ?? '0', 10),
+    tls: process.env.REDIS_TLS === 'true',
   },
 
   stripe: {

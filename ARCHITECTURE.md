@@ -137,13 +137,24 @@ Introduce Redis as a first-class cache, not just a queue:
 | Phase | Users | Must-do |
 |------|-------|---------|
 | **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking, ✅ structured logging (pino + request ids), ✅ health/readiness probes. Remaining: Sentry + Prometheus metrics. |
-| **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`). Remaining: **PgBouncer**, cache tracking-snapshots/stats, commercial geocoder, refresh-token revocation, producer/worker Redis connection split. |
-| **2** | ~50k | Multiple API instances + autoscaling, **read replicas**, batched Expo push in worker, ✅ structured logging — add metrics/alerts + Redis-backed throttler storage. |
+| **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`); ✅ **PgBouncer** pooling tier (docker-compose); ✅ producer/worker/cache/throttler Redis connections split (shared options, per-role flags) + cloud-ready (auth/TLS). Remaining: cache tracking-snapshots/stats, commercial geocoder. |
+| **2** | ~50k | Multiple API instances + autoscaling (✅ **containerized**, multi-instance-safe: ✅ **Redis-backed throttler storage**, ✅ bounded pg pool + PgBouncer), **read replicas**, batched Expo push in worker, ✅ structured logging — add metrics/alerts. |
 | **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, load-test each milestone, consider managed IdP. |
 
-**Phase 1's worker tier is in place** — the delivery lifecycle lives in Redis/BullMQ
-instead of one process's `setTimeout`s, with a **standalone worker process** (`npm run worker`)
-that scales independently of the API (`PROCESS_ROLE=api`). Verified: a delivery survives a
-backend restart mid-flight, and an API-only instance enqueues without processing while a
-worker drains the queue. The next levers are the **Redis cache** (geocoding is the next hard
-ceiling) and **PgBouncer + read replicas**.
+**The app is now horizontally scalable.** It's stateless and containerized
+(multi-stage `Dockerfile`, one image runs api/worker/migrate by command + `PROCESS_ROLE`),
+and the three things that break a multi-instance deploy are fixed: rate limiting is
+**Redis-backed** (one limit shared across replicas, verified: 11th auth request → 429,
+counter stored in Redis), the pg pool is **bounded per instance** and fronted by
+**PgBouncer** (transaction pooling) so replicas don't exhaust Postgres connections, and
+Redis clients are **role-split + cloud-ready** (auth/TLS). `docker-compose.yml` runs the
+full topology locally — `docker compose up --build --scale worker=3 --scale api=2`.
+
+**Next:** Kubernetes manifests + HPA (api scales on CPU, worker on queue depth via KEDA),
+then metrics (Prometheus) + a k6 load test to put a real number behind "100k".
+
+**Phase 1's worker tier** — the delivery lifecycle lives in Redis/BullMQ instead of one
+process's `setTimeout`s, with a **standalone worker** (`npm run worker`) that scales
+independently of the API (`PROCESS_ROLE=api`). Verified: a delivery survives a backend
+restart mid-flight, and an API-only instance enqueues without processing while a worker
+drains the queue.

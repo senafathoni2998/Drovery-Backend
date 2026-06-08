@@ -9,7 +9,11 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   constructor() {
-    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    // Bound the per-instance connection pool. With N replicas, N × max must stay
+    // under Postgres `max_connections` — or point DATABASE_URL at PgBouncer, which
+    // multiplexes many clients onto a small server-side pool (see docker-compose).
+    const max = parseInt(process.env.DATABASE_POOL_MAX ?? '10', 10);
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL, max });
     super({ adapter: new PrismaPg(pool as any) });
   }
 

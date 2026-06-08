@@ -464,41 +464,47 @@ pm2 save                  # save current process list for startup
 
 ---
 
-### Minimal Dockerfile (optional)
+### Docker (full stack)
 
-If you use Docker, here is a production-ready multi-stage Dockerfile:
+A production multi-stage `Dockerfile` and a `docker-compose.yml` for the whole
+topology ship with the repo. One image runs any role (api / worker / migrate) —
+the role is chosen by the command + `PROCESS_ROLE`.
 
-```dockerfile
-# ---- Build stage ----
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run prisma:generate
-RUN npm run build
+```bash
+# Build + run the full stack: postgres + pgbouncer + redis + migrate + api + worker
+docker compose up --build
 
-# ---- Production stage ----
-FROM node:20-alpine AS production
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY prisma ./prisma
-
-ENV NODE_ENV=production
-
-EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+# Scale the API and worker tiers independently (they're stateless)
+docker compose up --build --scale api=2 --scale worker=3
 ```
 
-Build and run the image:
+The compose stack demonstrates the production scaling topology:
+- **api** (`PROCESS_ROLE=api`) — enqueue-only, never processes jobs.
+- **worker** — drains the BullMQ queue; scales separately from the API.
+- **pgbouncer** — transaction-pooling tier in front of Postgres, so the API/worker
+  tiers can scale out without exhausting Postgres `max_connections`.
+- **redis** — queue + cache + the shared rate-limit counter (so the limit holds
+  across every API replica, not per-instance).
+- **migrate** — one-shot `prisma migrate deploy` + seed (runs directly against
+  Postgres, bypassing the pooler), then exits.
+
+> The api/worker boot in `NODE_ENV=production` to exercise the real prod path
+> (JSON logs + the weak-secret boot guard). The JWT secrets in `docker-compose.yml`
+> are strong-enough-to-boot **local** values — never reuse them anywhere real.
+
+Build just the image:
 
 ```bash
 docker build -t drovery-api .
 docker run -p 3000:3000 --env-file .env drovery-api
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every PR:
+**install → prisma generate → migrate deploy (against a live Postgres) → build
+→ unit tests**, plus a job that **builds the Docker image** to validate the
+Dockerfile. Lint runs as a non-blocking step pending the `no-unsafe-any` cleanup.
 
 ---
 

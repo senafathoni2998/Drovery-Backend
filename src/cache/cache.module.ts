@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
+import { buildRedisOptions } from '../config/redis';
 import { CacheService, REDIS_CLIENT } from './cache.service';
 
 const redisProvider = {
@@ -16,8 +17,7 @@ const redisProvider = {
   useFactory: (config: ConfigService): Redis => {
     const logger = new Logger('CacheRedis');
     const client = new Redis({
-      host: config.get<string>('redis.host', 'localhost'),
-      port: config.get<number>('redis.port', 6379),
+      ...buildRedisOptions(config),
       // Cache ops must fail fast (and open) rather than hang/retry forever.
       maxRetriesPerRequest: 2,
       enableOfflineQueue: false,
