@@ -7,3 +7,6 @@ dist/
 coverage/
 .turbo/
 .claude
+# Redis dump from local testing
+dump.rdb
+*.rdb
