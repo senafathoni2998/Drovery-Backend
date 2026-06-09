@@ -39,6 +39,13 @@ export function validate(config: Record<string, unknown>) {
         );
       }
     }
+
+    // The load-test throttle bypass must NEVER be live in production.
+    if (config.LOADTEST_BYPASS_THROTTLE === 'true') {
+      throw new Error(
+        'LOADTEST_BYPASS_THROTTLE must not be set in production — it disables rate limiting',
+      );
+    }
   }
 
   return validated;

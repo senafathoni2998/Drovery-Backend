@@ -2,8 +2,9 @@ import { Logger, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { LoadTestThrottlerGuard } from './common/guards/loadtest-throttle.guard';
 import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
@@ -111,10 +112,12 @@ import { SupportModule } from './support/support.module';
     MetricsModule,
   ],
   providers: [
-    // Rate-limit first (before auth) — global per-IP throttle.
+    // Rate-limit first (before auth) — global per-IP throttle. The LoadTest
+    // variant can bypass the limit for load testing (non-prod only); it behaves
+    // exactly like ThrottlerGuard unless LOADTEST_BYPASS_THROTTLE is set.
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: LoadTestThrottlerGuard,
     },
     // Apply JWT auth guard globally — use @Public() to opt out
     {
