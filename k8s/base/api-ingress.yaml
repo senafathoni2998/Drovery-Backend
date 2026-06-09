@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: drovery-api
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '60'
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.drovery.local # overlay patches to the real host
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: drovery-api
+                port: { name: http }
+  # prod overlay adds tls: [{ hosts: [...], secretName: ... }] (cert-manager)

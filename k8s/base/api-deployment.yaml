@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drovery-api
+  labels: { app: drovery, role: api }
+spec:
+  replicas: 2 # baseline; the HPA owns the replica count once running
+  selector:
+    matchLabels: { app: drovery, role: api }
+  template:
+    metadata:
+      labels: { app: drovery, role: api }
+      annotations:
+        # Prometheus scrapes the API at the prefixed path on the HTTP port.
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: /api/v1/metrics
+        prometheus.io/port: '3000'
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001 # matches the Dockerfile's "nodejs" user
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      # Must exceed preStop sleep + the app's drain time (BullMQ/pg shutdown hooks).
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: api
+          image: drovery-backend:latest # overlay sets the real tag
+          command: ['node', 'dist/src/main']
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            - { name: PROCESS_ROLE, value: api } # enqueue-only; never processes jobs
+          envFrom:
+            - configMapRef: { name: drovery-config }
+            - secretRef: { name: drovery-secrets }
+          # Give Prisma + Nest up to 60s to boot before liveness can kill the pod.
+          startupProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet: { path: /api/v1/health/ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Let the load balancer deregister this pod before it gets SIGTERM.
+          lifecycle:
+            preStop: { exec: { command: ['sh', '-c', 'sleep 5'] } }
+          resources:
+            # cpu REQUEST is mandatory — the HPA computes utilization as usage/request.
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ['ALL'] }

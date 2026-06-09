@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+images:
+  - name: drovery-backend
+    newTag: ci
+
+# Enable the throttle bypass so a single-IP k6 run measures real throughput
+# instead of the shared rate limiter. NODE_ENV must be non-production or the app
+# refuses to boot with the flag set (validation.ts guard).
+configMapGenerator:
+  - name: drovery-config
+    behavior: merge
+    literals:
+      - NODE_ENV=development
+      - LOADTEST_BYPASS_THROTTLE=true
+
+# Inherits the base secretGenerator (placeholder values). NODE_ENV=development
+# disables the weak-secret/bypass boot guards, so placeholders boot fine here;
+# supply real DATABASE_URL/REDIS_HOST when actually running the load test.
+
+patches:
+  # Fix replica counts for a clean 1-vs-2 comparison (scale api 1->2 between runs).
+  - target: { kind: Deployment, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/replicas, value: 2 }
+  - target: { kind: Deployment, name: drovery-worker }
+    patch: |-
+      - { op: replace, path: /spec/replicas, value: 3 }
+
+# NOTE: for a controlled throughput A/B, scale the api by hand (kubectl scale)
+# rather than letting the HPA move it; or run the load test against docker-compose
+# (`--scale api=2 --scale worker=3`) which is the $0 path documented in load/README.md.

@@ -1,0 +1,56 @@
+name: Manifests
+
+on:
+  pull_request:
+    paths: ['k8s/**', '.github/workflows/manifests.yml']
+  push:
+    branches: [main]
+    paths: ['k8s/**', '.github/workflows/manifests.yml']
+
+jobs:
+  # Fast, offline schema validation of every rendered overlay.
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4 # provides kubectl + `kubectl kustomize`
+        with: { version: v1.30.2 }
+      - name: Install kubeconform
+        run: |
+          curl -sSLo kc.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xf kc.tar.gz && sudo mv kubeconform /usr/local/bin/
+      - name: Render + schema-validate each overlay
+        run: |
+          for o in k8s/overlays/*/; do
+            name=$(basename "$o")
+            echo "== $name =="
+            kubectl kustomize "$o" > "/tmp/$name.yaml"
+            # -skip ScaledObject: KEDA's CRD schema isn't in the default set; the
+            # kind dry-run job validates it against the installed CRDs instead.
+            kubeconform -strict -summary \
+              -kubernetes-version 1.30.2 \
+              -schema-location default \
+              -skip ScaledObject \
+              "/tmp/$name.yaml"
+          done
+
+  # Real API-server admission validation against a throwaway kind cluster.
+  dryrun:
+    needs: schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with: { node_image: kindest/node:v1.30.2 }
+      - uses: azure/setup-kubectl@v4
+        with: { version: v1.30.2 }
+      - name: Install KEDA CRDs (so ScaledObject admits)
+        run: kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.14.0/keda-2.14.0-crds.yaml
+      - name: Server-side dry-run apply each overlay
+        run: |
+          # Namespaced objects need the namespace to exist for server dry-run.
+          kubectl create namespace drovery --dry-run=client -o yaml | kubectl apply -f -
+          for o in k8s/overlays/*/; do
+            echo "== dry-run $(basename "$o") =="
+            kubectl kustomize "$o" | kubectl apply --dry-run=server -f -
+          done
