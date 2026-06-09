@@ -12,6 +12,7 @@ import { validate } from './config/validation';
 import { buildRedisOptions } from './config/redis';
 import { CacheModule } from './cache/cache.module';
 import { HealthModule } from './health/health.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
@@ -107,6 +108,7 @@ import { SupportModule } from './support/support.module';
     GeoModule,
     SupportModule,
     HealthModule,
+    MetricsModule,
   ],
   providers: [
     // Rate-limit first (before auth) — global per-IP throttle.

@@ -46,6 +46,13 @@ export default () => ({
     accessToken: process.env.EXPO_ACCESS_TOKEN,
   },
 
+  // Prometheus metrics. enabled defaults on (set METRICS_ENABLED=false to kill
+  // the endpoint). port = the worker's standalone metrics HTTP server.
+  metrics: {
+    enabled: process.env.METRICS_ENABLED !== 'false',
+    port: parseInt(process.env.METRICS_PORT ?? '9091', 10),
+  },
+
   // Error tracking — unset SENTRY_DSN → reporting is a no-op (dev/local).
   sentry: {
     dsn: process.env.SENTRY_DSN,
