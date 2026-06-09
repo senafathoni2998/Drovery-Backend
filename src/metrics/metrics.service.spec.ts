@@ -48,6 +48,23 @@ describe('MetricsService', () => {
     );
   });
 
+  it('still renders the rest of the registry when getJobCounts rejects (Redis down)', async () => {
+    queue.getJobCounts.mockRejectedValueOnce(new Error('redis down'));
+    // Must NOT throw — a queue failure should not fail the whole /metrics scrape.
+    const out = await service.metrics();
+    expect(out).toContain('drovery_http_request_duration_seconds');
+    expect(out).toMatch(/drovery_process_cpu|drovery_nodejs_/);
+  });
+
+  it('does not hang the scrape when getJobCounts never resolves (timeout)', async () => {
+    // The BullMQ connection queues commands offline when Redis is down, so
+    // getJobCounts() HANGS rather than rejecting. The collect timeout must keep
+    // /metrics responsive regardless.
+    queue.getJobCounts.mockReturnValue(new Promise(() => {})); // never resolves
+    const out = await service.metrics();
+    expect(out).toContain('drovery_http_request_duration_seconds');
+  }, 5000);
+
   it('records http requests with method/status/route labels', async () => {
     const labels = { method: 'GET', status: '200', route: '/api/v1/health' };
     service.httpTotal.inc(labels);

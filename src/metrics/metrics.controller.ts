@@ -12,9 +12,11 @@ import { MetricsService } from './metrics.service';
  * @Public + @SkipThrottle: scrapers carry no JWT and poll frequently. This is
  * unauthenticated by design, so in production it should be network-restricted
  * (cluster-internal Service / NetworkPolicy) and can be killed via
- * METRICS_ENABLED=false. Uses @Res() (no passthrough) to emit the raw 0.0.4
- * exposition text, bypassing the global TransformInterceptor's {success,data}
- * envelope (which Prometheus could not parse).
+ * METRICS_ENABLED=false. Uses @Res() WITHOUT passthrough to emit the raw 0.0.4
+ * exposition text — this commits the response directly, bypassing ALL
+ * response-phase interceptors (incl. the global TransformInterceptor's
+ * {success,data} envelope, which Prometheus could not parse). The pre-handler
+ * MetricsInterceptor still runs but skips this route.
  */
 @Public()
 @SkipThrottle()
@@ -27,7 +29,9 @@ export class MetricsController {
 
   @Get()
   async scrape(@Res() res: Response): Promise<void> {
-    if (this.config.get<boolean>('metrics.enabled') === false) {
+    // Match the worker's gate (worker.ts): enabled unless explicitly false.
+    const enabled = this.config.get<boolean>('metrics.enabled') !== false;
+    if (!enabled) {
       res.status(404).end();
       return;
     }

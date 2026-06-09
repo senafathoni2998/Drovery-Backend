@@ -11,6 +11,15 @@ import {
 
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
 
+/** Reject after `ms` so a hung Redis call can't stall the /metrics scrape. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('metrics collect timed out')), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Owns a single Prometheus registry and the app's metrics. Exposed at
  * GET /api/v1/metrics (API) and :METRICS_PORT/metrics (worker).
@@ -53,15 +62,27 @@ export class MetricsService {
       labelNames: ['queue', 'state'],
       registers: [this.registry],
       async collect() {
-        const counts = await queueRef.getJobCounts(
-          'waiting',
-          'active',
-          'delayed',
-          'completed',
-          'failed',
-        );
-        for (const [state, value] of Object.entries(counts)) {
-          this.set({ queue: SIM_QUEUE, state }, value);
+        try {
+          // Bound the call: the BullMQ connection uses maxRetriesPerRequest:null +
+          // an offline queue, so getJobCounts() HANGS (doesn't reject) when Redis
+          // is down. Without this race the whole /metrics scrape would hang.
+          const counts = await withTimeout(
+            queueRef.getJobCounts(
+              'waiting',
+              'active',
+              'delayed',
+              'completed',
+              'failed',
+            ),
+            1000,
+          );
+          for (const [state, value] of Object.entries(counts)) {
+            this.set({ queue: SIM_QUEUE, state }, value);
+          }
+        } catch {
+          // Redis/queue unavailable or slow — skip the queue gauge for this scrape
+          // rather than hanging or failing the WHOLE /metrics response (the rest of
+          // the registry still renders, so Prometheus keeps visibility).
         }
       },
     });

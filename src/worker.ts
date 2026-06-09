@@ -56,6 +56,11 @@ async function bootstrap() {
     res.statusCode = 404;
     res.end();
   });
+  // Metrics is auxiliary — if the port can't bind (EADDRINUSE), log and keep the
+  // worker draining the queue rather than crashing on an unhandled 'error' event.
+  server.on('error', (err) =>
+    logger.error(`Worker metrics server failed on :${metricsPort}: ${err.message}`),
+  );
   server.listen(metricsPort, () =>
     logger.log(`Worker metrics on :${metricsPort}/metrics`),
   );
@@ -68,7 +73,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('Worker failed to start:', err);
   process.exit(1);
 });

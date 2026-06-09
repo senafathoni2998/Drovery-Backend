@@ -31,6 +31,9 @@ export class MetricsInterceptor implements NestInterceptor {
       const route = req.route?.path
         ? (req.baseUrl || '') + req.route.path
         : 'unmatched';
+      // Don't record the Prometheus scrape endpoint itself — it would be a
+      // self-referential series that grows with scrape frequency, not real traffic.
+      if (route.endsWith('/metrics')) return;
       const labels = {
         method: req.method,
         status: String(res.statusCode),
