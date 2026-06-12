@@ -14,9 +14,17 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
+import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { createMockPrismaService } from '../test/prisma-mock';
+
+const SERVICEABLE = {
+  serviceable: true,
+  reasons: [],
+  codes: [],
+  weatherHold: false,
+};
 
 jest.mock('uuid', () => ({ v4: () => 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE' }));
 
@@ -28,6 +36,7 @@ describe('DeliveriesService', () => {
   let pricingService: { estimate: jest.Mock };
   let paymentsService: { createDeliveryPayment: jest.Mock };
   let proofService: { createAutoProof: jest.Mock };
+  let serviceability: { checkServiceability: jest.Mock };
 
   const userId = 'user-1';
 
@@ -83,6 +92,9 @@ describe('DeliveriesService', () => {
     proofService = {
       createAutoProof: jest.fn().mockResolvedValue({ id: 'proof-1' }),
     };
+    serviceability = {
+      checkServiceability: jest.fn().mockResolvedValue(SERVICEABLE),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -93,6 +105,7 @@ describe('DeliveriesService', () => {
         { provide: PricingService, useValue: pricingService },
         { provide: PaymentsService, useValue: paymentsService },
         { provide: ProofService, useValue: proofService },
+        { provide: ServiceabilityService, useValue: serviceability },
       ],
     }).compile();
 
@@ -173,6 +186,51 @@ describe('DeliveriesService', () => {
         userId,
         { fromLat: 1.1, fromLng: 2.2, toLat: 3.3, toLng: 4.4 },
       );
+    });
+  });
+
+  describe('create — serviceability gate', () => {
+    it('rejects out-of-area with 422 and NO side effects', async () => {
+      serviceability.checkServiceability.mockResolvedValue({
+        serviceable: false,
+        reasons: ['Pickup or dropoff is outside our service area.'],
+        codes: ['OUT_OF_AREA'],
+        weatherHold: false,
+      });
+
+      await expect(service.create(userId, createDto)).rejects.toMatchObject({
+        status: 422,
+      });
+      // No DB write, no payment, no simulation enqueued.
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+      expect(paymentsService.createDeliveryPayment).not.toHaveBeenCalled();
+      expect(simulationService.startSimulation).not.toHaveBeenCalled();
+    });
+
+    it('rejects a weather hold with 503 (retryable)', async () => {
+      serviceability.checkServiceability.mockResolvedValue({
+        serviceable: false,
+        reasons: ['A storm is grounding drones right now.'],
+        codes: ['WEATHER_STORM'],
+        weatherHold: true,
+      });
+
+      await expect(service.create(userId, createDto)).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('skips the gate when coordinates cannot be resolved (graceful)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      geoService.geocode.mockResolvedValue(null);
+      // address-only dto, geocode fails → no coords → gate skipped, delivery created
+      const { fromLat, fromLng, toLat, toLng, ...addressOnly } = createDto;
+
+      await service.create(userId, addressOnly as any);
+
+      expect(serviceability.checkServiceability).not.toHaveBeenCalled();
+      expect(prisma.delivery.create).toHaveBeenCalled();
     });
   });
 

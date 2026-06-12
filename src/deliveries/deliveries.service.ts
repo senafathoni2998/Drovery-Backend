@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -15,6 +16,7 @@ import { GeoService } from '../geo/geo.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
@@ -55,6 +57,7 @@ export class DeliveriesService {
     private readonly pricingService: PricingService,
     private readonly paymentsService: PaymentsService,
     private readonly proofService: ProofService,
+    private readonly serviceabilityService: ServiceabilityService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -64,6 +67,10 @@ export class DeliveriesService {
     // Uses client-provided coords when present; otherwise geocodes the
     // addresses (best-effort — geocoding failures leave coords undefined).
     const coords = await this.resolveCoords(dto);
+
+    // Gate on serviceability BEFORE any DB/payment/queue side-effects: reject
+    // out-of-area / no-fly (422, non-retryable) or a weather hold (503, retryable).
+    await this.assertServiceable(coords);
 
     // Price via the single source of truth (PricingService) so the stored
     // price always matches the quote — including the distance component.
@@ -158,6 +165,51 @@ export class DeliveriesService {
     }
 
     return { fromLat, fromLng, toLat, toLng };
+  }
+
+  /**
+   * Rejects a delivery that can't be flown. Out-of-area / no-fly are hard
+   * (422, non-retryable); a weather hold is soft (503 + retryAfter). Skipped
+   * when coordinates couldn't be resolved (graceful degradation, like pricing).
+   */
+  private async assertServiceable(coords: ResolvedCoords): Promise<void> {
+    if (
+      coords.fromLat == null ||
+      coords.fromLng == null ||
+      coords.toLat == null ||
+      coords.toLng == null
+    ) {
+      return;
+    }
+
+    const result = await this.serviceabilityService.checkServiceability(
+      coords.fromLat,
+      coords.fromLng,
+      coords.toLat,
+      coords.toLng,
+    );
+    if (result.serviceable) return;
+
+    const status = result.weatherHold
+      ? HttpStatus.SERVICE_UNAVAILABLE // 503, retryable
+      : HttpStatus.UNPROCESSABLE_ENTITY; // 422, non-retryable
+    const code = result.weatherHold
+      ? result.codes.find((c) => c.startsWith('WEATHER'))
+      : result.codes.find((c) => !c.startsWith('WEATHER'));
+
+    throw new HttpException(
+      {
+        statusCode: status,
+        error: result.weatherHold
+          ? 'Service Unavailable'
+          : 'Unprocessable Entity',
+        message: result.reasons[0] ?? 'This delivery cannot be flown right now.',
+        reasons: result.reasons,
+        code,
+        ...(result.weatherHold ? { retryAfter: 1800 } : {}),
+      },
+      status,
+    );
   }
 
   async findAll(userId: string, query: DeliveryQueryDto) {

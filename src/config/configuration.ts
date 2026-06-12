@@ -42,6 +42,11 @@ export default () => ({
     googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY,
   },
 
+  // Weather for drone serviceability — unset key → deterministic mock provider.
+  weather: {
+    apiKey: process.env.OPENWEATHER_API_KEY,
+  },
+
   expo: {
     accessToken: process.env.EXPO_ACCESS_TOKEN,
   },

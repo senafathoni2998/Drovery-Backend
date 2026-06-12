@@ -2,18 +2,31 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { PricingService, haversineKm } from './pricing.service';
 import { GeoService } from '../geo/geo.service';
+import { ServiceabilityService } from '../serviceability/serviceability.service';
+
+const SERVICEABLE = {
+  serviceable: true,
+  reasons: [],
+  codes: [],
+  weatherHold: false,
+};
 
 describe('PricingService', () => {
   let service: PricingService;
   let geoService: { geocode: jest.Mock };
+  let serviceability: { checkServiceability: jest.Mock };
 
   beforeEach(async () => {
     geoService = { geocode: jest.fn().mockResolvedValue(null) };
+    serviceability = {
+      checkServiceability: jest.fn().mockResolvedValue(SERVICEABLE),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PricingService,
         { provide: GeoService, useValue: geoService },
+        { provide: ServiceabilityService, useValue: serviceability },
       ],
     }).compile();
 
@@ -150,6 +163,39 @@ describe('PricingService', () => {
 
       expect(result.distanceFee).toBe(0);
       expect(result.total).toBe(5);
+    });
+  });
+
+  describe('serviceability', () => {
+    it('includes the serviceability block when the full route is known', async () => {
+      const result = await service.estimate({
+        packageSize: 'Small',
+        packageWeight: 0,
+        packageTypes: [],
+        fromLat: -6.9,
+        fromLng: 107.6,
+        toLat: -6.99,
+        toLng: 107.6,
+      });
+
+      expect(serviceability.checkServiceability).toHaveBeenCalledWith(
+        -6.9,
+        107.6,
+        -6.99,
+        107.6,
+      );
+      expect(result.serviceability).toEqual(SERVICEABLE);
+    });
+
+    it('omits serviceability when coordinates cannot be resolved', async () => {
+      const result = await service.estimate({
+        packageSize: 'Small',
+        packageWeight: 0,
+        packageTypes: [],
+      });
+
+      expect(serviceability.checkServiceability).not.toHaveBeenCalled();
+      expect(result.serviceability).toBeUndefined();
     });
   });
 });

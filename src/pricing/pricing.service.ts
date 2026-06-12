@@ -1,7 +1,15 @@
 import { Injectable } from '@nestjs/common';
 
+import { haversineKm } from '../common/geo-distance';
 import { GeoService } from '../geo/geo.service';
+import { ServiceabilityService } from '../serviceability/serviceability.service';
+import { ServiceabilityResult } from '../serviceability/serviceability.types';
 import { EstimatePriceDto } from './dto';
+
+// Re-export so existing imports (`import { haversineKm } from './pricing.service'`)
+// keep working. The implementation lives in common/ to avoid a Pricing⇄
+// Serviceability import cycle (Serviceability needs the distance helper too).
+export { haversineKm } from '../common/geo-distance';
 
 const BASE_FEE = 2;
 const WEIGHT_RATE = 3; // $ per kg
@@ -22,7 +30,6 @@ const TYPE_SURCHARGES: Record<string, number> = {
 
 // Distance pricing
 const PER_KM_RATE = 1.5; // $ per km flown
-const EARTH_RADIUS_KM = 6371;
 
 export interface PriceEstimate {
   baseFee: number;
@@ -32,33 +39,27 @@ export interface PriceEstimate {
   distanceKm: number;
   distanceFee: number;
   total: number;
+  // Present only when all four coordinates resolve (advisory at quote time).
+  serviceability?: ServiceabilityResult;
+}
+
+interface ResolvedCoords {
+  fromLat?: number;
+  fromLng?: number;
+  toLat?: number;
+  toLng?: number;
 }
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Great-circle distance between two lat/lng points, in kilometers. */
-export function haversineKm(
-  fromLat: number,
-  fromLng: number,
-  toLat: number,
-  toLng: number,
-): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(toLat - fromLat);
-  const dLng = toRad(toLng - fromLng);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(fromLat)) *
-      Math.cos(toRad(toLat)) *
-      Math.sin(dLng / 2) ** 2;
-  return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 @Injectable()
 export class PricingService {
-  constructor(private readonly geoService: GeoService) {}
+  constructor(
+    private readonly geoService: GeoService,
+    private readonly serviceabilityService: ServiceabilityService,
+  ) {}
 
   async estimate(dto: EstimatePriceDto): Promise<PriceEstimate> {
     const baseFee = BASE_FEE;
@@ -69,14 +70,16 @@ export class PricingService {
       0,
     );
 
-    const distanceKm = await this.resolveDistanceKm(dto);
+    // Resolve coordinates ONCE (one geocode pass) for both distance + serviceability.
+    const coords = await this.resolveCoords(dto);
+    const distanceKm = this.distanceFromCoords(coords);
     const distanceFee = round2(distanceKm * PER_KM_RATE);
 
     const total = round2(
       baseFee + sizeFee + weightFee + typeFee + distanceFee,
     );
 
-    return {
+    const estimate: PriceEstimate = {
       baseFee,
       sizeFee,
       weightFee,
@@ -85,14 +88,28 @@ export class PricingService {
       distanceFee,
       total,
     };
+
+    // Advisory serviceability — only when the full route is known. Never throws
+    // (the quote endpoint is public + always 200); create() does the enforcement.
+    if (this.hasFullRoute(coords)) {
+      estimate.serviceability =
+        await this.serviceabilityService.checkServiceability(
+          coords.fromLat as number,
+          coords.fromLng as number,
+          coords.toLat as number,
+          coords.toLng as number,
+        );
+    }
+
+    return estimate;
   }
 
   /**
-   * Resolves the flight distance. Prefers caller-supplied coordinates; falls
-   * back to geocoding the addresses. Returns 0 when neither is available (so
-   * pricing degrades gracefully to the size/weight/type model).
+   * Resolves pickup/dropoff coordinates: prefers caller-supplied coords, falls
+   * back to geocoding the addresses (best-effort — a missing pair stays undefined
+   * so pricing/serviceability degrade gracefully).
    */
-  private async resolveDistanceKm(dto: EstimatePriceDto): Promise<number> {
+  async resolveCoords(dto: EstimatePriceDto): Promise<ResolvedCoords> {
     let { fromLat, fromLng, toLat, toLng } = dto;
 
     if ((fromLat == null || fromLng == null) && dto.fromAddress) {
@@ -110,15 +127,25 @@ export class PricingService {
       }
     }
 
-    if (
-      fromLat == null ||
-      fromLng == null ||
-      toLat == null ||
-      toLng == null
-    ) {
-      return 0;
-    }
+    return { fromLat, fromLng, toLat, toLng };
+  }
 
-    return haversineKm(fromLat, fromLng, toLat, toLng);
+  private hasFullRoute(c: ResolvedCoords): boolean {
+    return (
+      c.fromLat != null &&
+      c.fromLng != null &&
+      c.toLat != null &&
+      c.toLng != null
+    );
+  }
+
+  private distanceFromCoords(c: ResolvedCoords): number {
+    if (!this.hasFullRoute(c)) return 0;
+    return haversineKm(
+      c.fromLat as number,
+      c.fromLng as number,
+      c.toLat as number,
+      c.toLng as number,
+    );
   }
 }
