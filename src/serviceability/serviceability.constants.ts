@@ -16,7 +16,5 @@ export const NO_FLY_ZONES: NoFlyZone[] = [
   { name: 'Halim Perdanakusuma Airport', lat: -6.2647, lng: 106.9308, radiusKm: 3 },
 ];
 
-export const EARTH_RADIUS_KM = 6371;
-
 // Drones are grounded above this wind speed.
 export const MAX_WIND_KPH = 40;

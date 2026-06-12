@@ -169,8 +169,9 @@ export class DeliveriesService {
 
   /**
    * Rejects a delivery that can't be flown. Out-of-area / no-fly are hard
-   * (422, non-retryable); a weather hold is soft (503 + retryAfter). Skipped
-   * when coordinates couldn't be resolved (graceful degradation, like pricing).
+   * (422, non-retryable); a weather hold is soft (503 + retryAfter). If the
+   * coordinates can't be resolved we can't verify serviceability — and the drone
+   * can't fly to a place we can't locate — so reject rather than skip the gate.
    */
   private async assertServiceable(coords: ResolvedCoords): Promise<void> {
     if (
@@ -179,7 +180,16 @@ export class DeliveriesService {
       coords.toLat == null ||
       coords.toLng == null
     ) {
-      return;
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+          error: 'Unprocessable Entity',
+          message:
+            "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
+          code: 'UNRESOLVED_LOCATION',
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     }
 
     const result = await this.serviceabilityService.checkServiceability(

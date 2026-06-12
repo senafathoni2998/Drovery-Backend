@@ -221,16 +221,16 @@ describe('DeliveriesService', () => {
       expect(prisma.delivery.create).not.toHaveBeenCalled();
     });
 
-    it('skips the gate when coordinates cannot be resolved (graceful)', async () => {
-      prisma.delivery.create.mockResolvedValue(mockDelivery);
+    it('rejects with 422 when coordinates cannot be resolved (no safety bypass)', async () => {
       geoService.geocode.mockResolvedValue(null);
-      // address-only dto, geocode fails → no coords → gate skipped, delivery created
+      // address-only dto + geocode fails → no coords → can't verify → reject.
       const { fromLat, fromLng, toLat, toLng, ...addressOnly } = createDto;
 
-      await service.create(userId, addressOnly as any);
-
+      await expect(
+        service.create(userId, addressOnly as any),
+      ).rejects.toMatchObject({ status: 422 });
       expect(serviceability.checkServiceability).not.toHaveBeenCalled();
-      expect(prisma.delivery.create).toHaveBeenCalled();
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
     });
   });
 

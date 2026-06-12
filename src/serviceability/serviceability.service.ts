@@ -1,11 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { haversineKm } from '../common/geo-distance';
-import {
-  EARTH_RADIUS_KM,
-  NO_FLY_ZONES,
-  SERVICE_AREAS,
-} from './serviceability.constants';
+import { EARTH_RADIUS_KM, haversineKm } from '../common/geo-distance';
+import { NO_FLY_ZONES, SERVICE_AREAS } from './serviceability.constants';
 import {
   GeoCircle,
   RouteSegment,
@@ -43,26 +39,28 @@ export class ServiceabilityService {
     toLat: number,
     toLng: number,
   ): Promise<ServiceabilityResult> {
-    const reasons: string[] = [];
-    const codes: ServiceabilityCode[] = [];
-
-    // --- HARD: service area (both endpoints) ---
+    // --- HARD: service area. Short-circuit — if it's out of area there's no
+    // point checking no-fly or making a weather call; it's rejected regardless.
     if (
       !this.isInAnyArea(fromLat, fromLng) ||
       !this.isInAnyArea(toLat, toLng)
     ) {
-      reasons.push('Pickup or dropoff is outside our service area.');
-      codes.push('OUT_OF_AREA');
+      return this.blocked(
+        'OUT_OF_AREA',
+        'Pickup or dropoff is outside our service area.',
+      );
     }
 
-    // --- HARD: no-fly zones (endpoints + route) ---
+    // --- HARD: no-fly zones (endpoints + route). Short-circuit. ---
     const zone =
       this.zoneContaining(fromLat, fromLng) ??
       this.zoneContaining(toLat, toLng) ??
       this.zoneOnRoute({ fromLat, fromLng, toLat, toLng });
     if (zone) {
-      reasons.push(`Route is restricted near ${zone.name} (no-fly zone).`);
-      codes.push('NO_FLY_ZONE');
+      return this.blocked(
+        'NO_FLY_ZONE',
+        `Route is restricted near ${zone.name} (no-fly zone).`,
+      );
     }
 
     // --- SOFT: weather (fail-open; never a hard block) ---
@@ -73,15 +71,15 @@ export class ServiceabilityService {
       ]);
       const grounded = !a.flyable ? a : !b.flyable ? b : null;
       if (grounded) {
-        if (grounded.condition === 'storm') {
-          reasons.push('A storm is grounding drones at this location right now.');
-          codes.push('WEATHER_STORM');
-        } else {
-          reasons.push(
-            `High wind is grounding drones right now (${grounded.windKph} kph).`,
-          );
-          codes.push('WEATHER_HOLD');
-        }
+        return grounded.condition === 'storm'
+          ? this.blocked(
+              'WEATHER_STORM',
+              'A storm is grounding drones at this location right now.',
+            )
+          : this.blocked(
+              'WEATHER_HOLD',
+              `High wind is grounding drones right now (${grounded.windKph} kph).`,
+            );
       }
     } catch (e) {
       // Weather is advisory — a failure here must never block a delivery.
@@ -90,11 +88,18 @@ export class ServiceabilityService {
       );
     }
 
+    return { serviceable: true, reasons: [], codes: [], weatherHold: false };
+  }
+
+  private blocked(
+    code: ServiceabilityCode,
+    reason: string,
+  ): ServiceabilityResult {
     return {
-      serviceable: codes.length === 0,
-      reasons,
-      codes,
-      weatherHold: codes.some((c) => c.startsWith('WEATHER')),
+      serviceable: false,
+      reasons: [reason],
+      codes: [code],
+      weatherHold: code.startsWith('WEATHER'),
     };
   }
 

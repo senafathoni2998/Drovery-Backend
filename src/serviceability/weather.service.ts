@@ -71,6 +71,9 @@ export class WeatherService {
   /** Deterministic from coords so demos are stable + reproducible. */
   private mockConditions(lat: number, lng: number): WeatherConditions {
     const seed = Math.abs(lat) * 73856093 + Math.abs(lng) * 19349663;
+    if (!Number.isFinite(seed)) {
+      return { windKph: 0, condition: 'unknown', flyable: true, source: 'mock' };
+    }
     const rand = Math.abs(Math.sin(seed) * 10000) % 1;
 
     let condition: WeatherCondition;
@@ -107,9 +110,9 @@ export class WeatherService {
       flyable: true,
       source: 'unknown',
     };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const params = new URLSearchParams({
         lat: String(lat),
         lon: String(lng),
@@ -119,7 +122,6 @@ export class WeatherService {
       const res = await fetch(`${OPENWEATHER_URL}?${params.toString()}`, {
         signal: controller.signal,
       });
-      clearTimeout(timer);
 
       if (!res.ok) {
         this.logger.warn(`OpenWeather returned ${res.status} — failing open`);
@@ -129,7 +131,14 @@ export class WeatherService {
         wind?: { speed?: number };
         weather?: Array<{ main?: string }>;
       };
-      const windKph = (data.wind?.speed ?? 0) * 3.6; // m/s → kph
+      // Guard against a malformed/non-numeric wind value — a NaN would silently
+      // corrupt the flyable comparison (NaN <= MAX is false) and get cached.
+      const windMs = data.wind?.speed;
+      if (typeof windMs !== 'number' || !Number.isFinite(windMs)) {
+        this.logger.warn('OpenWeather wind value malformed — failing open');
+        return failOpen;
+      }
+      const windKph = windMs * 3.6; // m/s → kph
       const condition = this.mapCondition(data.weather?.[0]?.main);
       return {
         windKph: Math.round(windKph * 10) / 10,
@@ -142,6 +151,8 @@ export class WeatherService {
         `Weather fetch failed (${(e as Error).message}) — failing open`,
       );
       return failOpen;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
