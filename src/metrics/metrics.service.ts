@@ -35,6 +35,7 @@ export class MetricsService {
   readonly httpDuration: Histogram<string>;
   readonly httpTotal: Counter<string>;
   readonly wsConnections: Gauge<string>;
+  readonly wsSupportConnections: Gauge<string>;
 
   constructor(@InjectQueue(SIM_QUEUE) private readonly queue: Queue) {
     collectDefaultMetrics({ register: this.registry, prefix: 'drovery_' });
@@ -59,6 +60,12 @@ export class MetricsService {
     this.wsConnections = new Gauge({
       name: 'drovery_ws_connections',
       help: 'Currently connected tracking WebSocket clients',
+      registers: [this.registry],
+    });
+
+    this.wsSupportConnections = new Gauge({
+      name: 'drovery_ws_support_connections',
+      help: 'Currently connected support-chat WebSocket clients',
       registers: [this.registry],
     });
 

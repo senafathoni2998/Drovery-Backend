@@ -35,6 +35,7 @@ model User {
   savedAddresses          SavedAddress[]
   deliveryRatings         DeliveryRating[]
   notificationPreference  NotificationPreference?
+  supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
 
   @@map("users")
 }
@@ -47,7 +48,8 @@ model NotificationPreference {
   pushEnabled     Boolean @default(true)
   deliveryUpdates Boolean @default(true)
   promotions      Boolean @default(true)
-  // Quiet-hours window as server-local hours [start, end); null = disabled.
+  // Quiet-hours window as hours [start, end), evaluated in the configured
+  // service timezone (NOTIFICATIONS_TZ, default Asia/Jakarta); null = disabled.
   quietHoursStart Int?
   quietHoursEnd   Int?
 
@@ -316,14 +318,45 @@ model SupportTicket {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // The opening message (kept for backward-compat with the mobile ticket list);
+  // the full thread lives in `messages`, seeded from this on create.
   message String
   status  SupportTicketStatus @default(OPEN)
+
+  messages      SupportChatMessage[]
+  // Recency of the latest message — orders the user's ticket list (active first).
+  lastMessageAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@map("support_tickets")
+}
+
+enum SupportChatSenderRole {
+  USER
+  AGENT // reserved for the future human-agent surface (no producer today)
+  SYSTEM // automated replies (e.g. the auto-acknowledgement)
+}
+
+model SupportChatMessage {
+  id       String        @id @default(uuid())
+  ticketId String
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  senderRole SupportChatSenderRole @default(USER)
+  // The author for USER messages; null for AGENT/SYSTEM. SetNull (not Cascade)
+  // so deleting a user preserves the readable thread.
+  senderUserId String?
+  senderUser   User?   @relation("supportChatMessages", fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  content String @db.VarChar(2000)
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+  @@map("support_chat_messages")
 }
 
 // ==================== NOTIFICATIONS ====================
