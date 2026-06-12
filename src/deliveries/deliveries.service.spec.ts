@@ -1,15 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
+  ConflictException,
+  HttpException,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { DeliveryStatus } from '@prisma/client';
+import * as crypto from 'crypto';
 
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
+import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
@@ -22,6 +27,7 @@ describe('DeliveriesService', () => {
   let geoService: { geocode: jest.Mock };
   let pricingService: { estimate: jest.Mock };
   let paymentsService: { createDeliveryPayment: jest.Mock };
+  let proofService: { createAutoProof: jest.Mock };
 
   const userId = 'user-1';
 
@@ -74,6 +80,9 @@ describe('DeliveriesService', () => {
     paymentsService = {
       createDeliveryPayment: jest.fn().mockResolvedValue({ id: 'pay-1' }),
     };
+    proofService = {
+      createAutoProof: jest.fn().mockResolvedValue({ id: 'proof-1' }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -83,6 +92,7 @@ describe('DeliveriesService', () => {
         { provide: GeoService, useValue: geoService },
         { provide: PricingService, useValue: pricingService },
         { provide: PaymentsService, useValue: paymentsService },
+        { provide: ProofService, useValue: proofService },
       ],
     }).compile();
 
@@ -180,6 +190,7 @@ describe('DeliveriesService', () => {
         DeliveryStatus.DRONE_ASSIGNED,
         DeliveryStatus.PICKUP_IN_PROGRESS,
         DeliveryStatus.IN_TRANSIT,
+        DeliveryStatus.AWAITING_HANDOFF,
       ]);
     });
 
@@ -395,6 +406,108 @@ describe('DeliveriesService', () => {
       await expect(service.cancel(userId, 'delivery-1')).rejects.toThrow(
         BadRequestException,
       );
+    });
+  });
+
+  describe('recipient handoff OTP', () => {
+    const CODE = '123456';
+    const hashOf = (c: string) =>
+      crypto.createHash('sha256').update(c).digest('hex');
+    const arrived = {
+      ...mockDelivery,
+      status: DeliveryStatus.AWAITING_HANDOFF,
+      handoffCodeHash: hashOf(CODE),
+      handoffAttempts: 0,
+      toLat: -6.922,
+      toLng: 107.607,
+      receiver: 'Jane Doe',
+    };
+
+    it('create() generates a 6-digit code, stores only its SHA-256 hash, returns plaintext once', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      const result = await service.create(userId, createDto);
+
+      const data = prisma.delivery.create.mock.calls[0][0].data;
+      expect(data.handoffCodeHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(data).not.toHaveProperty('handoffCode'); // plaintext never persisted
+      expect((result as any).handoffCode).toMatch(/^\d{6}$/);
+      // the stored hash is the hash of the returned plaintext
+      expect(data.handoffCodeHash).toBe(hashOf((result as any).handoffCode));
+    });
+
+    it('confirms with the correct code → DELIVERED (atomic) + records proof', async () => {
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce(arrived) // confirm read (opts in the hash)
+        .mockResolvedValueOnce({ ...arrived, status: DeliveryStatus.DELIVERED }); // findOne re-fetch
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.confirmHandoff(userId, 'delivery-1', CODE);
+
+      const upd = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(upd.where.status).toBe(DeliveryStatus.AWAITING_HANDOFF);
+      expect(upd.data.status).toBe(DeliveryStatus.DELIVERED);
+      expect(proofService.createAutoProof).toHaveBeenCalledWith('delivery-1', {
+        lat: -6.922,
+        lng: 107.607,
+        recipientName: 'Jane Doe',
+      });
+    });
+
+    it('rejects a wrong code with 401 and increments the attempt counter', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(arrived);
+
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', '000000'),
+      ).rejects.toThrow(UnauthorizedException);
+
+      expect(prisma.delivery.update).toHaveBeenCalledWith({
+        where: { id: 'delivery-1' },
+        data: { handoffAttempts: { increment: 1 } },
+      });
+      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('locks the handoff after 5 failed attempts (423)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...arrived,
+        handoffAttempts: 5,
+      });
+
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', CODE),
+      ).rejects.toMatchObject({ status: 423 });
+      expect(prisma.delivery.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects confirm when not yet AWAITING_HANDOFF (409)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...arrived,
+        status: DeliveryStatus.IN_TRANSIT,
+      });
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', CODE),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects confirm when already DELIVERED (409)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...arrived,
+        status: DeliveryStatus.DELIVERED,
+      });
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', CODE),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it("rejects another user's delivery with NotFound (no leak)", async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...arrived,
+        userId: 'other-user',
+      });
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', CODE),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

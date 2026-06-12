@@ -1,18 +1,25 @@
 import {
   BadRequestException,
+  ConflictException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { DeliveryStatus, Prisma } from '@prisma/client';
+import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 import { GeoService } from '../geo/geo.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
+
+const HANDOFF_LOCKED = 423; // @nestjs/common has no LockedException / HttpStatus.LOCKED
 
 interface ResolvedCoords {
   fromLat?: number;
@@ -27,7 +34,10 @@ const ACTIVE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.DRONE_ASSIGNED,
   DeliveryStatus.PICKUP_IN_PROGRESS,
   DeliveryStatus.IN_TRANSIT,
+  DeliveryStatus.AWAITING_HANDOFF,
 ];
+
+const MAX_HANDOFF_ATTEMPTS = 5;
 
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.PENDING,
@@ -44,6 +54,7 @@ export class DeliveriesService {
     private readonly geoService: GeoService,
     private readonly pricingService: PricingService,
     private readonly paymentsService: PaymentsService,
+    private readonly proofService: ProofService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -65,6 +76,11 @@ export class DeliveriesService {
       ...coords,
     });
 
+    // Recipient handoff OTP: store only the hash; the plaintext is returned
+    // once below (the sender shares it with the recipient, who reads it back at
+    // handoff). The drone won't finalize as DELIVERED without it.
+    const handoffCode = this.generateHandoffCode();
+
     const delivery = await this.prisma.delivery.create({
       data: {
         trackingId,
@@ -84,6 +100,7 @@ export class DeliveriesService {
         pickupDate: new Date(dto.pickupDate),
         pickupTime: dto.pickupTime,
         estimatedPrice: pricing.total,
+        handoffCodeHash: this.hashHandoffCode(handoffCode),
       },
     });
 
@@ -110,7 +127,9 @@ export class DeliveriesService {
       );
     }
 
-    return delivery;
+    // Return the plaintext handoff code exactly once (never persisted, never
+    // returned by any other endpoint).
+    return { ...delivery, handoffCode };
   }
 
   /**
@@ -288,5 +307,97 @@ export class DeliveriesService {
         proofOfDelivery: true,
       },
     });
+  }
+
+  /**
+   * Recipient handoff: the drone has arrived (AWAITING_HANDOFF) and only
+   * finalizes as DELIVERED when the correct one-time code is presented. Prevents
+   * releasing a package to the wrong person. Owner-scoped; the code is verified
+   * with a constant-time compare; wrong guesses are counted and lock the handoff
+   * after MAX_HANDOFF_ATTEMPTS.
+   */
+  async confirmHandoff(userId: string, deliveryId: string, code: string) {
+    // The hash is globally omitted from reads (PrismaService) — opt back in here.
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      omit: { handoffCodeHash: false },
+    });
+
+    if (!delivery || delivery.userId !== userId) {
+      throw new NotFoundException(
+        `Delivery with id "${deliveryId}" not found`,
+      );
+    }
+    if (delivery.status === DeliveryStatus.DELIVERED) {
+      throw new ConflictException('This delivery has already been completed.');
+    }
+    if (delivery.status !== DeliveryStatus.AWAITING_HANDOFF) {
+      throw new ConflictException(
+        'This delivery is not awaiting handoff yet.',
+      );
+    }
+    if (delivery.handoffAttempts >= MAX_HANDOFF_ATTEMPTS) {
+      throw new HttpException(
+        'Too many incorrect attempts — the handoff is locked. Contact support.',
+        HANDOFF_LOCKED,
+      );
+    }
+
+    if (!this.handoffCodeMatches(code, delivery.handoffCodeHash)) {
+      await this.prisma.delivery.update({
+        where: { id: deliveryId },
+        data: { handoffAttempts: { increment: 1 } },
+      });
+      throw new UnauthorizedException('Invalid handoff code.');
+    }
+
+    // Atomic single-winner transition: only one concurrent confirm can flip
+    // AWAITING_HANDOFF → DELIVERED; a loser updates 0 rows and is rejected.
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: DeliveryStatus.AWAITING_HANDOFF },
+      data: {
+        status: DeliveryStatus.DELIVERED,
+        handoffConfirmedAt: new Date(),
+      },
+    });
+    if (count === 0) {
+      throw new ConflictException('This delivery has already been completed.');
+    }
+
+    // Record proof of delivery now that the recipient has confirmed receipt
+    // (best-effort — idempotent and non-fatal).
+    try {
+      await this.proofService.createAutoProof(deliveryId, {
+        lat: delivery.toLat ?? undefined,
+        lng: delivery.toLng ?? undefined,
+        recipientName: delivery.receiver,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Auto-proof failed for delivery ${deliveryId}: ${(error as Error).message}`,
+      );
+    }
+
+    return this.findOne(userId, deliveryId);
+  }
+
+  /** Cryptographically-random 6-digit handoff code (human-readable). */
+  private generateHandoffCode(): string {
+    return crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+  }
+
+  private hashHandoffCode(code: string): string {
+    return crypto.createHash('sha256').update(code).digest('hex');
+  }
+
+  /** Constant-time compare of the provided code against the stored hash. */
+  private handoffCodeMatches(code: string, storedHash: string | null): boolean {
+    if (!storedHash) return false;
+    const provided = Buffer.from(this.hashHandoffCode(code));
+    const expected = Buffer.from(storedHash);
+    return (
+      provided.length === expected.length &&
+      crypto.timingSafeEqual(provided, expected)
+    );
   }
 }

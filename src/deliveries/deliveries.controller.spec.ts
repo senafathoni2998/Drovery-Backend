@@ -13,6 +13,7 @@ describe('DeliveriesController', () => {
     getActive: jest.Mock;
     getRecent: jest.Mock;
     cancel: jest.Mock;
+    confirmHandoff: jest.Mock;
   };
 
   const userId = 'user-1';
@@ -27,6 +28,9 @@ describe('DeliveriesController', () => {
       getActive: jest.fn().mockResolvedValue([mockDelivery]),
       getRecent: jest.fn().mockResolvedValue([]),
       cancel: jest.fn().mockResolvedValue({ ...mockDelivery, status: 'CANCELED' }),
+      confirmHandoff: jest
+        .fn()
+        .mockResolvedValue({ ...mockDelivery, status: 'DELIVERED' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -104,6 +108,21 @@ describe('DeliveriesController', () => {
 
       expect(deliveriesService.cancel).toHaveBeenCalledWith(userId, 'delivery-1');
       expect(result.status).toBe('CANCELED');
+    });
+  });
+
+  describe('confirmHandoff', () => {
+    it('should delegate to deliveriesService.confirmHandoff with the code', async () => {
+      const result = await controller.confirmHandoff(userId, 'delivery-1', {
+        code: '123456',
+      });
+
+      expect(deliveriesService.confirmHandoff).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+        '123456',
+      );
+      expect(result.status).toBe('DELIVERED');
     });
   });
 });

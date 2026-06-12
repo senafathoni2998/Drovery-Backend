@@ -10,7 +10,6 @@ describe('SimulationProcessor', () => {
   let tracking: { updateTracking: jest.Mock };
   let publisher: { publishUpdate: jest.Mock };
   let notifications: { create: jest.Mock };
-  let proof: { createAutoProof: jest.Mock };
 
   const coords = { fromLat: -6.9, fromLng: 107.6, toLat: -6.92, toLng: 107.62 };
 
@@ -21,14 +20,12 @@ describe('SimulationProcessor', () => {
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
     publisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
     notifications = { create: jest.fn().mockResolvedValue({}) };
-    proof = { createAutoProof: jest.fn().mockResolvedValue({}) };
 
     processor = new SimulationProcessor(
       prisma as any,
       tracking as any,
       publisher as any,
       notifications as any,
-      proof as any,
     );
   });
 
@@ -78,23 +75,27 @@ describe('SimulationProcessor', () => {
     expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
   });
 
-  it('records proof of delivery on the DELIVERED stage', async () => {
+  it('stops at AWAITING_HANDOFF as the terminal auto stage (never auto-delivers)', async () => {
     prisma.delivery.findUnique.mockResolvedValue({
       id: 'd-1',
       status: 'IN_TRANSIT',
       receiver: 'Budi',
     });
-    const deliveredIndex = STAGES.findIndex(
-      (s) => s.status === DeliveryStatus.DELIVERED,
-    );
+    // The last auto stage is AWAITING_HANDOFF; DELIVERED is no longer simulated.
+    const lastIndex = STAGES.length - 1;
+    expect(STAGES[lastIndex].status).toBe(DeliveryStatus.AWAITING_HANDOFF);
+    expect(STAGES.some((s) => s.status === DeliveryStatus.DELIVERED)).toBe(false);
 
-    await processor.process(stageJob(deliveredIndex));
+    await processor.process(stageJob(lastIndex));
 
-    expect(proof.createAutoProof).toHaveBeenCalledWith('d-1', {
-      lat: coords.toLat,
-      lng: coords.toLng,
-      recipientName: 'Budi',
+    // It transitions to AWAITING_HANDOFF via the CAS and publishes the update —
+    // proof + DELIVERED happen only on the confirm-handoff endpoint.
+    expect(prisma.delivery.updateMany.mock.calls[0][0].data).toEqual({
+      status: DeliveryStatus.AWAITING_HANDOFF,
     });
+    expect(publisher.publishUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: DeliveryStatus.AWAITING_HANDOFF }),
+    );
   });
 
   it('updates drone position on a position job for an active delivery', async () => {
@@ -111,14 +112,16 @@ describe('SimulationProcessor', () => {
     });
   });
 
-  it('skips position updates once delivered/canceled', async () => {
-    prisma.delivery.findUnique.mockResolvedValue({ status: 'DELIVERED' });
+  it.each(['DELIVERED', 'CANCELED', 'AWAITING_HANDOFF'])(
+    'skips position updates once %s',
+    async (status) => {
+      prisma.delivery.findUnique.mockResolvedValue({ status });
 
-    await processor.process({
-      name: 'position',
-      data: { deliveryId: 'd-1', lat: 1, lng: 2 },
-    } as any);
+      await processor.process({
+        name: 'position',
+        data: { deliveryId: 'd-1', lat: 1, lng: 2 },
+      } as any);
 
-    expect(tracking.updateTracking).not.toHaveBeenCalled();
+      expect(tracking.updateTracking).not.toHaveBeenCalled();
   });
 });

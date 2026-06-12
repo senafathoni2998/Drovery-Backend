@@ -5,7 +5,6 @@ import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
-import { ProofService } from '../proof/proof.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingPublisher } from '../tracking/tracking.publisher';
 import {
@@ -34,7 +33,6 @@ export class SimulationProcessor extends WorkerHost {
     private readonly trackingService: TrackingService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly notificationsService: NotificationsService,
-    private readonly proofService: ProofService,
   ) {
     super();
   }
@@ -82,7 +80,7 @@ export class SimulationProcessor extends WorkerHost {
         droneLng: dronePos?.lng,
         droneStatus: stage.droneStatus,
         eta:
-          stage.status === DeliveryStatus.DELIVERED
+          stage.status === DeliveryStatus.AWAITING_HANDOFF
             ? undefined
             : new Date(Date.now() + 60_000),
       }),
@@ -104,16 +102,8 @@ export class SimulationProcessor extends WorkerHost {
     });
 
     this.logger.log(`Delivery ${deliveryId} → ${stage.status}`);
-
-    if (stage.status === DeliveryStatus.DELIVERED) {
-      await this.safe(() =>
-        this.proofService.createAutoProof(deliveryId, {
-          lat: coords.toLat,
-          lng: coords.toLng,
-          recipientName: delivery.receiver,
-        }),
-      );
-    }
+    // Proof of delivery is recorded when the recipient confirms the handoff OTP
+    // (DeliveriesService.confirmHandoff), not here — the sim stops at AWAITING_HANDOFF.
   }
 
   private async safe(fn: () => Promise<unknown>): Promise<void> {
@@ -143,6 +133,7 @@ export class SimulationProcessor extends WorkerHost {
     if (
       !delivery ||
       delivery.status === DeliveryStatus.CANCELED ||
+      delivery.status === DeliveryStatus.AWAITING_HANDOFF ||
       delivery.status === DeliveryStatus.DELIVERED
     ) {
       return;

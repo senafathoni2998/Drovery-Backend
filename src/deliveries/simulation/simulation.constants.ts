@@ -16,6 +16,7 @@ export const STATUS_ORDER: DeliveryStatus[] = [
   DeliveryStatus.DRONE_ASSIGNED,
   DeliveryStatus.PICKUP_IN_PROGRESS,
   DeliveryStatus.IN_TRANSIT,
+  DeliveryStatus.AWAITING_HANDOFF,
   DeliveryStatus.DELIVERED,
 ];
 
@@ -82,11 +83,14 @@ export const STAGES: SimStage[] = [
     body: 'Your package has been picked up and is on its way!',
   },
   {
-    status: DeliveryStatus.DELIVERED,
+    // Terminal AUTO stage: the drone arrives and waits. The final transition to
+    // DELIVERED (+ proof) happens only when the recipient confirms the handoff
+    // OTP via POST /deliveries/:id/confirm-handoff — the sim never auto-delivers.
+    status: DeliveryStatus.AWAITING_HANDOFF,
     delayMs: 120_000,
-    droneStatus: 'Delivered',
-    title: 'Package Delivered',
-    body: 'Your package has been delivered successfully!',
+    droneStatus: 'Awaiting recipient handoff',
+    title: 'Awaiting Handoff',
+    body: 'Your package has arrived. Share your handoff code with the recipient to complete delivery.',
   },
 ];
 
@@ -127,6 +131,8 @@ export function dronePositionForStage(
       return { lat: coords.fromLat, lng: coords.fromLng };
     case DeliveryStatus.IN_TRANSIT:
       return { lat: coords.fromLat, lng: coords.fromLng };
+    case DeliveryStatus.AWAITING_HANDOFF:
+      return { lat: coords.toLat, lng: coords.toLng };
     case DeliveryStatus.DELIVERED:
       return { lat: coords.toLat, lng: coords.toLng };
     default:

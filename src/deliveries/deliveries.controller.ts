@@ -11,7 +11,7 @@ import {
 
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { DeliveriesService } from './deliveries.service';
-import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
+import { ConfirmHandoffDto, CreateDeliveryDto, DeliveryQueryDto } from './dto';
 
 @Controller('deliveries')
 export class DeliveriesController {
@@ -66,5 +66,15 @@ export class DeliveriesController {
     @Param('id') id: string,
   ) {
     return this.deliveriesService.cancel(userId, id);
+  }
+
+  @Post(':id/confirm-handoff')
+  @HttpCode(HttpStatus.OK)
+  confirmHandoff(
+    @CurrentUser('sub') userId: string,
+    @Param('id') id: string,
+    @Body() dto: ConfirmHandoffDto,
+  ) {
+    return this.deliveriesService.confirmHandoff(userId, id, dto.code);
   }
 }

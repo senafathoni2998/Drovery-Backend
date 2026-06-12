@@ -14,7 +14,12 @@ export class PrismaService
     // multiplexes many clients onto a small server-side pool (see docker-compose).
     const max = parseInt(process.env.DATABASE_POOL_MAX ?? '10', 10);
     const pool = new Pool({ connectionString: process.env.DATABASE_URL, max });
-    super({ adapter: new PrismaPg(pool as any) });
+    super({
+      adapter: new PrismaPg(pool as any),
+      // Never expose the handoff OTP hash through ordinary reads. The one place
+      // that needs it (confirmHandoff) opts back in with omit:{handoffCodeHash:false}.
+      omit: { delivery: { handoffCodeHash: true } },
+    });
   }
 
   async onModuleInit() {

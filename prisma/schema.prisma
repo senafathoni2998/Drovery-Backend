@@ -94,6 +94,7 @@ enum DeliveryStatus {
   DRONE_ASSIGNED
   PICKUP_IN_PROGRESS
   IN_TRANSIT
+  AWAITING_HANDOFF
   DELIVERED
   CANCELED
 }
@@ -124,6 +125,12 @@ model Delivery {
   pickupTime        String
   estimatedDelivery DateTime?
   estimatedPrice    Float
+
+  // Recipient handoff OTP: SHA-256 of the 6-digit code (plaintext returned once
+  // on create, never persisted). attempts lock the code after MAX tries.
+  handoffCodeHash    String?
+  handoffAttempts    Int       @default(0)
+  handoffConfirmedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
