@@ -95,6 +95,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Track package | `GET /deliveries/track?trackingId=` | jwt | lookup by human tracking ID |
 | Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (PENDING/CONFIRMED only) |
 | Recipient handoff (enter code) | `POST /deliveries/{id}/confirm-handoff` | jwt | confirm OTP → DELIVERED + proof (see §5) |
+| Address book | `GET/POST /addresses`, `GET/PATCH/DELETE /addresses/{id}`, `POST /addresses/{id}/default`, `GET /addresses/recent` | jwt | saved addresses (default first, geocoded on save) + recent-from-history |
 | Price estimation / Confirmation | `POST /pricing/estimate` | public | fee breakdown + `serviceability` block (see §5) |
 | Workflow step | `POST /workflows/{deliveryId}/steps/complete` | jwt | record completed step |
 | QR scanner | `POST /workflows/qr/validate` | jwt | `{payload}` → `{valid,deliveryId?,reason?}` (HMAC-signed, 5-min expiry) |
