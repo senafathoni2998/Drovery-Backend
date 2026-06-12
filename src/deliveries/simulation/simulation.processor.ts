@@ -7,7 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { ProofService } from '../proof/proof.service';
 import { TrackingService } from '../tracking/tracking.service';
-import { TrackingGateway } from '../tracking/tracking.gateway';
+import { TrackingPublisher } from '../tracking/tracking.publisher';
 import {
   POSITION_JOB,
   PositionJobData,
@@ -32,7 +32,7 @@ export class SimulationProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly trackingService: TrackingService,
-    private readonly trackingGateway: TrackingGateway,
+    private readonly trackingPublisher: TrackingPublisher,
     private readonly notificationsService: NotificationsService,
     private readonly proofService: ProofService,
   ) {
@@ -95,7 +95,7 @@ export class SimulationProcessor extends WorkerHost {
       }),
     );
 
-    this.trackingGateway.broadcastTrackingUpdate(deliveryId, {
+    await this.trackingPublisher.publishUpdate({
       deliveryId,
       status: stage.status,
       droneStatus: stage.droneStatus,
@@ -152,7 +152,7 @@ export class SimulationProcessor extends WorkerHost {
       droneLat: lat,
       droneLng: lng,
     });
-    this.trackingGateway.broadcastTrackingUpdate(deliveryId, {
+    await this.trackingPublisher.publishUpdate({
       deliveryId,
       droneLat: lat,
       droneLng: lng,

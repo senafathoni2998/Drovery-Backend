@@ -7,6 +7,7 @@ import { sentryEnabled } from './common/monitoring/sentry';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
@@ -23,6 +24,11 @@ async function bootstrap() {
   // Route all Nest logs through pino (structured JSON + request ids).
   app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);
+
+  // Use the raw 'ws' adapter for the tracking gateway. Without this, Nest would
+  // default to socket.io (also installed), which doesn't speak the {event,data}
+  // protocol our ws clients use — they'd connect but never receive frames.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   // Global prefix: api/v1
   const prefix = config.get<string>('apiPrefix', 'api/v1');

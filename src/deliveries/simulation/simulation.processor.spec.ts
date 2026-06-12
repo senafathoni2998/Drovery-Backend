@@ -8,7 +8,7 @@ describe('SimulationProcessor', () => {
   let processor: SimulationProcessor;
   let prisma: ReturnType<typeof createMockPrismaService>;
   let tracking: { updateTracking: jest.Mock };
-  let gateway: { broadcastTrackingUpdate: jest.Mock };
+  let publisher: { publishUpdate: jest.Mock };
   let notifications: { create: jest.Mock };
   let proof: { createAutoProof: jest.Mock };
 
@@ -19,14 +19,14 @@ describe('SimulationProcessor', () => {
     // Default: the atomic transition applies (1 row updated).
     prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
-    gateway = { broadcastTrackingUpdate: jest.fn() };
+    publisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
     notifications = { create: jest.fn().mockResolvedValue({}) };
     proof = { createAutoProof: jest.fn().mockResolvedValue({}) };
 
     processor = new SimulationProcessor(
       prisma as any,
       tracking as any,
-      gateway as any,
+      publisher as any,
       notifications as any,
       proof as any,
     );
@@ -57,7 +57,7 @@ describe('SimulationProcessor', () => {
     expect(call.data).toEqual({ status: STAGES[0].status });
     expect(tracking.updateTracking).toHaveBeenCalled();
     expect(notifications.create).toHaveBeenCalled();
-    expect(gateway.broadcastTrackingUpdate).toHaveBeenCalled();
+    expect(publisher.publishUpdate).toHaveBeenCalled();
   });
 
   it('skips side effects when the CAS matches nothing (canceled / already advanced)', async () => {
@@ -67,7 +67,7 @@ describe('SimulationProcessor', () => {
     await processor.process(stageJob(1));
 
     expect(notifications.create).not.toHaveBeenCalled();
-    expect(gateway.broadcastTrackingUpdate).not.toHaveBeenCalled();
+    expect(publisher.publishUpdate).not.toHaveBeenCalled();
   });
 
   it('does nothing for a deleted delivery (no CAS attempted)', async () => {

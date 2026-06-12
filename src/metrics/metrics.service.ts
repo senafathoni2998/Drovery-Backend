@@ -34,6 +34,7 @@ export class MetricsService {
   readonly registry = new Registry();
   readonly httpDuration: Histogram<string>;
   readonly httpTotal: Counter<string>;
+  readonly wsConnections: Gauge<string>;
 
   constructor(@InjectQueue(SIM_QUEUE) private readonly queue: Queue) {
     collectDefaultMetrics({ register: this.registry, prefix: 'drovery_' });
@@ -52,6 +53,12 @@ export class MetricsService {
       name: 'drovery_http_requests_total',
       help: 'Total HTTP requests',
       labelNames: ['method', 'status', 'route'],
+      registers: [this.registry],
+    });
+
+    this.wsConnections = new Gauge({
+      name: 'drovery_ws_connections',
+      help: 'Currently connected tracking WebSocket clients',
       registers: [this.registry],
     });
 
