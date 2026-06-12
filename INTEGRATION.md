@@ -94,6 +94,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Detail / Track-on-map | `GET /deliveries/{id}` | jwt | single Delivery (embeds tracking/workflowSteps/payment) |
 | Track package | `GET /deliveries/track?trackingId=` | jwt | lookup by human tracking ID |
 | Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (PENDING/CONFIRMED only) |
+| Recipient handoff (enter code) | `POST /deliveries/{id}/confirm-handoff` | jwt | confirm OTP → DELIVERED + proof (see §5) |
 | Price estimation / Confirmation | `POST /pricing/estimate` | public | fee breakdown (local fallback on failure) |
 | Workflow step | `POST /workflows/{deliveryId}/steps/complete` | jwt | record completed step |
 | QR scanner | `POST /workflows/qr/validate` | jwt | `{payload}` → `{valid,deliveryId?,reason?}` (HMAC-signed, 5-min expiry) |
@@ -111,9 +112,19 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 
 ## 5. Delivery lifecycle & real-time tracking
 
-`DeliveryStatus`: `PENDING → CONFIRMED → DRONE_ASSIGNED → PICKUP_IN_PROGRESS → IN_TRANSIT → DELIVERED` (or `CANCELED`).
+`DeliveryStatus`: `PENDING → CONFIRMED → DRONE_ASSIGNED → PICKUP_IN_PROGRESS → IN_TRANSIT → AWAITING_HANDOFF → DELIVERED` (or `CANCELED`).
 
-On create, the backend geocodes the addresses (if coords weren't supplied), then enqueues the lifecycle as **durable BullMQ jobs in Redis** (no longer in-process `setTimeout`). A worker (`SimulationProcessor`) auto-advances status (`CONFIRMED@10s, DRONE_ASSIGNED@25s, PICKUP@45s, IN_TRANSIT@70s, DELIVERED@120s`), **interpolates the drone position every 5s** along the route, upserts `DeliveryTracking`, writes + pushes a `Notification` on each transition, and records proof on `DELIVERED`. **Survives restarts and scales across instances.** *(Redis is now required to run the backend — see ARCHITECTURE.md §1.)*
+On create, the backend geocodes the addresses (if coords weren't supplied), then enqueues the lifecycle as **durable BullMQ jobs in Redis** (no longer in-process `setTimeout`). A worker (`SimulationProcessor`) auto-advances status (`CONFIRMED@10s, DRONE_ASSIGNED@25s, PICKUP@45s, IN_TRANSIT@70s, AWAITING_HANDOFF@120s`), **interpolates the drone position every 5s** along the route, upserts `DeliveryTracking`, and writes + pushes a `Notification` on each transition. **The simulation never auto-delivers** — it stops at `AWAITING_HANDOFF` (the drone has arrived). **Survives restarts and scales across instances.** *(Redis is now required to run the backend — see ARCHITECTURE.md §1.)*
+
+### Recipient handoff OTP
+
+`create` returns a 6-digit **`handoffCode`** (once; only its SHA-256 hash is stored). The drone finalizes as `DELIVERED` — and proof of delivery is recorded — only when the recipient's code is confirmed:
+
+`POST /deliveries/{id}/confirm-handoff` (jwt, owner-scoped), body `{ "code": "123456" }` →
+- **200** + the updated (`DELIVERED`) delivery with `proofOfDelivery`.
+- **401** wrong code (attempt counter increments), **423** after 5 wrong (locked), **409** if not `AWAITING_HANDOFF` / already done, **400** bad format, **404** not owner.
+
+`handoffCodeHash` and `handoffAttempts` are never returned by any read. *(Real-world: the recipient gets the code out-of-band; in this single-user demo the sender receives it on create and relays it.)*
 
 > **Tracking is live via polling.** `useDeliveryTracking` polls `GET /deliveries/{id}` every 4s while the delivery is active and **animates the drone marker** (`AnimatedRegion`) so it glides between positions; polling stops at a terminal status. On each detected status change the app fires a **local notification**, and the backend sends a **remote Expo push** to registered devices. The in-memory simulation still means a backend restart strands in-flight deliveries — see **[ARCHITECTURE.md](./ARCHITECTURE.md) §1** for the durable worker-tier fix (the #1 scaling blocker), and a true WebSocket upgrade path in §3.
 
