@@ -106,6 +106,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | (Stripe → server) | `POST /payments/webhook` | public (signed) | PaymentIntent events drive `Payment.status` |
 | Delivery detail (proof card) | `GET /deliveries/{id}/proof`, `POST /deliveries/{id}/proof` | jwt | view / submit proof of delivery (also embedded in `GET /deliveries/{id}`) |
 | Notifications | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/{id}/read`, `PATCH /notifications/read-all` | jwt | in-app notifications |
+| Notification preferences | `GET/PATCH /notifications/preferences` | jwt | `{pushEnabled,deliveryUpdates,promotions,quietHoursStart,quietHoursEnd}` — gates **push only**; the in-app feed is always recorded. Quiet hours are `[start,end)` hours (wrap-around OK), evaluated in `NOTIFICATIONS_TZ` (default `Asia/Jakarta`); both bounds required together |
 | Help & support | `GET /support/faq` (public), `GET/POST /support/tickets` (jwt) | mixed | FAQ + persisted tickets |
 
 **Still defined but not yet called by a screen:** all `GET /workflows*` (workflow content is read from local static data) and the backend `geo` endpoints (the app geocodes directly against Nominatim; the backend also geocodes on create).
