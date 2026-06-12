@@ -28,6 +28,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { GeoModule } from './geo/geo.module';
 import { SupportModule } from './support/support.module';
 import { ServiceabilityModule } from './serviceability/serviceability.module';
+import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
 
 @Module({
   imports: [
@@ -121,6 +122,7 @@ import { ServiceabilityModule } from './serviceability/serviceability.module';
     HealthModule,
     MetricsModule,
     ServiceabilityModule,
+    SavedAddressesModule,
   ],
   providers: [
     // Rate-limit first (before auth) — global per-IP throttle. The LoadTest

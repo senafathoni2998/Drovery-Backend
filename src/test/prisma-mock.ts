@@ -15,6 +15,7 @@ type MockPrismaService = {
     | 'proofOfDelivery'
     | 'emailVerificationToken'
     | 'refreshToken'
+    | 'savedAddress'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -60,6 +61,7 @@ export function createMockPrismaService(): MockPrismaService {
     proofOfDelivery: createModelMock(),
     emailVerificationToken: createModelMock(),
     refreshToken: createModelMock(),
+    savedAddress: createModelMock(),
     $transaction: jest.fn((args) =>
       Array.isArray(args) ? Promise.all(args) : args(),
     ),
