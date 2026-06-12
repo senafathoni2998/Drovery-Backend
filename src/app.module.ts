@@ -7,10 +7,12 @@ import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
 import { LoadTestThrottlerGuard } from './common/guards/loadtest-throttle.guard';
 import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
+import { stdSerializers } from 'pino';
 import { randomUUID } from 'crypto';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
 import { buildRedisOptions } from './config/redis';
+import { redactTokenInUrl } from './common/redact';
 import { CacheModule } from './cache/cache.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -71,6 +73,13 @@ import { SupportModule } from './support/support.module';
         },
         // Never log secrets.
         redact: ['req.headers.authorization', 'req.headers.cookie'],
+        // Strip ?token= from logged URLs (the WS handshake puts the JWT there).
+        serializers: {
+          req: stdSerializers.wrapRequestSerializer((req) => {
+            req.url = redactTokenInUrl(req.url);
+            return req;
+          }),
+        },
         transport:
           process.env.NODE_ENV !== 'production'
             ? { target: 'pino-pretty', options: { singleLine: true } }

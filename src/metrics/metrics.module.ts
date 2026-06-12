@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { BullModule } from '@nestjs/bullmq';
 
@@ -7,6 +7,9 @@ import { MetricsController } from './metrics.controller';
 import { MetricsInterceptor } from './metrics.interceptor';
 import { MetricsService } from './metrics.service';
 
+// Global so MetricsService injects anywhere (e.g. the TrackingGateway's
+// ws-connection gauge) without each feature module re-importing this module.
+@Global()
 @Module({
   // Re-register the queue so MetricsService can @InjectQueue it. registerQueue
   // is idempotent per name and shares the BullModule.forRootAsync connection,

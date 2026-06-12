@@ -56,6 +56,15 @@ describe('TrackingGateway', () => {
       await gateway.handleConnection(client, req('/?token=bad'));
       expect(client.close).toHaveBeenCalledWith(1008, 'Unauthorized');
     });
+
+    it('does NOT count a client that disconnected during verification (no gauge leak)', async () => {
+      jwt.verifyAsync.mockResolvedValue({ sub: 'u-1' });
+      const client = socket();
+      client.readyState = 3; // CLOSED before verify resolved
+      await gateway.handleConnection(client, req('/?token=good'));
+      expect(metrics.wsConnections.inc).not.toHaveBeenCalled();
+      expect(client.userId).toBeUndefined();
+    });
   });
 
   describe('handleSubscribe (ownership)', () => {

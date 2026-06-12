@@ -31,7 +31,10 @@ interface AuthedSocket extends WebSocket {
  * (ws://host/?token=...) — browsers can't set WS headers — and ownership is
  * re-checked per delivery at subscribe time (parity with GET /deliveries/track).
  */
-@WebSocketGateway({ cors: { origin: '*' } })
+// No `cors` option: the 'ws' library ignores it — access is gated entirely by
+// the JWT handshake check in handleConnection (origin isn't a security boundary
+// here since the token is mandatory).
+@WebSocketGateway()
 export class TrackingGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
 {
@@ -68,6 +71,11 @@ export class TrackingGateway
       const payload = await this.jwt.verifyAsync<{ sub: string }>(token, {
         secret: this.config.get<string>('jwt.secret'),
       });
+      // If the client disconnected DURING verification, handleDisconnect already
+      // ran with no userId — so don't inc() now (it would leak the gauge with no
+      // matching dec()). Setting userId + inc() here is atomic w.r.t. the event
+      // loop, so a later disconnect is guaranteed to dec().
+      if (client.readyState !== WebSocket.OPEN) return;
       client.userId = payload.sub;
       this.metrics?.wsConnections.inc();
       // Never log the URL (it carries the token); log only the user.
