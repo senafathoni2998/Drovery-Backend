@@ -16,9 +16,9 @@ export class PrismaService
     const pool = new Pool({ connectionString: process.env.DATABASE_URL, max });
     super({
       adapter: new PrismaPg(pool as any),
-      // Never expose the handoff OTP hash through ordinary reads. The one place
-      // that needs it (confirmHandoff) opts back in with omit:{handoffCodeHash:false}.
-      omit: { delivery: { handoffCodeHash: true } },
+      // Never expose the handoff OTP hash or the internal attempt counter through
+      // ordinary reads. confirmHandoff opts both back in with omit:{...:false}.
+      omit: { delivery: { handoffCodeHash: true, handoffAttempts: true } },
     });
   }
 

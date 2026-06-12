@@ -46,6 +46,7 @@ export class UsersService {
               'DRONE_ASSIGNED',
               'PICKUP_IN_PROGRESS',
               'IN_TRANSIT',
+              'AWAITING_HANDOFF',
             ],
           },
         },

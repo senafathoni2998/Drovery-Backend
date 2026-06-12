@@ -317,10 +317,11 @@ export class DeliveriesService {
    * after MAX_HANDOFF_ATTEMPTS.
    */
   async confirmHandoff(userId: string, deliveryId: string, code: string) {
-    // The hash is globally omitted from reads (PrismaService) — opt back in here.
+    // handoffCodeHash + handoffAttempts are globally omitted from reads
+    // (PrismaService) — opt them back in here for verification.
     const delivery = await this.prisma.delivery.findUnique({
       where: { id: deliveryId },
-      omit: { handoffCodeHash: false },
+      omit: { handoffCodeHash: false, handoffAttempts: false },
     });
 
     if (!delivery || delivery.userId !== userId) {
@@ -337,17 +338,21 @@ export class DeliveriesService {
       );
     }
     if (delivery.handoffAttempts >= MAX_HANDOFF_ATTEMPTS) {
-      throw new HttpException(
-        'Too many incorrect attempts — the handoff is locked. Contact support.',
-        HANDOFF_LOCKED,
-      );
+      throw this.handoffLockedError();
     }
 
     if (!this.handoffCodeMatches(code, delivery.handoffCodeHash)) {
-      await this.prisma.delivery.update({
-        where: { id: deliveryId },
+      // Atomic, conditional increment: only bump while still under the cap, so
+      // concurrent wrong guesses can't push the counter past MAX (TOCTOU-safe).
+      // count === 0 means another request just reached the cap → locked.
+      const { count } = await this.prisma.delivery.updateMany({
+        where: {
+          id: deliveryId,
+          handoffAttempts: { lt: MAX_HANDOFF_ATTEMPTS },
+        },
         data: { handoffAttempts: { increment: 1 } },
       });
+      if (count === 0) throw this.handoffLockedError();
       throw new UnauthorizedException('Invalid handoff code.');
     }
 
@@ -379,6 +384,19 @@ export class DeliveriesService {
     }
 
     return this.findOne(userId, deliveryId);
+  }
+
+  /** 423 Locked, in object form so the body carries an `error` field like the
+   * built-in Nest exceptions (consistent shape through AllExceptionsFilter). */
+  private handoffLockedError(): HttpException {
+    return new HttpException(
+      {
+        statusCode: HANDOFF_LOCKED,
+        error: 'Locked',
+        message: 'Too many incorrect attempts — the handoff is locked.',
+      },
+      HANDOFF_LOCKED,
+    );
   }
 
   /** Cryptographically-random 6-digit handoff code (human-readable). */

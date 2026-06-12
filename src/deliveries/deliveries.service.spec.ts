@@ -454,18 +454,32 @@ describe('DeliveriesService', () => {
       });
     });
 
-    it('rejects a wrong code with 401 and increments the attempt counter', async () => {
+    it('rejects a wrong code with 401 and atomically increments the counter', async () => {
       prisma.delivery.findUnique.mockResolvedValue(arrived);
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
       await expect(
         service.confirmHandoff(userId, 'delivery-1', '000000'),
       ).rejects.toThrow(UnauthorizedException);
 
-      expect(prisma.delivery.update).toHaveBeenCalledWith({
-        where: { id: 'delivery-1' },
+      // Conditional increment (only while under the cap) — TOCTOU-safe.
+      expect(prisma.delivery.updateMany).toHaveBeenCalledWith({
+        where: { id: 'delivery-1', handoffAttempts: { lt: 5 } },
         data: { handoffAttempts: { increment: 1 } },
       });
-      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns 423 when the attempt cap is reached concurrently (atomic guard)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...arrived,
+        handoffAttempts: 4,
+      });
+      // Another concurrent request just hit the cap → conditional increment misses.
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', '000000'),
+      ).rejects.toMatchObject({ status: 423 });
     });
 
     it('locks the handoff after 5 failed attempts (423)', async () => {
@@ -477,7 +491,7 @@ describe('DeliveriesService', () => {
       await expect(
         service.confirmHandoff(userId, 'delivery-1', CODE),
       ).rejects.toMatchObject({ status: 423 });
-      expect(prisma.delivery.update).not.toHaveBeenCalled();
+      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects confirm when not yet AWAITING_HANDOFF (409)', async () => {
