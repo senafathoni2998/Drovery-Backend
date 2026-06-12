@@ -33,6 +33,7 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   refreshTokens           RefreshToken[]
   savedAddresses          SavedAddress[]
+  deliveryRatings         DeliveryRating[]
 
   @@map("users")
 }
@@ -157,11 +158,29 @@ model Delivery {
   workflowSteps   WorkflowStepCompletion[]
   payment         Payment?
   proofOfDelivery ProofOfDelivery?
+  rating          DeliveryRating?
 
   @@index([userId])
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
+}
+
+model DeliveryRating {
+  id         String   @id @default(uuid())
+  deliveryId String   @unique
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stars   Int // 1–5
+  comment String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("delivery_ratings")
 }
 
 // ==================== PROOF OF DELIVERY ====================

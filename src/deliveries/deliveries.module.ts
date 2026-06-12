@@ -12,6 +12,8 @@ import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
 import { ProofController } from './proof/proof.controller';
 import { ProofService } from './proof/proof.service';
+import { RatingController } from './rating/rating.controller';
+import { RatingService } from './rating/rating.service';
 import { SIM_QUEUE } from './simulation/simulation.constants';
 import { SimulationProcessor } from './simulation/simulation.processor';
 import { SimulationService } from './simulation/simulation.service';
@@ -38,10 +40,11 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     // AuthService, so register Jwt here (same secret resolved from config).
     JwtModule.register({}),
   ],
-  controllers: [DeliveriesController, ProofController],
+  controllers: [DeliveriesController, ProofController, RatingController],
   providers: [
     DeliveriesService,
     ProofService,
+    RatingService,
     SimulationService,
     TrackingService,
     // The worker publishes tracking updates to Redis; runs everywhere.

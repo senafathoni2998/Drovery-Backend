@@ -280,6 +280,7 @@ export class DeliveriesService {
         workflowSteps: true,
         payment: true,
         proofOfDelivery: true,
+        rating: true,
       },
     });
 
@@ -300,6 +301,7 @@ export class DeliveriesService {
         workflowSteps: true,
         payment: true,
         proofOfDelivery: true,
+        rating: true,
       },
     });
 
@@ -367,6 +369,7 @@ export class DeliveriesService {
         workflowSteps: true,
         payment: true,
         proofOfDelivery: true,
+        rating: true,
       },
     });
   }

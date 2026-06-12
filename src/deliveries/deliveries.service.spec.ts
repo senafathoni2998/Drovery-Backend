@@ -326,6 +326,7 @@ describe('DeliveriesService', () => {
           workflowSteps: true,
           payment: true,
           proofOfDelivery: true,
+          rating: true,
         },
       });
     });
