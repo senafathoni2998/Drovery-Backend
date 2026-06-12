@@ -7,9 +7,20 @@ import {
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { RegisterDeviceDto } from './dto';
+import { RegisterDeviceDto, UpdateNotificationPreferencesDto } from './dto';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+
+export type NotificationCategory = 'delivery' | 'promotion' | 'system';
+
+// Returned when a user hasn't customized their preferences (lazy — not persisted).
+const DEFAULT_PREFERENCES = {
+  pushEnabled: true,
+  deliveryUpdates: true,
+  promotions: true,
+  quietHoursStart: null as number | null,
+  quietHoursEnd: null as number | null,
+};
 
 @Injectable()
 export class NotificationsService {
@@ -82,7 +93,10 @@ export class NotificationsService {
     title: string,
     body: string,
     data?: Record<string, unknown>,
+    category: NotificationCategory = 'delivery',
   ) {
+    // The in-app record is ALWAYS created (the feed stays complete); preferences
+    // only gate the push buzz.
     const notification = await this.prisma.notification.create({
       data: {
         userId,
@@ -92,15 +106,74 @@ export class NotificationsService {
       },
     });
 
-    // Fan out to the user's registered devices as a real push (fire-and-forget;
-    // a failed/absent push must never break notification creation).
-    void this.sendPushToUser(userId, title, body, data);
+    // Fan out as a real push, subject to the user's preferences + quiet hours
+    // (fire-and-forget; a failed/absent/suppressed push never breaks creation).
+    void this.maybeSendPush(userId, title, body, data, category);
 
-    this.logger.log(
-      `Notification "${title}" created for user ${userId}`,
-    );
+    this.logger.log(`Notification "${title}" created for user ${userId}`);
 
     return notification;
+  }
+
+  /** A user's notification preferences (defaults when not customized). */
+  async getPreferences(userId: string) {
+    const prefs = await this.prisma.notificationPreference.findUnique({
+      where: { userId },
+    });
+    return prefs ?? { userId, ...DEFAULT_PREFERENCES };
+  }
+
+  async updatePreferences(
+    userId: string,
+    dto: UpdateNotificationPreferencesDto,
+  ) {
+    return this.prisma.notificationPreference.upsert({
+      where: { userId },
+      create: { userId, ...dto },
+      update: { ...dto },
+    });
+  }
+
+  private async maybeSendPush(
+    userId: string,
+    title: string,
+    body: string,
+    data: Record<string, unknown> | undefined,
+    category: NotificationCategory,
+  ): Promise<void> {
+    try {
+      if (await this.shouldSendPush(userId, category)) {
+        await this.sendPushToUser(userId, title, body, data);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Push gate failed for user ${userId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  private async shouldSendPush(
+    userId: string,
+    category: NotificationCategory,
+  ): Promise<boolean> {
+    const p = await this.getPreferences(userId);
+    if (!p.pushEnabled) return false;
+    if (category === 'delivery' && !p.deliveryUpdates) return false;
+    if (category === 'promotion' && !p.promotions) return false;
+    if (this.inQuietHours(p.quietHoursStart, p.quietHoursEnd)) return false;
+    return true;
+  }
+
+  /** Is `hour` inside the [start, end) quiet-hours window (handles wrap-around)? */
+  private inQuietHours(
+    start: number | null,
+    end: number | null,
+    hour: number = new Date().getHours(),
+  ): boolean {
+    if (start == null || end == null || start === end) return false;
+    return start < end
+      ? hour >= start && hour < end
+      : hour >= start || hour < end; // e.g. 22 → 7
   }
 
   /**

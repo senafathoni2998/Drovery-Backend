@@ -195,4 +195,77 @@ describe('NotificationsService', () => {
       });
     });
   });
+
+  describe('preferences', () => {
+    it('returns defaults when the user has not customized them', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue(null);
+      const prefs = await service.getPreferences(userId);
+      expect(prefs).toMatchObject({
+        userId,
+        pushEnabled: true,
+        deliveryUpdates: true,
+        promotions: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      });
+    });
+
+    it('returns the persisted preferences when present', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue({
+        userId,
+        pushEnabled: false,
+      });
+      expect(await service.getPreferences(userId)).toMatchObject({
+        pushEnabled: false,
+      });
+    });
+
+    it('updatePreferences upserts', async () => {
+      prisma.notificationPreference.upsert.mockResolvedValue({});
+      await service.updatePreferences(userId, { deliveryUpdates: false });
+      expect(prisma.notificationPreference.upsert).toHaveBeenCalledWith({
+        where: { userId },
+        create: { userId, deliveryUpdates: false },
+        update: { deliveryUpdates: false },
+      });
+    });
+  });
+
+  describe('push gating', () => {
+    const gate = (cat: 'delivery' | 'promotion' | 'system') =>
+      (service as any).shouldSendPush(userId, cat) as Promise<boolean>;
+    const setPrefs = (p: Record<string, unknown>) =>
+      prisma.notificationPreference.findUnique.mockResolvedValue({ userId, ...p });
+
+    it('sends when push is enabled and the category is on (no quiet hours)', async () => {
+      setPrefs({ pushEnabled: true, deliveryUpdates: true, quietHoursStart: null, quietHoursEnd: null });
+      expect(await gate('delivery')).toBe(true);
+    });
+
+    it('suppresses when push is globally disabled', async () => {
+      setPrefs({ pushEnabled: false, deliveryUpdates: true });
+      expect(await gate('delivery')).toBe(false);
+    });
+
+    it('suppresses a delivery push when deliveryUpdates is off', async () => {
+      setPrefs({ pushEnabled: true, deliveryUpdates: false, quietHoursStart: null, quietHoursEnd: null });
+      expect(await gate('delivery')).toBe(false);
+    });
+
+    it('suppresses a promotion when promotions is off', async () => {
+      setPrefs({ pushEnabled: true, promotions: false, quietHoursStart: null, quietHoursEnd: null });
+      expect(await gate('promotion')).toBe(false);
+    });
+
+    it('inQuietHours handles wrap-around windows', () => {
+      const inQuiet = (s: number | null, e: number | null, h: number) =>
+        (service as any).inQuietHours(s, e, h) as boolean;
+      expect(inQuiet(22, 7, 23)).toBe(true); // overnight window, late
+      expect(inQuiet(22, 7, 3)).toBe(true); // overnight window, early morning
+      expect(inQuiet(22, 7, 9)).toBe(false); // daytime
+      expect(inQuiet(9, 17, 12)).toBe(true); // same-day window
+      expect(inQuiet(9, 17, 18)).toBe(false);
+      expect(inQuiet(null, null, 3)).toBe(false); // disabled
+    });
+  });
 });

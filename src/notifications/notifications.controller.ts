@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { RegisterDeviceDto } from './dto';
+import { RegisterDeviceDto, UpdateNotificationPreferencesDto } from './dto';
 import { NotificationsService } from './notifications.service';
 
 @Controller('notifications')
@@ -25,6 +25,19 @@ export class NotificationsController {
   @Get('unread-count')
   getUnreadCount(@CurrentUser('sub') userId: string) {
     return this.notificationsService.getUnreadCount(userId);
+  }
+
+  @Get('preferences')
+  getPreferences(@CurrentUser('sub') userId: string) {
+    return this.notificationsService.getPreferences(userId);
+  }
+
+  @Patch('preferences')
+  updatePreferences(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: UpdateNotificationPreferencesDto,
+  ) {
+    return this.notificationsService.updatePreferences(userId, dto);
   }
 
   @Patch(':id/read')

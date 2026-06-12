@@ -34,8 +34,27 @@ model User {
   refreshTokens           RefreshToken[]
   savedAddresses          SavedAddress[]
   deliveryRatings         DeliveryRating[]
+  notificationPreference  NotificationPreference?
 
   @@map("users")
+}
+
+model NotificationPreference {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  pushEnabled     Boolean @default(true)
+  deliveryUpdates Boolean @default(true)
+  promotions      Boolean @default(true)
+  // Quiet-hours window as server-local hours [start, end); null = disabled.
+  quietHoursStart Int?
+  quietHoursEnd   Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_preferences")
 }
 
 model SavedAddress {
