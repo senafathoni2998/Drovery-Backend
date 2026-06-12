@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -127,6 +128,23 @@ export class NotificationsService {
     userId: string,
     dto: UpdateNotificationPreferencesDto,
   ) {
+    // A quiet-hours window needs BOTH bounds — a half-set window (e.g. start
+    // without end) silently does nothing (see `inQuietHours`), which reads as a
+    // broken setting. Validate the *effective* state after the partial update,
+    // so changing one bound while the other is already persisted still works.
+    const current = await this.getPreferences(userId);
+    const start =
+      dto.quietHoursStart !== undefined
+        ? dto.quietHoursStart
+        : current.quietHoursStart;
+    const end =
+      dto.quietHoursEnd !== undefined ? dto.quietHoursEnd : current.quietHoursEnd;
+    if ((start == null) !== (end == null)) {
+      throw new BadRequestException(
+        'quietHoursStart and quietHoursEnd must be set together (or both cleared)',
+      );
+    }
+
     return this.prisma.notificationPreference.upsert({
       where: { userId },
       create: { userId, ...dto },
@@ -168,12 +186,35 @@ export class NotificationsService {
   private inQuietHours(
     start: number | null,
     end: number | null,
-    hour: number = new Date().getHours(),
+    hour: number = this.currentServiceHour(),
   ): boolean {
     if (start == null || end == null || start === end) return false;
     return start < end
       ? hour >= start && hour < end
       : hour >= start || hour < end; // e.g. 22 → 7
+  }
+
+  /**
+   * Current hour-of-day in the configured service timezone (not the container's
+   * local/UTC clock). Quiet hours are wall-clock, so evaluating them in UTC
+   * would shift every Indonesian user's window by ~7 hours.
+   */
+  private currentServiceHour(): number {
+    const tz =
+      this.config.get<string>('notifications.timezone') ?? 'Asia/Jakarta';
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        hour12: false,
+        timeZone: tz,
+      }).formatToParts(new Date());
+      const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+      // hour12:false renders midnight as "24" in some ICU builds — normalize.
+      return Number.isFinite(hour) ? hour % 24 : new Date().getHours();
+    } catch {
+      // Misconfigured TZ string → degrade to server-local rather than crash.
+      return new Date().getHours();
+    }
   }
 
   /**

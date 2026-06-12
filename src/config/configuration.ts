@@ -51,6 +51,13 @@ export default () => ({
     accessToken: process.env.EXPO_ACCESS_TOKEN,
   },
 
+  notifications: {
+    // Quiet-hours are wall-clock, so they must be evaluated in a real timezone,
+    // not the (UTC) container's local time. Every service area today is WIB
+    // (UTC+7); per-user timezones are a future enhancement.
+    timezone: process.env.NOTIFICATIONS_TZ ?? 'Asia/Jakarta',
+  },
+
   // Prometheus metrics. enabled defaults on (set METRICS_ENABLED=false to kill
   // the endpoint). port = the worker's standalone metrics HTTP server.
   metrics: {

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
+  BadRequestException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -228,6 +229,54 @@ describe('NotificationsService', () => {
         create: { userId, deliveryUpdates: false },
         update: { deliveryUpdates: false },
       });
+    });
+
+    it('accepts a full quiet-hours window', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue(null);
+      prisma.notificationPreference.upsert.mockResolvedValue({});
+      await expect(
+        service.updatePreferences(userId, {
+          quietHoursStart: 22,
+          quietHoursEnd: 7,
+        }),
+      ).resolves.toBeDefined();
+      expect(prisma.notificationPreference.upsert).toHaveBeenCalled();
+    });
+
+    it('rejects a half-set quiet-hours window (start without end)', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue(null);
+      await expect(
+        service.updatePreferences(userId, { quietHoursStart: 22 }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.notificationPreference.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rejects clearing only one bound while the other is persisted', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue({
+        userId,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      });
+      await expect(
+        service.updatePreferences(userId, { quietHoursEnd: null }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.notificationPreference.upsert).not.toHaveBeenCalled();
+    });
+
+    it('allows clearing both bounds together', async () => {
+      prisma.notificationPreference.findUnique.mockResolvedValue({
+        userId,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      });
+      prisma.notificationPreference.upsert.mockResolvedValue({});
+      await expect(
+        service.updatePreferences(userId, {
+          quietHoursStart: null,
+          quietHoursEnd: null,
+        }),
+      ).resolves.toBeDefined();
+      expect(prisma.notificationPreference.upsert).toHaveBeenCalled();
     });
   });
 
