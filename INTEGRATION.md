@@ -95,7 +95,7 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Track package | `GET /deliveries/track?trackingId=` | jwt | lookup by human tracking ID |
 | Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (PENDING/CONFIRMED only) |
 | Recipient handoff (enter code) | `POST /deliveries/{id}/confirm-handoff` | jwt | confirm OTP → DELIVERED + proof (see §5) |
-| Price estimation / Confirmation | `POST /pricing/estimate` | public | fee breakdown (local fallback on failure) |
+| Price estimation / Confirmation | `POST /pricing/estimate` | public | fee breakdown + `serviceability` block (see §5) |
 | Workflow step | `POST /workflows/{deliveryId}/steps/complete` | jwt | record completed step |
 | QR scanner | `POST /workflows/qr/validate` | jwt | `{payload}` → `{valid,deliveryId?,reason?}` (HMAC-signed, 5-min expiry) |
 | Push registration (after login) | `POST /notifications/devices` | jwt | `{pushToken,platform}` → registers Expo token |
@@ -125,6 +125,13 @@ On create, the backend geocodes the addresses (if coords weren't supplied), then
 - **401** wrong code (attempt counter increments), **423** after 5 wrong (locked), **409** if not `AWAITING_HANDOFF` / already done, **400** bad format, **404** not owner.
 
 `handoffCodeHash` and `handoffAttempts` are never returned by any read. *(Real-world: the recipient gets the code out-of-band; in this single-user demo the sender receives it on create and relays it.)*
+
+### Serviceability (no-fly / weather / service area)
+
+Drone deliveries are gated on "can we actually fly this?" — checked at quote and enforced at create:
+
+- **Quote** (`POST /pricing/estimate`, public, always 200): when all four coordinates resolve, the response `data.serviceability` = `{ serviceable, reasons[], codes[], weatherHold }` (advisory — show it before the user pays). `codes` ∈ `OUT_OF_AREA | NO_FLY_ZONE | WEATHER_HOLD | WEATHER_STORM`.
+- **Create** (`POST /deliveries`) rejects an unflyable route **before** any charge/queue: **422** `OUT_OF_AREA` / `NO_FLY_ZONE` (non-retryable), **422** `UNRESOLVED_LOCATION` (couldn't locate pickup/dropoff), **503** + `retryAfter` for a weather hold (retryable). Service area covers Greater Jakarta + Bandung; no-fly zones are the Jakarta airports. Weather is real-or-mock (`OPENWEATHER_API_KEY`) and **fail-open** — an outage never grounds a delivery.
 
 > **Tracking is live via polling.** `useDeliveryTracking` polls `GET /deliveries/{id}` every 4s while the delivery is active and **animates the drone marker** (`AnimatedRegion`) so it glides between positions; polling stops at a terminal status. On each detected status change the app fires a **local notification**, and the backend sends a **remote Expo push** to registered devices. The in-memory simulation still means a backend restart strands in-flight deliveries — see **[ARCHITECTURE.md](./ARCHITECTURE.md) §1** for the durable worker-tier fix (the #1 scaling blocker), and a true WebSocket upgrade path in §3.
 
