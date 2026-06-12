@@ -1,3 +1,8 @@
+-- The backfill below uses gen_random_uuid(), which is core only on PostgreSQL
+-- 13+. Install pgcrypto so this migration is self-contained and portable to
+-- older servers too (idempotent + no-op on PG 13+). Targets run PostgreSQL 16.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- CreateEnum
 CREATE TYPE "SupportChatSenderRole" AS ENUM ('USER', 'AGENT', 'SYSTEM');
 

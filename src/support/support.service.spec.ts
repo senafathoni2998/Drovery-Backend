@@ -34,38 +34,36 @@ describe('SupportService', () => {
   });
 
   describe('submitTicket', () => {
-    it('persists the ticket, seeds the chat thread (user msg + system ack), and returns its id', async () => {
+    it('atomically creates the ticket + seed thread (user msg + system ack) and returns its id', async () => {
       prisma.supportTicket.create.mockResolvedValue({ id: 'ticket-db-1' });
-      prisma.supportChatMessage.createMany.mockResolvedValue({ count: 2 });
 
       const result = await service.submitTicket('user-1', 'I need help');
 
-      expect(prisma.supportTicket.create).toHaveBeenCalledWith({
-        data: {
-          userId: 'user-1',
-          message: 'I need help',
-          lastMessageAt: expect.any(Date),
-        },
+      // Single nested create — the ticket and both seed messages commit together.
+      expect(prisma.supportTicket.create).toHaveBeenCalledTimes(1);
+      const data = prisma.supportTicket.create.mock.calls[0][0].data;
+      expect(data).toMatchObject({
+        userId: 'user-1',
+        message: 'I need help',
+        lastMessageAt: expect.any(Date),
       });
 
-      expect(prisma.supportChatMessage.createMany).toHaveBeenCalledTimes(1);
-      const seeded = prisma.supportChatMessage.createMany.mock.calls[0][0].data;
+      const seeded = data.messages.create;
       expect(seeded).toHaveLength(2);
       expect(seeded[0]).toMatchObject({
-        ticketId: 'ticket-db-1',
         senderRole: 'USER',
         senderUserId: 'user-1',
         content: 'I need help',
       });
-      expect(seeded[1]).toMatchObject({
-        ticketId: 'ticket-db-1',
-        senderRole: 'SYSTEM',
-        senderUserId: null,
-      });
+      expect(seeded[1]).toMatchObject({ senderRole: 'SYSTEM' });
+      expect(seeded[1].senderUserId).toBeUndefined();
       // The system ack must sort AFTER the user message in chronological history.
       expect(seeded[0].createdAt.getTime()).toBeLessThan(
         seeded[1].createdAt.getTime(),
       );
+
+      // No separate, non-atomic second write.
+      expect(prisma.supportChatMessage.createMany).not.toHaveBeenCalled();
 
       expect(result).toEqual({ success: true, ticketId: 'ticket-db-1' });
     });

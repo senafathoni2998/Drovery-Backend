@@ -26,28 +26,30 @@ export class SupportService {
     const now = new Date();
     const ackAt = new Date(now.getTime() + 1);
 
+    // One atomic nested create: the ticket + its seed thread (opening USER
+    // message + the auto-acknowledgement) commit together, so a crash can never
+    // leave a ticket with an empty/partial thread (no re-seed path exists).
     const ticket = await this.prisma.supportTicket.create({
-      data: { userId, message, lastMessageAt: ackAt },
-    });
-
-    // Seed the chat thread: the opening USER message + the auto-acknowledgement.
-    await this.prisma.supportChatMessage.createMany({
-      data: [
-        {
-          ticketId: ticket.id,
-          senderRole: 'USER',
-          senderUserId: userId,
-          content: message,
-          createdAt: now,
+      data: {
+        userId,
+        message,
+        lastMessageAt: ackAt,
+        messages: {
+          create: [
+            {
+              senderRole: 'USER',
+              senderUserId: userId,
+              content: message,
+              createdAt: now,
+            },
+            {
+              senderRole: 'SYSTEM',
+              content: AUTO_ACK_MESSAGE,
+              createdAt: ackAt,
+            },
+          ],
         },
-        {
-          ticketId: ticket.id,
-          senderRole: 'SYSTEM',
-          senderUserId: null,
-          content: AUTO_ACK_MESSAGE,
-          createdAt: ackAt,
-        },
-      ],
+      },
     });
 
     this.logger.log(
