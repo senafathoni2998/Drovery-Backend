@@ -65,14 +65,14 @@ Nominatim's ~1 req/sec ceiling for typical (repetitive) address traffic.
 
 > The new `CacheService` is generic — reuse it next for **tracking snapshots** (absorb polling) and **`/users/me` + stats**.
 
-## 3. 🔴 Real-time tracking at scale (WS/SSE + Redis pub/sub)
+## 3. ✅ Real-time tracking at scale (WS + Redis pub/sub)
 
-**Now:** `TrackingGateway` holds subscriptions in an in-process `Map` and has **no WebSocket adapter installed**, so it doesn't actually serve. The mobile app currently **polls** `GET /deliveries/:id` every 4s (see `drovery-mobile`), which is correct and simple for launch.
+**Done (backend).** The `TrackingGateway` (raw `ws`, `WsAdapter` installed) now scales horizontally via **Redis pub/sub**: the **worker** publishes each position/status change to `delivery:<id>:update` (`TrackingPublisher`), and every API instance's `TrackingSubscriber` fans it out to its locally-connected clients — so an update computed in the worker reaches a client on **any** API replica. This decouples "who computed the update" from "who holds the socket." Verified cross-process (separate api + worker).
 
-**Scale path:**
-- **Polling is fine to ~thousands of concurrent trackers** if you add caching (below). Keep it for launch.
-- For true push at scale, stand up a **realtime tier** (Socket.IO with the **`@socket.io/redis-adapter`**, or SSE) so any instance can deliver an update. Workers publish position/status to **Redis Pub/Sub**; realtime nodes fan out to subscribed clients. This decouples "who computed the update" from "who holds the socket."
-- Authenticate + **ownership-scope** every subscription (today the gateway is unauthenticated).
+- **Auth + ownership:** the client authenticates with a JWT in the handshake query (`ws://host/?token=`), and ownership is re-checked per delivery at subscribe (`DeliveriesService.findOne`) — parity with `GET /deliveries/track`. Tokenless → close `1008`.
+- **Polling coexists.** `GET /deliveries/:id` (4s mobile poll) and the Postgres writes per tick are untouched — WS is purely **additive**, so polling stays the source of truth and the backstop on a Redis blip. **The mobile app still polls; migrating it to WS is a separate (mobile-repo) task.**
+- `drovery_ws_connections` gauge exposes live socket count.
+- Next at very high fan-out: a dedicated realtime tier (so sockets scale independently of the API), per-client subscription reverse-index (O(1) disconnect), and tracking-snapshot caching (§2) to absorb the remaining polling.
 
 ## 4. 🔴 Database: pooling, indexes, replicas, partitioning
 
@@ -141,7 +141,7 @@ Introduce Redis as a first-class cache, not just a queue:
 | **0 — now** | <1k | Single API + Postgres + polling. ✅ config validation (weak-secret boot guard), ✅ rate limiting (`@nestjs/throttler`), ✅ refresh-token rotation/revocation, ✅ CORS allowlist, ✅ owner-scoped tracking, ✅ structured logging (pino + request ids), ✅ health/readiness probes, ✅ Sentry error tracking, ✅ Prometheus `/metrics`. |
 | **1** | ~10k | ✅ **BullMQ worker tier** + standalone `worker` + `PROCESS_ROLE` split; ✅ **Redis geocode cache** (`CacheService`); ✅ **PgBouncer** pooling tier (docker-compose); ✅ producer/worker/cache/throttler Redis connections split (shared options, per-role flags) + cloud-ready (auth/TLS). Remaining: cache tracking-snapshots/stats, commercial geocoder. |
 | **2** | ~50k | Multiple API instances + ✅ **autoscaling** (✅ containerized, ✅ K8s **HPA** on api CPU + **KEDA** on worker queue depth, multi-instance-safe: ✅ Redis-backed throttler, ✅ bounded pg pool + PgBouncer), ✅ **Prometheus metrics**, ✅ **k6 load test** harness. Remaining: **read replicas**, batched Expo push in worker, Grafana dashboards/alerts. |
-| **3** | 100k+ | **Realtime tier** (Socket.IO + Redis adapter) replacing polling, partition/archive old rows, multi-AZ, run the k6 load test at each milestone, consider managed IdP. |
+| **3** | 100k+ | ✅ **Real-time tracking** (WS + Redis pub/sub, auth+ownership) — worker publishes, any API replica fans out; polling kept as backstop. Remaining: dedicated realtime tier (sockets scale apart from API), partition/archive old rows, multi-AZ, run k6 at each milestone, managed IdP. |
 
 **The app is now horizontally scalable.** It's stateless and containerized
 (multi-stage `Dockerfile`, one image runs api/worker/migrate by command + `PROCESS_ROLE`),
