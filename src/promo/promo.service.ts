@@ -25,8 +25,10 @@ export class PromoService {
         ? round2((originalTotal * code.discountValue) / 100)
         : code.discountValue;
     if (code.maxDiscount != null) raw = Math.min(raw, code.maxDiscount);
-    const discountAmount = round2(Math.min(raw, originalTotal)); // never > order
-    const finalTotal = round2(originalTotal - discountAmount); // never < 0
+    // Clamp to [0, originalTotal]: never negative (a bad/negative discountValue
+    // must not charge MORE than the order) and never more than the order.
+    const discountAmount = round2(Math.max(0, Math.min(raw, originalTotal)));
+    const finalTotal = round2(originalTotal - discountAmount);
     return { discountAmount, finalTotal };
   }
 

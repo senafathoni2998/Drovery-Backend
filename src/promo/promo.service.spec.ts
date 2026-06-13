@@ -69,6 +69,14 @@ describe('PromoService', () => {
         finalTotal: 0,
       });
     });
+
+    it('clamps a negative discount to 0 (never charges more than the order)', () => {
+      const bad = code({ discountType: 'FIXED', discountValue: -5, maxDiscount: null });
+      expect(service.computeDiscount(bad as any, 20)).toEqual({
+        discountAmount: 0,
+        finalTotal: 20,
+      });
+    });
   });
 
   describe('validateForRedeem', () => {
