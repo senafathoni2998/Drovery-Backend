@@ -66,9 +66,10 @@ export class RecurringDeliveriesService {
   }
 
   async findAll(userId: string, query: RecurringQueryDto) {
+    const active = query.activeFilter;
     const where = {
       userId,
-      ...(query.active !== undefined ? { active: query.active } : {}),
+      ...(active !== undefined ? { active } : {}),
     };
     const [items, total] = await this.prisma.$transaction([
       this.prisma.recurringDelivery.findMany({

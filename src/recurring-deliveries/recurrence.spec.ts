@@ -75,6 +75,31 @@ describe('computeNextOccurrence', () => {
     expect(computeNextOccurrence(r, new Date('2026-06-15T03:00:00.000Z'), TZ)).toBeNull();
   });
 
+  it('endDate is inclusive through its whole WIB day (keeps a post-07:00 time on the last day)', () => {
+    // endDate "2026-06-30" (UTC midnight = 07:00 WIB). A 09:00 WIB occurrence on
+    // Jun 30 (02:00Z) must still fire — the recurrence ends AFTER that day.
+    const r = rule({ timeOfDay: '09:00', endDate: new Date('2026-06-30T00:00:00.000Z') });
+    expect(
+      computeNextOccurrence(r, new Date('2026-06-29T03:00:00.000Z'), TZ)?.toISOString(),
+    ).toBe('2026-06-30T02:00:00.000Z'); // Jun 30 09:00 WIB — kept
+    // The day after endDate's WIB day yields nothing.
+    expect(
+      computeNextOccurrence(r, new Date('2026-06-30T02:00:00.000Z'), TZ),
+    ).toBeNull();
+  });
+
+  it('startDate includes the first WIB day for an early-morning time (before 07:00 WIB)', () => {
+    // startDate "2026-12-25" with a 03:00 WIB time must fire ON Dec 25 (the WIB
+    // day), not slip to Dec 26. Dec 25 03:00 WIB = 2026-12-24T20:00:00Z.
+    const r = rule({
+      timeOfDay: '03:00',
+      startDate: new Date('2026-12-25T00:00:00.000Z'),
+    });
+    expect(
+      computeNextOccurrence(r, new Date('2026-06-13T00:00:00.000Z'), TZ)?.toISOString(),
+    ).toBe('2026-12-24T20:00:00.000Z'); // Dec 25 03:00 WIB — first day kept
+  });
+
   it('returns null for an empty WEEKLY day set or a malformed time', () => {
     expect(computeNextOccurrence(rule({ freq: 'WEEKLY', daysOfWeek: [] }), new Date(), TZ)).toBeNull();
     expect(computeNextOccurrence(rule({ timeOfDay: '24:00' }), new Date(), TZ)).toBeNull();

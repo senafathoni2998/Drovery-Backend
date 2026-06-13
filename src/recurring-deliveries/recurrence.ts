@@ -31,6 +31,19 @@ function tzCalendarDate(
   return { y: get('year'), mo: get('month'), d: get('day') };
 }
 
+/** First instant (00:00 in `tz`) of the service-tz calendar day `instant` falls on. */
+function dayStartUtc(instant: Date, tz: string): number {
+  const { y, mo, d } = tzCalendarDate(instant, tz);
+  return zonedWallClockToUtc(y, mo, d, 0, 0, tz).getTime();
+}
+
+/** First instant of the NEXT service-tz calendar day after `instant`'s day. */
+function nextDayStartUtc(instant: Date, tz: string): number {
+  const { y, mo, d } = tzCalendarDate(instant, tz);
+  // Date.UTC inside zonedWallClockToUtc normalizes the day overflow.
+  return zonedWallClockToUtc(y, mo, d + 1, 0, 0, tz).getTime();
+}
+
 /**
  * The earliest occurrence UTC instant STRICTLY AFTER `after` (and never before
  * the rule's first valid day), honoring daysOfWeek + timeOfDay in the service
@@ -56,9 +69,17 @@ export function computeNextOccurrence(
   const days = rule.freq === 'DAILY' ? ALL_DAYS : rule.daysOfWeek;
   if (!days || days.length === 0) return null;
 
-  // Probe strictly after `after`, and never earlier than the first instant the
-  // rule is allowed to fire (startDate). `- 1` keeps the comparison strict-`>`.
-  const floor = Math.max(after.getTime(), rule.startDate.getTime() - 1);
+  // startDate/endDate are CALENDAR DATES interpreted in the service tz (a
+  // date-only string like "2026-06-30" parses to UTC midnight = 07:00 WIB, which
+  // is NOT the start of that WIB day — so anchor both bounds to the WIB day).
+  // floor = the instant just before 00:00 (service tz) of startDate's day, so an
+  // early-morning occurrence on the first day still qualifies. `- 1` keeps strict-`>`.
+  const floor = Math.max(after.getTime(), dayStartUtc(rule.startDate, tz) - 1);
+  // endDate is inclusive THROUGH its whole service-tz day: anything on or after
+  // 00:00 of the day AFTER endDate's day is past the recurrence.
+  const endExclusive = rule.endDate
+    ? nextDayStartUtc(rule.endDate, tz)
+    : Number.POSITIVE_INFINITY;
 
   // Service-tz "today" relative to the floor.
   const base = tzCalendarDate(new Date(floor), tz);
@@ -79,8 +100,8 @@ export function computeNextOccurrence(
     );
     if (candidate.getTime() <= floor) continue; // strictly after
 
-    if (rule.endDate && candidate.getTime() > rule.endDate.getTime()) {
-      return null; // exhausted (endDate inclusive)
+    if (candidate.getTime() >= endExclusive) {
+      return null; // past endDate's (inclusive) service-tz day → exhausted
     }
     return candidate;
   }

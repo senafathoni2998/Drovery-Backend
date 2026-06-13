@@ -102,6 +102,37 @@ describe('RecurringDeliveriesService', () => {
     });
   });
 
+  describe('findAll', () => {
+    it('applies the active filter from activeFilter (false → active:false)', async () => {
+      prisma.recurringDelivery.findMany.mockResolvedValue([]);
+      prisma.recurringDelivery.count.mockResolvedValue(0);
+      await service.findAll(userId, {
+        activeFilter: false,
+        skip: 0,
+        limit: 20,
+        page: 1,
+      } as any);
+      expect(prisma.recurringDelivery.findMany.mock.calls[0][0].where).toEqual({
+        userId,
+        active: false,
+      });
+    });
+
+    it('omits the active filter when activeFilter is undefined', async () => {
+      prisma.recurringDelivery.findMany.mockResolvedValue([]);
+      prisma.recurringDelivery.count.mockResolvedValue(0);
+      await service.findAll(userId, {
+        activeFilter: undefined,
+        skip: 0,
+        limit: 20,
+        page: 1,
+      } as any);
+      expect(prisma.recurringDelivery.findMany.mock.calls[0][0].where).toEqual({
+        userId,
+      });
+    });
+  });
+
   describe('owner-scoping', () => {
     it('findOne throws NotFound when not owned', async () => {
       prisma.recurringDelivery.findFirst.mockResolvedValue(null);
