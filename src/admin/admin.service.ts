@@ -45,16 +45,20 @@ export class AdminService {
 
   async listTickets(query: AdminTicketQueryDto) {
     const where = query.status ? { status: query.status } : {};
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.supportTicket.findMany({
-        where,
-        orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
-        skip: query.skip,
-        take: query.limit,
-        include: { user: { select: USER_SELECT } },
-      }),
-      this.prisma.supportTicket.count({ where }),
-    ]);
+    // Operator reporting list — lag-tolerant → read replica (one consistent
+    // snapshot via the reader's $transaction; falls back to primary).
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.supportTicket.findMany({
+          where,
+          orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+          skip: query.skip,
+          take: query.limit,
+          include: { user: { select: USER_SELECT } },
+        }),
+        c.supportTicket.count({ where }),
+      ]),
+    );
     return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
   }
 
@@ -123,16 +127,18 @@ export class AdminService {
       ...(query.status ? { status: query.status } : {}),
       ...(query.userId ? { userId: query.userId } : {}),
     };
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.delivery.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: query.skip,
-        take: query.limit,
-        include: { user: { select: USER_SELECT }, payment: true },
-      }),
-      this.prisma.delivery.count({ where }),
-    ]);
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.delivery.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: query.skip,
+          take: query.limit,
+          include: { user: { select: USER_SELECT }, payment: true },
+        }),
+        c.delivery.count({ where }),
+      ]),
+    );
     return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
   }
 
@@ -231,14 +237,16 @@ export class AdminService {
   }
 
   async listPromos(query: { skip: number; limit?: number; page?: number }) {
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.promoCode.findMany({
-        orderBy: { createdAt: 'desc' },
-        skip: query.skip,
-        take: query.limit,
-      }),
-      this.prisma.promoCode.count(),
-    ]);
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.promoCode.findMany({
+          orderBy: { createdAt: 'desc' },
+          skip: query.skip,
+          take: query.limit,
+        }),
+        c.promoCode.count(),
+      ]),
+    );
     return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
   }
 
@@ -284,22 +292,24 @@ export class AdminService {
 
   async getOverview() {
     const [users, byStatus, revenue, openTickets, activeRecurring] =
-      await this.prisma.$transaction([
-        this.prisma.user.count(),
-        this.prisma.delivery.groupBy({
-          by: ['status'],
-          _count: { _all: true },
-          orderBy: { status: 'asc' },
-        }),
-        this.prisma.payment.aggregate({
-          _sum: { amount: true },
-          where: { status: 'COMPLETED' },
-        }),
-        this.prisma.supportTicket.count({
-          where: { status: { in: ['OPEN', 'IN_PROGRESS'] } },
-        }),
-        this.prisma.recurringDelivery.count({ where: { active: true } }),
-      ]);
+      await this.prisma.readWithFallback((c) =>
+        c.$transaction([
+          c.user.count(),
+          c.delivery.groupBy({
+            by: ['status'],
+            _count: { _all: true },
+            orderBy: { status: 'asc' },
+          }),
+          c.payment.aggregate({
+            _sum: { amount: true },
+            where: { status: 'COMPLETED' },
+          }),
+          c.supportTicket.count({
+            where: { status: { in: ['OPEN', 'IN_PROGRESS'] } },
+          }),
+          c.recurringDelivery.count({ where: { active: true } }),
+        ]),
+      );
 
     // Backfill every status to 0 so the dashboard shape is stable.
     const deliveriesByStatus: Record<string, number> = {};
@@ -321,22 +331,24 @@ export class AdminService {
 
   async listUsers(query: AdminUserQueryDto) {
     const where = query.role ? { role: query.role } : {};
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.user.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: query.skip,
-        take: query.limit,
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-          createdAt: true,
-        },
-      }),
-      this.prisma.user.count({ where }),
-    ]);
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.user.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: query.skip,
+          take: query.limit,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            createdAt: true,
+          },
+        }),
+        c.user.count({ where }),
+      ]),
+    );
     return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
   }
 

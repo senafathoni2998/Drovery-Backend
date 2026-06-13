@@ -1,0 +1,97 @@
+{
+  "uid": "drovery-workers",
+  "title": "Drovery — Workers & Queue",
+  "tags": ["drovery"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "BullMQ jobs by state (the KEDA scale signal)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "max by (state) (drovery_queue_jobs{queue=\"delivery-simulation\"})",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Waiting + delayed backlog (alert > 1000)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "max(drovery_queue_jobs{queue=\"delivery-simulation\", state=\"waiting\"}) + max(drovery_queue_jobs{queue=\"delivery-simulation\", state=\"delayed\"})",
+          "legendFormat": "backlog"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Worker event-loop p99 lag (s)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "drovery_nodejs_eventloop_lag_p99_seconds{tier=\"worker\"}",
+          "legendFormat": "worker"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Resident memory (bytes)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "drovery_process_resident_memory_bytes",
+          "legendFormat": "{{tier}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "CPU (process seconds/s)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(drovery_process_cpu_seconds_total[5m])",
+          "legendFormat": "{{tier}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Scrape targets up",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [{ "expr": "up", "legendFormat": "{{job}}" }]
+    }
+  ]
+}

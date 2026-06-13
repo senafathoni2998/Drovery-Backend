@@ -66,6 +66,7 @@ const ACTIVE_STATUSES: DeliveryStatus[] = [
 ];
 
 const MAX_HANDOFF_ATTEMPTS = 5;
+const MAX_TRACKING_ID_TRIES = 5;
 
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.SCHEDULED,
@@ -218,31 +219,62 @@ export class DeliveriesService {
     // credits), so there's never an orphan delivery or an over-counted code. With
     // none of them, the plain create is unchanged.
     const needsTx = !!promoCode || creditsToApply > 0 || !!pendingReferral;
-    const delivery = needsTx
-      ? await this.prisma.$transaction(async (tx) => {
-          const created = await tx.delivery.create({ data: deliveryData });
-          if (promoCode) {
-            await this.promoService.redeemWithinTx(
-              tx,
-              promoCode,
-              userId,
-              created.id,
-              originalTotal,
-              discount,
-            );
-          }
-          if (creditsToApply > 0) {
-            await this.walletService.debitWithinTx(tx, userId, creditsToApply, {
-              deliveryId: created.id,
-              idempotencyKey: `debit:${created.id}`,
-            });
-          }
-          if (pendingReferral) {
-            await this.walletService.maybeGrantReferralRewardWithinTx(tx, userId);
-          }
-          return created;
-        })
-      : await this.prisma.delivery.create({ data: deliveryData });
+    // trackingId is an 8-char slice of a uuid (@unique). At volume a collision is
+    // rare but non-zero, and an unhandled P2002 would fail an otherwise-valid
+    // create. Regenerate + retry on a trackingId collision (≤ MAX_TRACKING_ID_TRIES);
+    // because the create is the FIRST op in the $transaction, a collision rolls the
+    // whole tx back, so promo/credit/referral re-run cleanly (no double-redeem).
+    let delivery: Awaited<ReturnType<typeof this.prisma.delivery.create>> | null =
+      null;
+    for (let attempt = 0; attempt < MAX_TRACKING_ID_TRIES; attempt++) {
+      try {
+        delivery = needsTx
+          ? await this.prisma.$transaction(async (tx) => {
+              const created = await tx.delivery.create({ data: deliveryData });
+              if (promoCode) {
+                await this.promoService.redeemWithinTx(
+                  tx,
+                  promoCode,
+                  userId,
+                  created.id,
+                  originalTotal,
+                  discount,
+                );
+              }
+              if (creditsToApply > 0) {
+                await this.walletService.debitWithinTx(
+                  tx,
+                  userId,
+                  creditsToApply,
+                  {
+                    deliveryId: created.id,
+                    idempotencyKey: `debit:${created.id}`,
+                  },
+                );
+              }
+              if (pendingReferral) {
+                await this.walletService.maybeGrantReferralRewardWithinTx(
+                  tx,
+                  userId,
+                );
+              }
+              return created;
+            })
+          : await this.prisma.delivery.create({ data: deliveryData });
+        break;
+      } catch (error) {
+        // Only a trackingId collision is retryable; anything else (incl. the in-tx
+        // debit idempotencyKey P2002) propagates unchanged.
+        if (!this.isTrackingIdCollision(error)) throw error;
+        deliveryData.trackingId = uuidv4().slice(0, 8).toUpperCase();
+        // Last attempt that still collides falls through to the throw below.
+      }
+    }
+    if (!delivery) {
+      throw new ConflictException(
+        'Could not allocate a unique tracking id, please retry.',
+      );
+    }
 
     // Create the payment (Stripe PaymentIntent) for the discounted total.
     // Best-effort; skipped entirely for a free order (Stripe rejects $0 intents).
@@ -413,15 +445,18 @@ export class DeliveriesService {
         break;
     }
 
-    const [items, total] = await Promise.all([
-      this.prisma.delivery.findMany({
-        where,
-        orderBy,
-        skip: query.skip,
-        take: query.limit,
-      }),
-      this.prisma.delivery.count({ where }),
-    ]);
+    // Lag-tolerant rendered list → read replica (falls back to primary).
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      Promise.all([
+        c.delivery.findMany({
+          where,
+          orderBy,
+          skip: query.skip,
+          take: query.limit,
+        }),
+        c.delivery.count({ where }),
+      ]),
+    );
 
     return {
       items,
@@ -453,16 +488,19 @@ export class DeliveriesService {
   }
 
   async findByTrackingId(userId: string, trackingId: string) {
-    const delivery = await this.prisma.delivery.findUnique({
-      where: { trackingId },
-      include: {
-        tracking: true,
-        workflowSteps: true,
-        payment: true,
-        proofOfDelivery: true,
-        rating: true,
-      },
-    });
+    // A tracking poll — lag-tolerant → read replica (falls back to primary).
+    const delivery = await this.prisma.readWithFallback((c) =>
+      c.delivery.findUnique({
+        where: { trackingId },
+        include: {
+          tracking: true,
+          workflowSteps: true,
+          payment: true,
+          proofOfDelivery: true,
+          rating: true,
+        },
+      }),
+    );
 
     // Ownership-scoped: don't leak other users' deliveries by tracking id.
     if (!delivery || delivery.userId !== userId) {
@@ -475,25 +513,29 @@ export class DeliveriesService {
   }
 
   async getActive(userId: string) {
-    return this.prisma.delivery.findMany({
-      where: {
-        userId,
-        status: { in: ACTIVE_STATUSES },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-    });
+    return this.prisma.readWithFallback((c) =>
+      c.delivery.findMany({
+        where: {
+          userId,
+          status: { in: ACTIVE_STATUSES },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+    );
   }
 
   async getRecent(userId: string) {
-    return this.prisma.delivery.findMany({
-      where: {
-        userId,
-        status: DeliveryStatus.DELIVERED,
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 5,
-    });
+    return this.prisma.readWithFallback((c) =>
+      c.delivery.findMany({
+        where: {
+          userId,
+          status: DeliveryStatus.DELIVERED,
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+      }),
+    );
   }
 
   async cancel(userId: string, deliveryId: string) {
@@ -904,6 +946,18 @@ export class DeliveriesService {
         message: 'Too many incorrect attempts — the handoff is locked.',
       },
       HANDOFF_LOCKED,
+    );
+  }
+
+  /** A P2002 unique violation specifically on the trackingId column (vs e.g. the
+   * in-tx debit idempotencyKey, which must NOT trigger a trackingId regenerate). */
+  private isTrackingIdCollision(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      String((error.meta as { target?: unknown })?.target ?? '').includes(
+        'trackingId',
+      )
     );
   }
 

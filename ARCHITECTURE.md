@@ -84,10 +84,10 @@ Nominatim's ~1 req/sec ceiling for typical (repetitive) address traffic.
 **Fix (in order):**
 - **PgBouncer** (transaction pooling) in front of Postgres; point Prisma at it. Essential once N instances > a handful.
 - Indexes already exist on `Delivery(userId/status/trackingId)`, `Notification(userId,read)` — good. Add for new access patterns as they appear (e.g. `support_tickets(userId)` exists).
-- **Read replicas** for the heavy read endpoints (lists, tracking polls, stats) — route reads via Prisma read-replica setup; writes to primary.
+- ✅ **Read replicas** for the heavy read endpoints — **done** (env-gated). `PrismaService` builds a second client on `DATABASE_REPLICA_URL` exposed as `prisma.reader` + a `readWithFallback()` helper (NOT the Prisma read-replica extension — it clones the datasource URL, which a driver-adapter client doesn't carry). Only **lag-tolerant** reads route to the replica (delivery lists / `getActive` / `getRecent` / tracking polls, user stats, notification feed + unread count, wallet/referral display, admin reporting lists + overview); **every** read-after-write / CAS-feeding / auth / `/health/ready` read stays on the primary. **Fail-safe**: unset → reader IS the primary (single-DB dev/test byte-identical); a replica blip falls back to the primary (logged, never a 5xx). Reader pool is separate (`DATABASE_REPLICA_POOL_MAX`); front the replica with its own PgBouncer at scale.
 - **Hosted Postgres** with autoscaling storage/replicas (RDS/Aurora/Cloud SQL/Neon).
-- Later, when `deliveries`/`delivery_tracking`/`notifications` grow huge, **partition by time** and archive/cold-store delivered rows.
-- Make `trackingId` collision-safe: it's currently `uuid().slice(0,8)` (8 hex chars) — fine now, but add a unique-retry on insert (the column is `@unique`, so just retry on conflict) before volume makes collisions non-trivial.
+- Later, when `deliveries`/`delivery_tracking`/`notifications` grow huge, **partition by time** and archive/cold-store delivered rows. **Deferred (documented plan):** PG cannot alter a populated table into a partitioned one in place and Prisma can't express partitioning, so this is a copy-swap **raw-SQL migration** (new `RANGE(createdAt)` parent + monthly children via `pg_partman`, `createdAt` folded into the composite PK, backfill + re-point the FKs from `DeliveryTracking`/`Payment`/`ProofOfDelivery`/`DeliveryRating`/`WorkflowStepCompletion`/`Notification`, swap under a maintenance/dual-write window). **Trigger:** revisit when `deliveries`/`notifications` exceed ~50–100M rows or autovacuum/index bloat degrades hot list queries (now visible on the Grafana dashboards). Until then indexes + PgBouncer + the read replica carry the load.
+- ✅ **`trackingId` collision-safe** — **done**. `create()` wraps the insert (plain + the promo/credit/referral `$transaction`) in a bounded retry: on a `P2002` whose target is `trackingId`, regenerate the 8-char id and retry (the whole tx rolls back so promo/credit/referral re-run cleanly); other `P2002`s propagate; exhaustion → `409`.
 
 ## 5. Caching tier (Redis)
 
@@ -127,7 +127,8 @@ Introduce Redis as a first-class cache, not just a queue:
 - ✅ **Health probes**: `GET /health` (liveness) + `GET /health/ready` (DB + Redis, 503 when down) — public, un-throttled, k8s-ready.
 - ✅ **Error tracking** (Sentry, `@sentry/node`) — unhandled 5xx reported from the global exception filter; DSN-gated (no-op without `SENTRY_DSN`); wired into both the API and worker entrypoints.
 - ✅ **Metrics** (Prometheus, `prom-client`) — `GET /api/v1/metrics`: default Node/process metrics, an HTTP histogram + counter labelled by route **template** (cardinality-safe), and a `drovery_queue_jobs{queue,state}` gauge from BullMQ `getJobCounts()` (the signal the worker autoscaler scales on). The headless worker serves the same registry at `:9091/metrics`.
-- **Remaining**: **tracing** API → worker → DB; Grafana dashboards + alerts on SLOs.
+- ✅ **Grafana dashboards + SLO alerts** — **done** (as code, over the existing metrics). `observability/`: `prometheus.yml` (scrapes api `/api/v1/metrics` + worker `:9091/metrics`), `alerts.yml` (5xx-rate warn 2% / page 5%, p99 latency by route, `/health/ready` 503s, queue backlog using `max` not `sum` = the KEDA signal, failed-job climb, event-loop lag, target-down), and two provisioned dashboards (`drovery-api`, `drovery-workers`). `docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up` brings up Prometheus (`:9090`) + Grafana (`:3001`) locally. A replica fallback is logged (and surfaces via the readiness/error panels).
+- **Remaining**: **tracing** API → worker → DB (OpenTelemetry) — deferred.
 
 ## 11. Delivery/CI & cost
 

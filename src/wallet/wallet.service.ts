@@ -178,19 +178,27 @@ export class WalletService {
   }
 
   async getWallet(userId: string, query: PaginationDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { creditBalance: true },
-    });
-    const [transactions, total] = await this.prisma.$transaction([
-      this.prisma.walletTransaction.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        skip: query.skip,
-        take: query.limit,
-      }),
-      this.prisma.walletTransaction.count({ where: { userId } }),
-    ]);
+    // Pure display read (balance + ledger), never feeds a debit/credit CAS →
+    // read replica (falls back to primary). The authoritative spend/refund CAS
+    // always runs on the primary inside a $transaction.
+    const [user, [transactions, total]] = await this.prisma.readWithFallback(
+      (c) =>
+        Promise.all([
+          c.user.findUnique({
+            where: { id: userId },
+            select: { creditBalance: true },
+          }),
+          c.$transaction([
+            c.walletTransaction.findMany({
+              where: { userId },
+              orderBy: { createdAt: 'desc' },
+              skip: query.skip,
+              take: query.limit,
+            }),
+            c.walletTransaction.count({ where: { userId } }),
+          ]),
+        ]),
+    );
     return {
       balance: round2(user?.creditBalance ?? 0),
       currency: 'usd',
@@ -202,12 +210,16 @@ export class WalletService {
   }
 
   async getReferrals(userId: string) {
+    // ensureReferralCode reads-then-lazily-writes the code → stays on the PRIMARY.
     const referralCode = await this.ensureReferralCode(userId);
-    const referrals = await this.prisma.referral.findMany({
-      where: { referrerId: userId },
-      orderBy: { createdAt: 'desc' },
-      include: { referee: { select: { name: true } } },
-    });
+    // The referral list is a display read → read replica (falls back to primary).
+    const referrals = await this.prisma.readWithFallback((c) =>
+      c.referral.findMany({
+        where: { referrerId: userId },
+        orderBy: { createdAt: 'desc' },
+        include: { referee: { select: { name: true } } },
+      }),
+    );
     const rewarded = referrals.filter((r) => r.status === 'REWARDED').length;
     return {
       referralCode,

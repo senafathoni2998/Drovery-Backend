@@ -1,0 +1,82 @@
+groups:
+  - name: drovery-api
+    rules:
+      # ── HTTP error rate (SLO: < 2% 5xx) ──
+      - alert: DroveryHighErrorRateWarning
+        expr: |
+          sum(rate(drovery_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(drovery_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'API 5xx rate above 2% for 10m'
+          description: '{{ $value | humanizePercentage }} of requests are 5xx.'
+      - alert: DroveryHighErrorRatePage
+        expr: |
+          sum(rate(drovery_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(drovery_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'API 5xx rate above 5% for 5m — paging'
+
+      # ── Latency (SLO: p99 < 1s; the histogram top bucket is 5s) ──
+      - alert: DroveryHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, route) (rate(drovery_http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'p99 latency above 1s on {{ $labels.route }} for 10m'
+
+      # ── Readiness probe failing (DB or Redis down) ──
+      # route carries the global api prefix (e.g. /api/v1/health/ready) and the
+      # emitted label is `status` — match prefix-agnostically by suffix.
+      - alert: DroveryReadinessFailing
+        expr: rate(drovery_http_requests_total{route=~".*/health/ready", status="503"}[2m]) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 'GET /health/ready returning 503 (a dependency is down)'
+
+  - name: drovery-workers
+    rules:
+      # ── Queue backlog = the KEDA scale signal. Use MAX, not sum: the gauge is
+      #    queue-global per scrape, so summing multiplies it by the replica count.
+      #    KEDA scales at 50 waiting/replica up to 20 replicas → alert near the ceiling.
+      - alert: DroveryQueueBacklog
+        expr: |
+          max(drovery_queue_jobs{queue="delivery-simulation", state="waiting"})
+            + max(drovery_queue_jobs{queue="delivery-simulation", state="delayed"}) > 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Simulation queue backlog > 1000 for 10m (autoscaler at/near max)'
+      - alert: DroveryQueueFailedClimbing
+        # `by (queue)` keeps the queue label so {{ $labels.queue }} renders (a bare
+        # max() strips all labels). Single queue today → identical firing behavior.
+        expr: max by (queue) (drovery_queue_jobs{state="failed"}) > 50
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'BullMQ failed jobs climbing on {{ $labels.queue }}'
+
+  - name: drovery-runtime
+    rules:
+      # ── Event-loop lag (process saturation) from the default node metrics ──
+      - alert: DroveryEventLoopLag
+        expr: drovery_nodejs_eventloop_lag_p99_seconds > 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Node event-loop p99 lag > 100ms on {{ $labels.tier }} for 5m'
+
+      # ── A scrape target gone (instance down) ──
+      - alert: DroveryTargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: '{{ $labels.job }} target down for 2m'

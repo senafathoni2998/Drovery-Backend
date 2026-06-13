@@ -6,7 +6,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DeliveryStatus } from '@prisma/client';
+import { DeliveryStatus, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 
 import { DeliveriesService } from './deliveries.service';
@@ -158,6 +158,47 @@ describe('DeliveriesService', () => {
   });
 
   afterEach(() => jest.clearAllMocks());
+
+  describe('create — trackingId collision retry', () => {
+    const trackingCollision = () =>
+      new Prisma.PrismaClientKnownRequestError('dup', {
+        code: 'P2002',
+        clientVersion: 'x',
+        meta: { target: ['trackingId'] },
+      });
+
+    it('retries the insert on a trackingId unique collision, then succeeds', async () => {
+      prisma.delivery.create
+        .mockRejectedValueOnce(trackingCollision())
+        .mockResolvedValueOnce(mockDelivery);
+
+      const result = await service.create(userId, createDto);
+
+      expect(prisma.delivery.create).toHaveBeenCalledTimes(2); // collided once, retried
+      expect((result as any).id).toBe(mockDelivery.id);
+    });
+
+    it('does NOT retry a non-trackingId unique violation (rethrows)', async () => {
+      const other = new Prisma.PrismaClientKnownRequestError('dup', {
+        code: 'P2002',
+        clientVersion: 'x',
+        meta: { target: ['idempotencyKey'] },
+      });
+      prisma.delivery.create.mockRejectedValue(other);
+
+      await expect(service.create(userId, createDto)).rejects.toBe(other);
+      expect(prisma.delivery.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up with a ConflictException after exhausting retries', async () => {
+      prisma.delivery.create.mockRejectedValue(trackingCollision());
+
+      await expect(service.create(userId, createDto)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(prisma.delivery.create).toHaveBeenCalledTimes(5); // MAX_TRACKING_ID_TRIES
+    });
+  });
 
   describe('create', () => {
     it('should price via PricingService and store the returned total', async () => {

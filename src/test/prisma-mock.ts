@@ -42,7 +42,7 @@ type MockPrismaService = {
       }
     : K extends '$transaction'
       ? jest.Mock
-      : K extends '$connect' | '$disconnect'
+      : K extends '$connect' | '$disconnect' | 'readWithFallback'
         ? jest.Mock
         : PrismaService[K];
 };
@@ -96,5 +96,9 @@ export function createMockPrismaService(): MockPrismaService {
   mock.$transaction = jest.fn((args) =>
     Array.isArray(args) ? Promise.all(args) : args(mock),
   );
+  // Read/write split (PrismaService): in tests there is one DB, so readWithFallback
+  // just runs its callback against the same mock. Routed read sites call
+  // `prisma.readWithFallback(c => ...)`; their specs can assert it was invoked.
+  mock.readWithFallback = jest.fn((fn: (c: unknown) => unknown) => fn(mock));
   return mock as unknown as MockPrismaService;
 }

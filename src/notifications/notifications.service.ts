@@ -33,11 +33,14 @@ export class NotificationsService {
   ) {}
 
   async findAll(userId: string) {
-    return this.prisma.notification.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
+    // The notification feed — lag-tolerant → read replica (falls back to primary).
+    return this.prisma.readWithFallback((c) =>
+      c.notification.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+    );
   }
 
   async markAsRead(userId: string, notificationId: string) {
@@ -272,9 +275,11 @@ export class NotificationsService {
   }
 
   async getUnreadCount(userId: string) {
-    const count = await this.prisma.notification.count({
-      where: { userId, read: false },
-    });
+    const count = await this.prisma.readWithFallback((c) =>
+      c.notification.count({
+        where: { userId, read: false },
+      }),
+    );
 
     return { count };
   }

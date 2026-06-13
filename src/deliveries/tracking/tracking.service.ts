@@ -7,9 +7,12 @@ export class TrackingService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getTracking(deliveryId: string) {
-    const tracking = await this.prisma.deliveryTracking.findUnique({
-      where: { deliveryId },
-    });
+    // A tracking poll — lag-tolerant → read replica (falls back to primary).
+    const tracking = await this.prisma.readWithFallback((c) =>
+      c.deliveryTracking.findUnique({
+        where: { deliveryId },
+      }),
+    );
 
     if (!tracking) {
       throw new NotFoundException(
