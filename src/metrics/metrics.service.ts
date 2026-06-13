@@ -9,13 +9,18 @@ import {
   collectDefaultMetrics,
 } from 'prom-client';
 
+import { WATCHDOG_QUEUE } from '../delivery-watchdog/watchdog.constants';
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
+import { RECUR_QUEUE } from '../recurring-deliveries/recurring.constants';
 
 /** Reject after `ms` so a hung Redis call can't stall the /metrics scrape. */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('metrics collect timed out')), ms);
+    timer = setTimeout(
+      () => reject(new Error('metrics collect timed out')),
+      ms,
+    );
   });
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
@@ -36,8 +41,19 @@ export class MetricsService {
   readonly httpTotal: Counter<string>;
   readonly wsConnections: Gauge<string>;
   readonly wsSupportConnections: Gauge<string>;
+  // Stuck-delivery watchdog (worker tier): reap counter + heartbeat gauges so the
+  // safety reaper is observable/alertable — a silent scheduler/processor death is
+  // otherwise invisible. last-scan drives `time() - gauge > N`; scheduler-registered
+  // drives `max(gauge) == 0` (or absent) across the worker fleet.
+  readonly watchdogReapedTotal: Counter<string>;
+  readonly watchdogLastScan: Gauge<string>;
+  readonly watchdogSchedulerRegistered: Gauge<string>;
 
-  constructor(@InjectQueue(SIM_QUEUE) private readonly queue: Queue) {
+  constructor(
+    @InjectQueue(SIM_QUEUE) simQueue: Queue,
+    @InjectQueue(RECUR_QUEUE) recurQueue: Queue,
+    @InjectQueue(WATCHDOG_QUEUE) watchdogQueue: Queue,
+  ) {
     collectDefaultMetrics({ register: this.registry, prefix: 'drovery_' });
 
     this.httpDuration = new Histogram({
@@ -69,34 +85,63 @@ export class MetricsService {
       registers: [this.registry],
     });
 
-    const queueRef = this.queue;
+    this.watchdogReapedTotal = new Counter({
+      name: 'drovery_watchdog_reaped_total',
+      help: 'Stuck LIVE deliveries reaped to DELIVERY_FAILED by the watchdog',
+      labelNames: ['status'],
+      registers: [this.registry],
+    });
+
+    this.watchdogLastScan = new Gauge({
+      name: 'drovery_watchdog_last_scan_timestamp_seconds',
+      help: 'Unix time the watchdog last COMPLETED a reap scan (heartbeat)',
+      registers: [this.registry],
+    });
+
+    this.watchdogSchedulerRegistered = new Gauge({
+      name: 'drovery_watchdog_scheduler_registered',
+      help: '1 when this replica registered the watchdog repeatable scheduler',
+      registers: [this.registry],
+    });
+
+    // Every BullMQ queue we want backlog/failed visibility on. getJobCounts is
+    // queue-global, so every replica exports the SAME value (KEDA queries with
+    // max(), not sum()). Each queue is collected independently so one slow/offline
+    // queue can't blank the others.
+    const queues: Array<{ name: string; queue: Queue }> = [
+      { name: SIM_QUEUE, queue: simQueue },
+      { name: RECUR_QUEUE, queue: recurQueue },
+      { name: WATCHDOG_QUEUE, queue: watchdogQueue },
+    ];
     new Gauge({
       name: 'drovery_queue_jobs',
       help: 'BullMQ job counts by state',
       labelNames: ['queue', 'state'],
       registers: [this.registry],
       async collect() {
-        try {
-          // Bound the call: the BullMQ connection uses maxRetriesPerRequest:null +
-          // an offline queue, so getJobCounts() HANGS (doesn't reject) when Redis
-          // is down. Without this race the whole /metrics scrape would hang.
-          const counts = await withTimeout(
-            queueRef.getJobCounts(
-              'waiting',
-              'active',
-              'delayed',
-              'completed',
-              'failed',
-            ),
-            1000,
-          );
-          for (const [state, value] of Object.entries(counts)) {
-            this.set({ queue: SIM_QUEUE, state }, value);
+        for (const { name, queue } of queues) {
+          try {
+            // Bound the call: the BullMQ connection uses maxRetriesPerRequest:null +
+            // an offline queue, so getJobCounts() HANGS (doesn't reject) when Redis
+            // is down. Without this race the whole /metrics scrape would hang.
+            const counts = await withTimeout(
+              queue.getJobCounts(
+                'waiting',
+                'active',
+                'delayed',
+                'completed',
+                'failed',
+              ),
+              1000,
+            );
+            for (const [state, value] of Object.entries(counts)) {
+              this.set({ queue: name, state }, value);
+            }
+          } catch {
+            // Redis/queue unavailable or slow — skip THIS queue for this scrape
+            // rather than hanging or failing the WHOLE /metrics response (the rest of
+            // the registry still renders, so Prometheus keeps visibility).
           }
-        } catch {
-          // Redis/queue unavailable or slow — skip the queue gauge for this scrape
-          // rather than hanging or failing the WHOLE /metrics response (the rest of
-          // the registry still renders, so Prometheus keeps visibility).
         }
       },
     });

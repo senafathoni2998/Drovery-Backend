@@ -248,12 +248,46 @@ describe('TelemetryService', () => {
       lng: 107.6,
     });
 
-    // Phase still advances; the garbage position is NOT written.
+    // Phase still advances; the garbage position is NOT written as coordinates,
+    // but liveness IS bumped (empty update → @updatedAt advances, no marker move)
+    // because the drone is still transmitting — so the watchdog won't false-reap it.
     expect(res.status).toBe('DRONE_ASSIGNED');
-    expect(tracking.updateTracking).not.toHaveBeenCalled();
+    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', {});
     const published = publisher.publishUpdate.mock.calls[0][0];
     expect(published.status).toBe('DRONE_ASSIGNED');
     expect(published.droneLat).toBeUndefined();
+  });
+
+  it('bumps liveness (no marker move) for a position-only out-of-bounds frame so a faulting-GPS drone is not false-reaped', async () => {
+    prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+    const res = await service.ingest({
+      deliveryId: 'd-1',
+      droneId: 'drone-1',
+      lat: 999, // out of bounds — dropped as a position
+      lng: 107.6,
+    });
+
+    // Liveness touch only: empty update bumps tracking.updatedAt, no coords written,
+    // nothing published (no usable position, no status change).
+    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', {});
+    expect(publisher.publishUpdate).not.toHaveBeenCalled();
+    expect(res.applied).toBe(false);
+  });
+
+  it('does NOT bump liveness for an out-of-bounds frame on a terminal/arrived delivery', async () => {
+    prisma.delivery.findUnique.mockResolvedValue(liveDelivery('AWAITING_HANDOFF'));
+
+    await service.ingest({
+      deliveryId: 'd-1',
+      droneId: 'drone-1',
+      lat: 999,
+      lng: 107.6,
+    });
+
+    // AWAITING_HANDOFF is terminal-for-position and outside the watchdog's scope,
+    // so a late garbage frame must not touch tracking at all.
+    expect(tracking.updateTracking).not.toHaveBeenCalled();
   });
 
   it('drops a malformed eta rather than writing a NaN date', async () => {

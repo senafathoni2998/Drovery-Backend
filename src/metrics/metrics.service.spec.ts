@@ -3,10 +3,14 @@ import { getQueueToken } from '@nestjs/bullmq';
 
 import { MetricsService } from './metrics.service';
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
+import { RECUR_QUEUE } from '../recurring-deliveries/recurring.constants';
+import { WATCHDOG_QUEUE } from '../delivery-watchdog/watchdog.constants';
 
 describe('MetricsService', () => {
   let service: MetricsService;
   let queue: { getJobCounts: jest.Mock };
+  let recurQueue: { getJobCounts: jest.Mock };
+  let watchdogQueue: { getJobCounts: jest.Mock };
 
   beforeEach(async () => {
     queue = {
@@ -14,11 +18,19 @@ describe('MetricsService', () => {
         .fn()
         .mockResolvedValue({ waiting: 3, active: 1, delayed: 7, failed: 0 }),
     };
+    recurQueue = {
+      getJobCounts: jest.fn().mockResolvedValue({ waiting: 0, delayed: 1 }),
+    };
+    watchdogQueue = {
+      getJobCounts: jest.fn().mockResolvedValue({ waiting: 0, failed: 2 }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MetricsService,
         { provide: getQueueToken(SIM_QUEUE), useValue: queue },
+        { provide: getQueueToken(RECUR_QUEUE), useValue: recurQueue },
+        { provide: getQueueToken(WATCHDOG_QUEUE), useValue: watchdogQueue },
       ],
     }).compile();
 
@@ -46,6 +58,41 @@ describe('MetricsService', () => {
     expect(out).toContain(
       `drovery_queue_jobs{queue="${SIM_QUEUE}",state="waiting"} 3`,
     );
+  });
+
+  it('collects depth for the recurring + watchdog queues too (not just SIM_QUEUE)', async () => {
+    const out = await service.metrics();
+    expect(recurQueue.getJobCounts).toHaveBeenCalled();
+    expect(watchdogQueue.getJobCounts).toHaveBeenCalled();
+    expect(out).toContain(
+      `drovery_queue_jobs{queue="${RECUR_QUEUE}",state="delayed"} 1`,
+    );
+    expect(out).toContain(
+      `drovery_queue_jobs{queue="${WATCHDOG_QUEUE}",state="failed"} 2`,
+    );
+  });
+
+  it('one queue failing does not blank the others on the same scrape', async () => {
+    watchdogQueue.getJobCounts.mockRejectedValueOnce(new Error('redis down'));
+    const out = await service.metrics();
+    // SIM_QUEUE still rendered despite the watchdog queue erroring.
+    expect(out).toContain(
+      `drovery_queue_jobs{queue="${SIM_QUEUE}",state="waiting"} 3`,
+    );
+  });
+
+  it('exposes the watchdog reap counter + heartbeat gauges', async () => {
+    service.watchdogReapedTotal.inc({ status: 'IN_TRANSIT' });
+    service.watchdogLastScan.set(1_700_000_000);
+    service.watchdogSchedulerRegistered.set(1);
+    const out = await service.metrics();
+    expect(out).toContain(
+      'drovery_watchdog_reaped_total{status="IN_TRANSIT"} 1',
+    );
+    expect(out).toContain(
+      'drovery_watchdog_last_scan_timestamp_seconds 1700000000',
+    );
+    expect(out).toContain('drovery_watchdog_scheduler_registered 1');
   });
 
   it('still renders the rest of the registry when getJobCounts rejects (Redis down)', async () => {

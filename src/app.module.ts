@@ -25,6 +25,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
 import { RecurringDeliveriesModule } from './recurring-deliveries/recurring-deliveries.module';
+import { DeliveryWatchdogModule } from './delivery-watchdog/delivery-watchdog.module';
 import { PromoModule } from './promo/promo.module';
 import { WalletModule } from './wallet/wallet.module';
 import { FavoritesModule } from './favorites/favorites.module';
@@ -131,6 +132,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     UsersModule,
     DeliveriesModule,
     RecurringDeliveriesModule,
+    DeliveryWatchdogModule,
     PromoModule,
     WalletModule,
     FavoritesModule,

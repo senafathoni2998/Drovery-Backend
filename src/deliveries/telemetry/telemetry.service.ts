@@ -4,7 +4,11 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { DeliveryFailureReason, DeliveryStatus, TrackingSource } from '@prisma/client';
+import {
+  DeliveryFailureReason,
+  DeliveryStatus,
+  TrackingSource,
+} from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { I18nService } from '../../i18n/i18n.service';
@@ -70,8 +74,7 @@ export class TelemetryService {
     // transport-agnostic entry point (a future MQTT producer / a direct call has
     // no DTO), so it defends itself: an out-of-bounds fix is dropped rather than
     // written, instead of trusting the caller.
-    const positionValid =
-      hasLat && hasLng && this.inBounds(lat as number, lng as number);
+    const positionValid = hasLat && hasLng && this.inBounds(lat, lng);
     if (hasLat && hasLng && !positionValid) {
       this.logger.warn(
         `Dropping out-of-bounds telemetry position (${lat}, ${lng}) for ${deliveryId}`,
@@ -159,6 +162,19 @@ export class TelemetryService {
         );
         positioned = true;
       }
+    } else if (
+      hasLat &&
+      hasLng &&
+      !this.isTerminalForPosition(delivery.status)
+    ) {
+      // The frame carried a position but it was DROPPED as out-of-bounds (above).
+      // The drone is still transmitting — that's liveness, even if the fix is
+      // unusable. Bump tracking.updatedAt WITHOUT moving the marker (all scalars
+      // undefined → @updatedAt advances, last good position preserved) so the
+      // stuck-delivery watchdog reaps on genuine comms-loss, not a faulting GPS.
+      await this.safe(() =>
+        this.trackingService.updateTracking(deliveryId, {}),
+      );
     }
 
     // Nothing changed (stale/dup with no usable position) → don't publish a frame.
@@ -175,7 +191,9 @@ export class TelemetryService {
     });
 
     if (appliedStatus) {
-      this.logger.log(`Delivery ${deliveryId} → ${appliedStatus} (live telemetry)`);
+      this.logger.log(
+        `Delivery ${deliveryId} → ${appliedStatus} (live telemetry)`,
+      );
     }
     return { applied: true, status: appliedStatus };
   }
@@ -222,7 +240,11 @@ export class TelemetryService {
           droneLng: msg.lng,
           // Exception droneStatus is localized by DeliveriesService.announceException;
           // here we only persist the gateway's own label if it sent one.
-          droneStatus: this.resolveDroneStatus(msg.droneStatus, undefined, null),
+          droneStatus: this.resolveDroneStatus(
+            msg.droneStatus,
+            undefined,
+            null,
+          ),
           eta: this.parseEta(msg.eta),
         }),
       );
