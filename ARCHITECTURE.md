@@ -46,7 +46,9 @@ in-flight delivery.
 
 **Standalone worker (done):** `src/worker.ts` boots the module graph as a Nest application context (no HTTP) and runs the processor — `npm run worker` / `worker:prod`. API instances opt out of consuming with `PROCESS_ROLE=api`, so API and workers scale independently. Worker concurrency is `SIM_WORKER_CONCURRENCY` (default 10); jobs retry with backoff (`attempts: 5`), transitions are an atomic monotonic compare-and-set (no resurrect/regress), and both API and worker `enableShutdownHooks()` to drain on SIGTERM.
 
-**Remaining for true multi-tier scale:** split the producer vs worker Redis connections (finite `maxRetriesPerRequest` + `enableOfflineQueue:false` on the producer so enqueues fail fast), add queue metrics/alerting, and — when real drones replace the simulation — have the same worker ingest telemetry from a drone-gateway/MQTT broker (the API and mobile contracts don't change).
+**Remaining for true multi-tier scale:** split the producer vs worker Redis connections (finite `maxRetriesPerRequest` + `enableOfflineQueue:false` on the producer so enqueues fail fast), add queue metrics/alerting.
+
+**Live telemetry ingestion (done — ROADMAP #15):** a real drone now *is* an interchangeable producer for the same tracking contract. A delivery is `SIMULATED` (default) or `LIVE` (a `TrackingSource` discriminator fixed at `create()`); LIVE enqueues no sim jobs and is driven by a transport-agnostic `TelemetryService.ingest()` that reuses the **same** monotonic CAS + `TrackingService` + `TrackingPublisher`, so the API and mobile contracts don't change. Primary transport is a `@Public` `POST /ingest/telemetry` with a fail-closed `DroneAuthGuard` (shared key + optional timestamped HMAC); a `MQTT_URL`-gated subscriber is the deferred real-broker path. The ingest core is tier-neutral; the HTTP receiver + MQTT listener run on the API tier (a single ingest owner, not the worker).
 
 > ⚠️ **Redis is now required** to run the backend (the queue connects on boot). `redis-server` on `:6379` (or `REDIS_HOST/PORT`).
 

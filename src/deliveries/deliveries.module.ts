@@ -23,6 +23,10 @@ import { TrackingGateway } from './tracking/tracking.gateway';
 import { TrackingPublisher } from './tracking/tracking.publisher';
 import { TrackingSubscriber } from './tracking/tracking.subscriber';
 import { TrackingService } from './tracking/tracking.service';
+import { DroneAuthGuard } from './telemetry/drone-auth.guard';
+import { MqttTelemetrySubscriber } from './telemetry/mqtt-telemetry.subscriber';
+import { TelemetryController } from './telemetry/telemetry.controller';
+import { TelemetryService } from './telemetry/telemetry.service';
 
 // The queue consumer runs everywhere except API-only instances (PROCESS_ROLE=api).
 const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
@@ -44,7 +48,12 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     // AuthService, so register Jwt here (same secret resolved from config).
     JwtModule.register({}),
   ],
-  controllers: [DeliveriesController, ProofController, RatingController],
+  controllers: [
+    DeliveriesController,
+    ProofController,
+    RatingController,
+    TelemetryController,
+  ],
   providers: [
     DeliveriesService,
     ProofService,
@@ -53,9 +62,16 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     TrackingService,
     // The worker publishes tracking updates to Redis; runs everywhere.
     TrackingPublisher,
+    // Live drone telemetry ingest core (transport-agnostic) + its gateway auth.
+    TelemetryService,
+    DroneAuthGuard,
     // The queue consumer (worker / dev), and the WS gateway + subscriber (api / dev).
     ...(RUN_PROCESSOR ? [SimulationProcessor] : []),
-    ...(IS_API ? [TrackingGateway, TrackingSubscriber] : []),
+    // The WS gateway + Redis subscriber + the (deferred) MQTT telemetry listener
+    // run wherever HTTP is served — a single ingest owner, not the worker.
+    ...(IS_API
+      ? [TrackingGateway, TrackingSubscriber, MqttTelemetrySubscriber]
+      : []),
   ],
   exports: [DeliveriesService, TrackingService, TrackingPublisher],
 })

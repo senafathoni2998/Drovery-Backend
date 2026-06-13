@@ -163,6 +163,15 @@ enum DeliveryStatus {
   CANCELED
 }
 
+// Who drives a delivery's lifecycle + position. SIMULATED (default) = the
+// in-memory BullMQ simulation; LIVE = real drone telemetry ingested via
+// /ingest/telemetry. The two are interchangeable producers of the same tracking
+// contract and never both drive one delivery (the choice is fixed at create()).
+enum TrackingSource {
+  SIMULATED
+  LIVE
+}
+
 model Delivery {
   id         String @id @default(uuid())
   trackingId String @unique
@@ -171,6 +180,13 @@ model Delivery {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   status DeliveryStatus @default(PENDING)
+
+  // SIMULATED (default) → the in-memory simulation drives the lifecycle.
+  // LIVE → real drone telemetry drives it; create() starts no simulation.
+  trackingSource TrackingSource @default(SIMULATED)
+  // The drone bound to a LIVE delivery; telemetry whose droneId doesn't match is
+  // rejected, so a stranger gateway can't drive a delivery it isn't assigned to.
+  assignedDroneId String?
 
   fromAddress String
   toAddress   String

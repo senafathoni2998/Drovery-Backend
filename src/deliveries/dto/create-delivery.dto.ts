@@ -80,4 +80,18 @@ export class CreateDeliveryDto {
   @IsOptional()
   @IsNumber()
   toLng?: number;
+
+  // Who drives this delivery's lifecycle. Omitted/SIMULATED (default) runs the
+  // in-memory simulation as before; LIVE starts no simulation and is driven
+  // entirely by real drone telemetry via /ingest/telemetry.
+  @IsOptional()
+  @IsIn(['SIMULATED', 'LIVE'])
+  trackingSource?: 'SIMULATED' | 'LIVE';
+
+  // The drone bound to a LIVE delivery (telemetry must report this id). Defaults
+  // to a deterministic id derived from the tracking id when omitted.
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  droneId?: string;
 }

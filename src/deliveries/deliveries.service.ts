@@ -8,7 +8,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DeliveryStatus, Prisma } from '@prisma/client';
+import { DeliveryStatus, Prisma, TrackingSource } from '@prisma/client';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -111,6 +111,17 @@ export class DeliveriesService {
       );
     }
 
+    // A LIVE delivery is driven by a real drone reporting its lifecycle now — it
+    // starts no simulation. Scheduling a future LIVE delivery has no sim kickoff
+    // to defer (and statusesBefore(PENDING) is empty, so telemetry couldn't lift
+    // it out of SCHEDULED), so reject the combination rather than strand it.
+    const isLive = dto.trackingSource === 'LIVE';
+    if (isLive && isScheduled) {
+      throw new BadRequestException(
+        'A LIVE-tracked delivery cannot be scheduled for a future pickup window.',
+      );
+    }
+
     // Apply an optional promo code. validateForRedeem throws (422/409) BEFORE any
     // write; the actual redemption is co-committed with the delivery below so a
     // code can never be over-redeemed. No code → charge the full price.
@@ -156,6 +167,12 @@ export class DeliveriesService {
       trackingId,
       userId,
       status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,
+      trackingSource: isLive ? TrackingSource.LIVE : TrackingSource.SIMULATED,
+      // A LIVE delivery is bound to exactly one drone; telemetry from any other
+      // drone is rejected. The default is a high-entropy random id (NOT derived
+      // from the public trackingId) so the binding is a real second factor; it's
+      // returned on create so the operator/gateway knows which id to report under.
+      assignedDroneId: isLive ? (dto.droneId ?? `drone-${uuidv4()}`) : null,
       scheduledFor: isScheduled ? scheduledFor : null,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
@@ -225,27 +242,32 @@ export class DeliveriesService {
       );
     }
 
-    // Either defer the lifecycle to the pickup window (a single kickoff job) or
-    // start it now. Best-effort: a queue/Redis hiccup must not fail creation.
-    try {
-      if (isScheduled) {
-        await this.simulationService.scheduleKickoff(
-          delivery.id,
-          userId,
-          coords,
-          scheduledFor!,
-        );
-      } else {
-        await this.simulationService.startSimulation(
-          delivery.id,
-          userId,
-          coords,
+    // A LIVE delivery is driven entirely by inbound drone telemetry, so it
+    // enqueues NO simulation jobs — that's what guarantees the sim and a live
+    // producer can never both drive one delivery. Otherwise either defer the
+    // lifecycle to the pickup window (a single kickoff job) or start it now.
+    // Best-effort: a queue/Redis hiccup must not fail creation.
+    if (!isLive) {
+      try {
+        if (isScheduled) {
+          await this.simulationService.scheduleKickoff(
+            delivery.id,
+            userId,
+            coords,
+            scheduledFor!,
+          );
+        } else {
+          await this.simulationService.startSimulation(
+            delivery.id,
+            userId,
+            coords,
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Failed to queue ${isScheduled ? 'kickoff' : 'simulation'} for delivery ${delivery.id}: ${(error as Error).message}`,
         );
       }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to queue ${isScheduled ? 'kickoff' : 'simulation'} for delivery ${delivery.id}: ${(error as Error).message}`,
-      );
     }
 
     // Return the plaintext handoff code exactly once (never persisted, never
