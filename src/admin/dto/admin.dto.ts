@@ -1,4 +1,5 @@
 import {
+  DeliveryFailureReason,
   DeliveryStatus,
   PromoDiscountType,
   Role,
@@ -56,6 +57,14 @@ export class RefundDto {
   @IsNumber()
   @IsPositive()
   amount?: number;
+}
+
+export class FailDeliveryDto {
+  // Why the delivery is being failed; defaults to ADMIN_ABORT (a drone-fault
+  // reason → refunds the customer) when omitted.
+  @IsOptional()
+  @IsEnum(DeliveryFailureReason)
+  reason?: DeliveryFailureReason;
 }
 
 // ── Promo CRUD ──

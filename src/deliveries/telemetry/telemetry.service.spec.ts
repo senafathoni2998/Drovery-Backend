@@ -10,6 +10,11 @@ describe('TelemetryService', () => {
   let prisma: ReturnType<typeof createMockPrismaService>;
   let tracking: { updateTracking: jest.Mock };
   let publisher: { publishUpdate: jest.Mock };
+  let deliveries: {
+    failExceptional: jest.Mock;
+    beginReturnToBase: jest.Mock;
+    completeReturnToBase: jest.Mock;
+  };
 
   const liveDelivery = (status: DeliveryStatus, overrides = {}) => ({
     id: 'd-1',
@@ -24,10 +29,16 @@ describe('TelemetryService', () => {
     prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
     publisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
+    deliveries = {
+      failExceptional: jest.fn().mockResolvedValue(true),
+      beginReturnToBase: jest.fn().mockResolvedValue(true),
+      completeReturnToBase: jest.fn().mockResolvedValue(true),
+    };
     service = new TelemetryService(
       prisma as any,
       tracking as any,
       publisher as any,
+      deliveries as any,
     );
   });
 
@@ -246,5 +257,131 @@ describe('TelemetryService', () => {
     expect(tracking.updateTracking).not.toHaveBeenCalled();
     expect(publisher.publishUpdate).not.toHaveBeenCalled();
     expect(res.applied).toBe(false);
+  });
+
+  describe('exception phases (P3 #16)', () => {
+    it('routes a FAILED phase to failExceptional with the frame reason (NOT the forward CAS)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+      const res = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'FAILED',
+        failureReason: 'WEATHER_ABORT',
+      });
+
+      expect(deliveries.failExceptional).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+      // The exception branch returns BEFORE the forward CAS / tracking write.
+      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
+      expect(tracking.updateTracking).not.toHaveBeenCalled();
+      expect(res).toEqual({ applied: true, status: 'DELIVERY_FAILED' });
+    });
+
+    it('defaults a reasonless FAILED frame to MECHANICAL', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+      await service.ingest({ deliveryId: 'd-1', droneId: 'drone-1', phase: 'FAILED' });
+
+      expect(deliveries.failExceptional).toHaveBeenCalledWith('d-1', 'MECHANICAL');
+    });
+
+    it('routes RETURNING → beginReturnToBase (default reason WEATHER_ABORT) and RETURNED → completeReturnToBase', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+      const returning = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'RETURNING',
+      });
+      expect(deliveries.beginReturnToBase).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+      expect(returning).toEqual({ applied: true, status: 'RETURNING' });
+
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('RETURNING'));
+      const returned = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'RETURNED',
+      });
+      expect(deliveries.completeReturnToBase).toHaveBeenCalledWith('d-1');
+      expect(returned).toEqual({ applied: true, status: 'RETURNED_TO_BASE' });
+    });
+
+    it('reports applied:false when the exception transition no-ops', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+      deliveries.failExceptional.mockResolvedValue(false);
+
+      const res = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'FAILED',
+      });
+
+      expect(res).toEqual({ applied: false, status: undefined });
+    });
+
+    it('still enforces LIVE-only + ownership for an exception phase', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(
+        liveDelivery('IN_TRANSIT', { trackingSource: 'SIMULATED' }),
+      );
+      await expect(
+        service.ingest({ deliveryId: 'd-1', droneId: 'drone-1', phase: 'FAILED' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+      await expect(
+        service.ingest({ deliveryId: 'd-1', droneId: 'stranger', phase: 'FAILED' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(deliveries.failExceptional).not.toHaveBeenCalled();
+    });
+
+    it('keeps the marker moving during RETURNING (position-only frame is written)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('RETURNING'));
+
+      const res = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        lat: -6.91,
+        lng: 107.61,
+      });
+
+      // RETURNING is not position-frozen → the position flows through the normal path.
+      expect(tracking.updateTracking).toHaveBeenCalled();
+      expect(res.applied).toBe(true);
+    });
+
+    it('writes the final at-base position from a RETURNED transition frame', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('RETURNING'));
+
+      const res = await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'RETURNED',
+        lat: -6.903,
+        lng: 107.615,
+      });
+
+      expect(res.status).toBe('RETURNED_TO_BASE');
+      // The transition frame's coordinate is persisted (otherwise the terminal is
+      // frozen and the marker would never reach base).
+      expect(tracking.updateTracking).toHaveBeenCalledWith(
+        'd-1',
+        expect.objectContaining({ droneLat: -6.903, droneLng: 107.615 }),
+      );
+    });
+
+    it('does not write a position when the exception transition no-ops', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('RETURNING'));
+      deliveries.completeReturnToBase.mockResolvedValue(false);
+
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'RETURNED',
+        lat: -6.903,
+        lng: 107.615,
+      });
+
+      expect(tracking.updateTracking).not.toHaveBeenCalled();
+    });
   });
 });

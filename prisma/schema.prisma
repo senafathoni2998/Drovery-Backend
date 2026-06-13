@@ -161,6 +161,25 @@ enum DeliveryStatus {
   AWAITING_HANDOFF
   DELIVERED
   CANCELED
+  // Exception outcomes — BRANCHES off the happy path, deliberately OUTSIDE
+  // STATUS_ORDER (simulation.constants.ts) so the monotonic forward CAS can never
+  // enter them and a terminal can't be resurrected. RETURNING is transient (drone
+  // flying the package home; the marker keeps moving); the other two are terminal.
+  RETURNING
+  DELIVERY_FAILED
+  RETURNED_TO_BASE
+}
+
+// Why a delivery failed / aborted. Stored on Delivery.failureReason (nullable) so
+// the outcome is explainable rather than a CANCELED catch-all. Drone/service-fault
+// reasons refund the customer; RECIPIENT_UNAVAILABLE (no-show / handoff lock) does not.
+enum DeliveryFailureReason {
+  RECIPIENT_UNAVAILABLE
+  WEATHER_ABORT
+  UNSAFE_DROP_ZONE
+  MECHANICAL
+  ADMIN_ABORT
+  OTHER
 }
 
 // Who drives a delivery's lifecycle + position. SIMULATED (default) = the
@@ -187,6 +206,10 @@ model Delivery {
   // The drone bound to a LIVE delivery; telemetry whose droneId doesn't match is
   // rejected, so a stranger gateway can't drive a delivery it isn't assigned to.
   assignedDroneId String?
+
+  // Set when the delivery ends as RETURNING/DELIVERY_FAILED/RETURNED_TO_BASE;
+  // null on the happy path. Drives the failure comms + the refund decision.
+  failureReason DeliveryFailureReason?
 
   fromAddress String
   toAddress   String

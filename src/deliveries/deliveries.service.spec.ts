@@ -12,11 +12,13 @@ import * as crypto from 'crypto';
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
+import { TrackingPublisher } from './tracking/tracking.publisher';
 import { PromoService } from '../promo/promo.service';
 import { WalletService } from '../wallet/wallet.service';
 import { createMockPrismaService } from '../test/prisma-mock';
@@ -53,7 +55,10 @@ describe('DeliveriesService', () => {
     debitWithinTx: jest.Mock;
     maybeGrantReferralRewardWithinTx: jest.Mock;
     refundForDelivery: jest.Mock;
+    refundChargeToWallet: jest.Mock;
   };
+  let notificationsService: { create: jest.Mock };
+  let trackingPublisher: { publishUpdate: jest.Mock };
 
   const userId = 'user-1';
 
@@ -90,7 +95,7 @@ describe('DeliveriesService', () => {
     simulationService = {
       startSimulation: jest.fn(),
       scheduleKickoff: jest.fn(),
-      stopSimulation: jest.fn(),
+      stopSimulation: jest.fn().mockResolvedValue(undefined),
     };
     geoService = { geocode: jest.fn() };
     pricingService = {
@@ -123,7 +128,10 @@ describe('DeliveriesService', () => {
       debitWithinTx: jest.fn().mockResolvedValue(undefined),
       maybeGrantReferralRewardWithinTx: jest.fn().mockResolvedValue(undefined),
       refundForDelivery: jest.fn().mockResolvedValue(undefined),
+      refundChargeToWallet: jest.fn().mockResolvedValue(undefined),
     };
+    notificationsService = { create: jest.fn().mockResolvedValue({}) };
+    trackingPublisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
     // Default: no pending referral (keeps the no-promo path a plain create).
     prisma.referral.findFirst.mockResolvedValue(null);
 
@@ -139,6 +147,8 @@ describe('DeliveriesService', () => {
         { provide: ServiceabilityService, useValue: serviceability },
         { provide: PromoService, useValue: promoService },
         { provide: WalletService, useValue: walletService },
+        { provide: NotificationsService, useValue: notificationsService },
+        { provide: TrackingPublisher, useValue: trackingPublisher },
       ],
     }).compile();
 
@@ -476,6 +486,8 @@ describe('DeliveriesService', () => {
         DeliveryStatus.PICKUP_IN_PROGRESS,
         DeliveryStatus.IN_TRANSIT,
         DeliveryStatus.AWAITING_HANDOFF,
+        // A returning drone is still airborne/live, so it stays in the active list.
+        DeliveryStatus.RETURNING,
       ]);
     });
 
@@ -800,16 +812,58 @@ describe('DeliveriesService', () => {
       ).rejects.toMatchObject({ status: 423 });
     });
 
-    it('locks the handoff after 5 failed attempts (423)', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        ...arrived,
-        handoffAttempts: 5,
-      });
+    it('an already-locked handoff (attempts === MAX) self-heals to DELIVERY_FAILED and returns 423', async () => {
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({ ...arrived, handoffAttempts: 5 }) // confirm read
+        .mockResolvedValueOnce({ userId }); // announceException read
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 }); // fail CAS applies
 
       await expect(
         service.confirmHandoff(userId, 'delivery-1', CODE),
       ).rejects.toMatchObject({ status: 423 });
-      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
+
+      // Self-heal: a locked-but-untransitioned delivery is failed on the next touch.
+      const failCas = prisma.delivery.updateMany.mock.calls.find(
+        (c: any) => c[0]?.data?.status === DeliveryStatus.DELIVERY_FAILED,
+      );
+      expect(failCas).toBeTruthy();
+    });
+
+    it('auto-fails the delivery (DELIVERY_FAILED / RECIPIENT_UNAVAILABLE) when the wrong-attempt counter reaches the cap', async () => {
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({ ...arrived, handoffAttempts: 4 }) // confirm read
+        .mockResolvedValueOnce({ handoffAttempts: 5 }) // post-CAS re-read (now at cap)
+        .mockResolvedValueOnce({ userId }); // announceException read
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', '000000'),
+      ).rejects.toMatchObject({ status: 423 });
+
+      const failCas = prisma.delivery.updateMany.mock.calls.find(
+        (c: any) => c[0]?.data?.status === DeliveryStatus.DELIVERY_FAILED,
+      );
+      expect(failCas).toBeTruthy();
+      expect(failCas![0].data.failureReason).toBe('RECIPIENT_UNAVAILABLE');
+      // recipient-fault → NO auto-refund.
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+      expect(walletService.refundChargeToWallet).not.toHaveBeenCalled();
+    });
+
+    it('does NOT lock/fail on a non-final wrong attempt (counter still below cap)', async () => {
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({ ...arrived, handoffAttempts: 1 }) // confirm read
+        .mockResolvedValueOnce({ handoffAttempts: 2 }); // post-CAS re-read (still under cap)
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        service.confirmHandoff(userId, 'delivery-1', '000000'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      const failCas = prisma.delivery.updateMany.mock.calls.find(
+        (c: any) => c[0]?.data?.status === DeliveryStatus.DELIVERY_FAILED,
+      );
+      expect(failCas).toBeFalsy();
     });
 
     it('rejects confirm when not yet AWAITING_HANDOFF (409)', async () => {
@@ -840,6 +894,160 @@ describe('DeliveriesService', () => {
       await expect(
         service.confirmHandoff(userId, 'delivery-1', CODE),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('delivery exceptions (P3 #16)', () => {
+    beforeEach(() => {
+      prisma.delivery.findUnique.mockResolvedValue({ userId });
+    });
+
+    it('failExceptional → DELIVERY_FAILED via a guarded in-flight-only CAS, with drone-fault refund + comms', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'WEATHER_ABORT' as any,
+      );
+
+      expect(applied).toBe(true);
+      const cas = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(cas.where.status.in).toEqual(
+        expect.arrayContaining([
+          'DRONE_ASSIGNED',
+          'PICKUP_IN_PROGRESS',
+          'IN_TRANSIT',
+          'AWAITING_HANDOFF',
+        ]),
+      );
+      // Never from a terminal or an early (cancelable) state.
+      expect(cas.where.status.in).not.toContain('DELIVERED');
+      expect(cas.where.status.in).not.toContain('CANCELED');
+      expect(cas.where.status.in).not.toContain('PENDING');
+      expect(cas.data).toEqual({
+        status: 'DELIVERY_FAILED',
+        failureReason: 'WEATHER_ABORT',
+      });
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith('delivery-1');
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith('delivery-1');
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith('delivery-1');
+      // Make the customer whole: the card-charged portion is credited to the wallet.
+      expect(walletService.refundChargeToWallet).toHaveBeenCalledWith('delivery-1');
+      expect(notificationsService.create).toHaveBeenCalled();
+      expect(trackingPublisher.publishUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'DELIVERY_FAILED' }),
+      );
+    });
+
+    it('failExceptional is a no-op (no cleanup/comms) when the CAS matches nothing', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+      );
+
+      expect(applied).toBe(false);
+      expect(simulationService.stopSimulation).not.toHaveBeenCalled();
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+      expect(notificationsService.create).not.toHaveBeenCalled();
+    });
+
+    it('recipient-fault failure stops the sim but does NOT auto-refund or release the promo', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.failExceptional('delivery-1', 'RECIPIENT_UNAVAILABLE' as any);
+
+      expect(simulationService.stopSimulation).toHaveBeenCalled();
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+      expect(walletService.refundChargeToWallet).not.toHaveBeenCalled();
+      expect(promoService.releaseForDelivery).not.toHaveBeenCalled();
+    });
+
+    it('adminForceCancel cannot resurrect a settled exception terminal (excludes all terminals)', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.DELIVERY_FAILED,
+      });
+
+      await expect(service.adminForceCancel('delivery-1')).rejects.toThrow(
+        ConflictException,
+      );
+      const cas = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(cas.where.status.notIn).toEqual(
+        expect.arrayContaining([
+          'DELIVERED',
+          'CANCELED',
+          'DELIVERY_FAILED',
+          'RETURNED_TO_BASE',
+        ]),
+      );
+    });
+
+    it('failExceptional can rescue a stuck RETURNING flight (RETURNING is failable)', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+      await service.failExceptional('delivery-1', 'MECHANICAL' as any);
+      const cas = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(cas.where.status.in).toContain('RETURNING');
+    });
+
+    it('beginReturnToBase enters RETURNING from a package-carrying state and refunds at the abort', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      const applied = await service.beginReturnToBase(
+        'delivery-1',
+        'WEATHER_ABORT' as any,
+      );
+
+      expect(applied).toBe(true);
+      const cas = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(cas.where.status.in).toEqual(
+        expect.arrayContaining([
+          'PICKUP_IN_PROGRESS',
+          'IN_TRANSIT',
+          'AWAITING_HANDOFF',
+        ]),
+      );
+      // Not from DRONE_ASSIGNED — nothing picked up yet → that's a FAIL, not a return.
+      expect(cas.where.status.in).not.toContain('DRONE_ASSIGNED');
+      expect(cas.data).toEqual({
+        status: 'RETURNING',
+        failureReason: 'WEATHER_ABORT',
+      });
+      expect(walletService.refundForDelivery).toHaveBeenCalled();
+    });
+
+    it('completeReturnToBase only fires from RETURNING and runs no second cleanup', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      const applied = await service.completeReturnToBase('delivery-1');
+
+      expect(applied).toBe(true);
+      const cas = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(cas.where.status).toBe('RETURNING');
+      expect(cas.data).toEqual({ status: 'RETURNED_TO_BASE' });
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+      expect(trackingPublisher.publishUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'RETURNED_TO_BASE' }),
+      );
+    });
+
+    it('adminFail throws 404 when the delivery does not exist', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+      prisma.delivery.findUnique.mockResolvedValue(null);
+      await expect(
+        service.adminFail('missing', 'ADMIN_ABORT' as any),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('adminFail throws 409 when the delivery is in a non-failable state', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.DELIVERED,
+      });
+      await expect(
+        service.adminFail('delivery-1', 'ADMIN_ABORT' as any),
+      ).rejects.toThrow(ConflictException);
     });
   });
 });

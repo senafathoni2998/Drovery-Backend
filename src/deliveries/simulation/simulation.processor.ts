@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingPublisher } from '../tracking/tracking.publisher';
 import {
@@ -173,12 +174,7 @@ export class SimulationProcessor extends WorkerHost {
       where: { id: deliveryId },
       select: { status: true },
     });
-    if (
-      !delivery ||
-      delivery.status === DeliveryStatus.CANCELED ||
-      delivery.status === DeliveryStatus.AWAITING_HANDOFF ||
-      delivery.status === DeliveryStatus.DELIVERED
-    ) {
+    if (!delivery || POSITION_FROZEN_STATUSES.includes(delivery.status)) {
       return;
     }
 

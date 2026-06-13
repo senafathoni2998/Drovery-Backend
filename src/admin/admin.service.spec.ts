@@ -16,13 +16,16 @@ import { AdminService } from './admin.service';
 describe('AdminService', () => {
   let service: AdminService;
   let prisma: ReturnType<typeof createMockPrismaService>;
-  let deliveries: { adminForceCancel: jest.Mock };
+  let deliveries: { adminForceCancel: jest.Mock; adminFail: jest.Mock };
   let wallet: { creditWithinTx: jest.Mock };
   let publisher: { publishMessage: jest.Mock };
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
-    deliveries = { adminForceCancel: jest.fn().mockResolvedValue({ id: 'd-1' }) };
+    deliveries = {
+      adminForceCancel: jest.fn().mockResolvedValue({ id: 'd-1' }),
+      adminFail: jest.fn().mockResolvedValue({ id: 'd-1' }),
+    };
     wallet = { creditWithinTx: jest.fn().mockResolvedValue(undefined) };
     publisher = { publishMessage: jest.fn().mockResolvedValue(undefined) };
     const module: TestingModule = await Test.createTestingModule({
@@ -80,6 +83,16 @@ describe('AdminService', () => {
   });
 
   describe('deliveries', () => {
+    it('fail delegates to DeliveriesService.adminFail with the given reason', async () => {
+      await service.fail('d-1', 'WEATHER_ABORT' as any);
+      expect(deliveries.adminFail).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+    });
+
+    it('fail defaults the reason to ADMIN_ABORT when omitted', async () => {
+      await service.fail('d-1');
+      expect(deliveries.adminFail).toHaveBeenCalledWith('d-1', 'ADMIN_ABORT');
+    });
+
     it('force-cancel delegates to DeliveriesService.adminForceCancel', async () => {
       await service.forceCancel('d-1');
       expect(deliveries.adminForceCancel).toHaveBeenCalledWith('d-1');

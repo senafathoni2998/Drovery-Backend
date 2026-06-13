@@ -10,6 +10,8 @@ import {
   Min,
 } from 'class-validator';
 
+import { DeliveryFailureReason } from '@prisma/client';
+
 import { DRONE_PHASES } from '../telemetry.constants';
 import type { DronePhase } from '../telemetry.constants';
 
@@ -54,4 +56,10 @@ export class TelemetryDto {
   @IsOptional()
   @IsISO8601()
   eta?: string;
+
+  // Why the delivery failed/aborted — only meaningful for an exception phase
+  // (FAILED/RETURNING). Ignored for happy-path frames.
+  @IsOptional()
+  @IsIn(Object.values(DeliveryFailureReason))
+  failureReason?: DeliveryFailureReason;
 }

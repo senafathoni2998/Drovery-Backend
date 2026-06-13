@@ -142,6 +142,41 @@ export class WalletService {
     }
   }
 
+  /**
+   * Make the customer whole for a failed/aborted delivery by crediting the
+   * card-charged amount (estimatedPrice, i.e. the non-credit portion) to their
+   * wallet + marking the Payment REFUNDED — since there is no live Stripe
+   * money-refund integration yet, the wallet IS the refund channel (this is what
+   * the failure comms promise). Distinct from refundForDelivery, which returns the
+   * separate WALLET-credit portion; together they fully reverse the charge.
+   * Best-effort + idempotent via `exception-refund:<id>`. No-op for a $0 charge.
+   */
+  async refundChargeToWallet(deliveryId: string): Promise<void> {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      select: { userId: true, estimatedPrice: true },
+    });
+    if (!delivery || delivery.estimatedPrice <= 0) return;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await this.creditWithinTx(
+          tx,
+          delivery.userId,
+          delivery.estimatedPrice,
+          'CHECKOUT_REFUND',
+          { deliveryId, idempotencyKey: `exception-refund:${deliveryId}` },
+        );
+        await tx.payment.updateMany({
+          where: { deliveryId },
+          data: { status: 'REFUNDED' },
+        });
+      });
+    } catch (e) {
+      if (this.isUniqueViolation(e)) return; // already refunded — no-op
+      throw e;
+    }
+  }
+
   async getWallet(userId: string, query: PaginationDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

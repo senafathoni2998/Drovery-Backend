@@ -8,11 +8,17 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DeliveryStatus, Prisma, TrackingSource } from '@prisma/client';
+import {
+  DeliveryFailureReason,
+  DeliveryStatus,
+  Prisma,
+  TrackingSource,
+} from '@prisma/client';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 import { GeoService } from '../geo/geo.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +27,14 @@ import { PromoService } from '../promo/promo.service';
 import { WalletService } from '../wallet/wallet.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
+import { TrackingPublisher } from './tracking/tracking.publisher';
+import {
+  FAILABLE_STATUSES,
+  RETURNABLE_STATUSES,
+  TERMINAL_STATUSES,
+  exceptionComms,
+  isDroneFaultReason,
+} from './delivery-exceptions';
 import {
   MAX_SCHEDULE_DAYS,
   SCHEDULE_THRESHOLD_MS,
@@ -45,6 +59,9 @@ const ACTIVE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.PICKUP_IN_PROGRESS,
   DeliveryStatus.IN_TRANSIT,
   DeliveryStatus.AWAITING_HANDOFF,
+  // The drone is airborne flying the package home — still live on the map, so it
+  // stays in the active/current lists (it's transient, not a terminal).
+  DeliveryStatus.RETURNING,
 ];
 
 const MAX_HANDOFF_ATTEMPTS = 5;
@@ -73,6 +90,8 @@ export class DeliveriesService {
     private readonly serviceabilityService: ServiceabilityService,
     private readonly promoService: PromoService,
     private readonly walletService: WalletService,
+    private readonly notificationsService: NotificationsService,
+    private readonly trackingPublisher: TrackingPublisher,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -539,7 +558,11 @@ export class DeliveriesService {
     const { count } = await this.prisma.delivery.updateMany({
       where: {
         id: deliveryId,
-        status: { notIn: [DeliveryStatus.DELIVERED, DeliveryStatus.CANCELED] },
+        // Never resurrect a SETTLED terminal (DELIVERED/CANCELED and the exception
+        // terminals DELIVERY_FAILED/RETURNED_TO_BASE) — that would corrupt the
+        // recorded outcome and trigger a second, policy-violating cleanup/refund.
+        // RETURNING (transient/in-flight) remains force-cancelable.
+        status: { notIn: TERMINAL_STATUSES },
       },
       data: { status: DeliveryStatus.CANCELED },
     });
@@ -565,6 +588,172 @@ export class DeliveriesService {
       where: { id: deliveryId },
       include: { tracking: true, payment: true },
     });
+  }
+
+  // ───────────────────────── Delivery exceptions (P3 #16) ─────────────────────
+  // Failed drop / weather abort / return-to-base as first-class outcomes. Each is
+  // a dedicated conditional CAS (like adminForceCancel) from a guarded set of
+  // in-flight states — single-winner, idempotent, never resurrects a terminal,
+  // never auto-delivers (no exception CAS targets DELIVERED). Cleanup + comms run
+  // exactly once, only for the winning transition (count > 0).
+
+  /**
+   * Fail an in-flight delivery (terminal DELIVERY_FAILED). Triggered by a drone
+   * telemetry FAILED phase, the admin /fail endpoint, or an exhausted handoff OTP.
+   * A drone/service-fault reason refunds the customer; a recipient-fault does not.
+   * Returns whether THIS call performed the transition (idempotent for callers).
+   */
+  async failExceptional(
+    deliveryId: string,
+    reason: DeliveryFailureReason,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+      data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
+    });
+    if (count === 0) return false;
+    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.announceException(
+      deliveryId,
+      DeliveryStatus.DELIVERY_FAILED,
+      reason,
+    );
+    this.logger.log(`Delivery ${deliveryId} → DELIVERY_FAILED (${reason})`);
+    return true;
+  }
+
+  /**
+   * Begin a return-to-base flight (transient RETURNING): the drone aborted the
+   * drop and is flying the package home; the user watches it return on the map.
+   * The refund decision is made HERE (at the abort), not when the drone lands.
+   */
+  async beginReturnToBase(
+    deliveryId: string,
+    reason: DeliveryFailureReason,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: RETURNABLE_STATUSES } },
+      data: { status: DeliveryStatus.RETURNING, failureReason: reason },
+    });
+    if (count === 0) return false;
+    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.announceException(deliveryId, DeliveryStatus.RETURNING, reason);
+    this.logger.log(`Delivery ${deliveryId} → RETURNING (${reason})`);
+    return true;
+  }
+
+  /**
+   * Complete a return flight (RETURNING → terminal RETURNED_TO_BASE). A guarded
+   * forward step OFF the happy-path order; non-resurrectable (re-firing against
+   * the terminal matches 0 rows). No second cleanup — the refund already ran at
+   * beginReturnToBase; the failureReason set at the abort is preserved.
+   */
+  async completeReturnToBase(deliveryId: string): Promise<boolean> {
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: DeliveryStatus.RETURNING },
+      data: { status: DeliveryStatus.RETURNED_TO_BASE },
+    });
+    if (count === 0) return false;
+    await this.announceException(deliveryId, DeliveryStatus.RETURNED_TO_BASE);
+    this.logger.log(`Delivery ${deliveryId} → RETURNED_TO_BASE`);
+    return true;
+  }
+
+  /**
+   * ADMIN-only fail — owner-unscoped, mirrors adminForceCancel's 404/409 contract.
+   * Caller must enforce the ADMIN role.
+   */
+  async adminFail(deliveryId: string, reason: DeliveryFailureReason) {
+    const applied = await this.failExceptional(deliveryId, reason);
+    if (!applied) {
+      const existing = await this.prisma.delivery.findUnique({
+        where: { id: deliveryId },
+        select: { status: true },
+      });
+      if (!existing) {
+        throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+      }
+      throw new ConflictException(
+        `Delivery cannot be failed in "${existing.status}" status.`,
+      );
+    }
+    return this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { tracking: true, payment: true },
+    });
+  }
+
+  /** Stop the sim, and for a drone-fault release the promo slot + refund credits.
+   * Idempotent + best-effort — the same trio cancel/adminForceCancel use. */
+  private async cleanupAfterException(
+    deliveryId: string,
+    refundCredits: boolean,
+  ): Promise<void> {
+    await this.simulationService
+      .stopSimulation(deliveryId)
+      .catch(() => undefined);
+    if (refundCredits) {
+      await this.promoService.releaseForDelivery(deliveryId).catch((e) =>
+        this.logger.warn(
+          `Promo release failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+      // Return BOTH portions of the charge so the "refunded to your wallet" comms
+      // are truthful for every payer: the wallet-credit portion (refundForDelivery)
+      // AND the card-charged portion credited back to the wallet (refundChargeToWallet,
+      // since there's no live Stripe money-refund yet). Both idempotent.
+      await this.walletService.refundForDelivery(deliveryId).catch((e) =>
+        this.logger.warn(
+          `Credit refund failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+      await this.walletService.refundChargeToWallet(deliveryId).catch((e) =>
+        this.logger.warn(
+          `Charge refund failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+    }
+  }
+
+  /** Notify the owner + publish the status to WS subscribers (best-effort, like
+   * the simulation's stage side-effects). */
+  private async announceException(
+    deliveryId: string,
+    status: DeliveryStatus,
+    reason?: DeliveryFailureReason,
+  ): Promise<void> {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      select: { userId: true },
+    });
+    if (!delivery) return;
+    const comms = exceptionComms(status, reason);
+    await this.safe(() =>
+      this.notificationsService.create(
+        delivery.userId,
+        comms.title,
+        comms.body,
+        { deliveryId, status, failureReason: reason },
+        'delivery',
+      ),
+    );
+    await this.safe(() =>
+      this.trackingPublisher.publishUpdate({
+        deliveryId,
+        status,
+        droneStatus: comms.droneStatus,
+      }),
+    );
+  }
+
+  private async safe(fn: () => Promise<unknown>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      this.logger.warn(
+        `Exception side-effect failed: ${(error as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -625,6 +814,13 @@ export class DeliveriesService {
       );
     }
     if (delivery.handoffAttempts >= MAX_HANDOFF_ATTEMPTS) {
+      // Already locked. Self-heal: if a prior (concurrent) race locked the counter
+      // without transitioning, fail it now so it can't sit AWAITING_HANDOFF forever
+      // with the sim still running. Idempotent — a no-op once already failed.
+      await this.failExceptional(
+        deliveryId,
+        DeliveryFailureReason.RECIPIENT_UNAVAILABLE,
+      );
       throw this.handoffLockedError();
     }
 
@@ -639,7 +835,27 @@ export class DeliveriesService {
         },
         data: { handoffAttempts: { increment: 1 } },
       });
-      if (count === 0) throw this.handoffLockedError();
+      // Decide lock from the PERSISTED post-CAS counter, NOT the stale pre-CAS read
+      // (which, under concurrent guesses, can be lower than the value this attempt's
+      // increment produced — leaving the delivery locked but never failed). The
+      // counter only rises and is capped at MAX by the CAS guard above, so this
+      // re-read is race-safe. count === 0 means a concurrent attempt already hit
+      // the cap. Either way auto-fail (recipient-fault → no auto-refund), then
+      // report locked. failExceptional is idempotent → fails exactly once.
+      const after = await this.prisma.delivery.findUnique({
+        where: { id: deliveryId },
+        select: { handoffAttempts: true },
+      });
+      if (
+        count === 0 ||
+        (after?.handoffAttempts ?? MAX_HANDOFF_ATTEMPTS) >= MAX_HANDOFF_ATTEMPTS
+      ) {
+        await this.failExceptional(
+          deliveryId,
+          DeliveryFailureReason.RECIPIENT_UNAVAILABLE,
+        );
+        throw this.handoffLockedError();
+      }
       throw new UnauthorizedException('Invalid handoff code.');
     }
 

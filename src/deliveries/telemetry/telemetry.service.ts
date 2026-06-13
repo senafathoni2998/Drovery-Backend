@@ -4,14 +4,18 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { DeliveryStatus, TrackingSource } from '@prisma/client';
+import { DeliveryFailureReason, DeliveryStatus, TrackingSource } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveriesService } from '../deliveries.service';
+import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { statusesBefore } from '../simulation/simulation.constants';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingPublisher } from '../tracking/tracking.publisher';
 import {
   DRONE_STATUS_MAX_LEN,
+  EXCEPTION_PHASE_TO_STATUS,
+  ExceptionPhase,
   LAT_MAX,
   LAT_MIN,
   LNG_MAX,
@@ -19,6 +23,7 @@ import {
   PHASE_DRONE_STATUS,
   PHASE_TO_STATUS,
   TelemetryMessage,
+  isExceptionPhase,
 } from './telemetry.constants';
 
 export interface IngestResult {
@@ -47,6 +52,7 @@ export class TelemetryService {
     private readonly prisma: PrismaService,
     private readonly trackingService: TrackingService,
     private readonly trackingPublisher: TrackingPublisher,
+    private readonly deliveriesService: DeliveriesService,
   ) {}
 
   async ingest(msg: TelemetryMessage): Promise<IngestResult> {
@@ -89,6 +95,14 @@ export class TelemetryService {
     // at create(), so a missing binding means undrivable, not open.)
     if (!delivery.assignedDroneId || delivery.assignedDroneId !== droneId) {
       throw new ForbiddenException('Drone is not assigned to this delivery');
+    }
+
+    // Exception phases (FAILED/RETURNING/RETURNED) are BRANCHES off the happy
+    // path — route them to the dedicated exception transitions (which own the
+    // conditional CAS + refund/cleanup + comms), NOT the monotonic forward CAS.
+    // The LIVE-only + ownership guards above already applied to this frame.
+    if (phase && isExceptionPhase(phase)) {
+      return this.ingestException(deliveryId, phase, msg, positionValid);
     }
 
     // ── Status: monotonic, forward-only CAS (identical to handleStage). A late/
@@ -156,12 +170,56 @@ export class TelemetryService {
     return { applied: true, status: appliedStatus };
   }
 
+  /**
+   * Routes an exception phase to the matching first-class transition. These own
+   * the conditional CAS + refund/cleanup + comms; ingest() doesn't run its forward
+   * CAS or position write for them. A missing reason defaults sensibly (both are
+   * drone-fault → refundable). RETURNED carries no reason — it preserves the one
+   * set at the abort.
+   */
+  private async ingestException(
+    deliveryId: string,
+    phase: ExceptionPhase,
+    msg: TelemetryMessage,
+    positionValid: boolean,
+  ): Promise<IngestResult> {
+    const status = EXCEPTION_PHASE_TO_STATUS[phase];
+    let applied = false;
+    if (phase === 'FAILED') {
+      applied = await this.deliveriesService.failExceptional(
+        deliveryId,
+        msg.failureReason ?? DeliveryFailureReason.MECHANICAL,
+      );
+    } else if (phase === 'RETURNING') {
+      applied = await this.deliveriesService.beginReturnToBase(
+        deliveryId,
+        msg.failureReason ?? DeliveryFailureReason.WEATHER_ABORT,
+      );
+    } else {
+      applied = await this.deliveriesService.completeReturnToBase(deliveryId);
+    }
+
+    // Persist the frame's position so the transition carries its coordinate. The
+    // DeliveriesService transition already fanned out the STATUS (announceException
+    // publishes status without coords); here we write the tracking row so a poll /
+    // getTracking reflects the true position — most importantly the RETURNED_TO_BASE
+    // final at-base marker, which is otherwise never recorded (a frozen terminal,
+    // so no later frame can correct it), and the RETURNING un-freeze leg.
+    if (applied && positionValid) {
+      await this.safe(() =>
+        this.trackingService.updateTracking(deliveryId, {
+          droneLat: msg.lat,
+          droneLng: msg.lng,
+          droneStatus: this.resolveDroneStatus(msg.droneStatus, undefined),
+          eta: this.parseEta(msg.eta),
+        }),
+      );
+    }
+    return { applied, status: applied ? status : undefined };
+  }
+
   private isTerminalForPosition(status: DeliveryStatus): boolean {
-    return (
-      status === DeliveryStatus.CANCELED ||
-      status === DeliveryStatus.AWAITING_HANDOFF ||
-      status === DeliveryStatus.DELIVERED
-    );
+    return POSITION_FROZEN_STATUSES.includes(status);
   }
 
   private inBounds(lat: number, lng: number): boolean {

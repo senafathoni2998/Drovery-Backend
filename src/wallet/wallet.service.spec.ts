@@ -147,6 +147,52 @@ describe('WalletService', () => {
     });
   });
 
+  describe('refundChargeToWallet', () => {
+    it('credits the card-charged amount to the wallet + marks the payment refunded', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId,
+        estimatedPrice: 18,
+      });
+      prisma.user.update.mockResolvedValue({ creditBalance: 18 });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.refundChargeToWallet('d-1');
+
+      expect(prisma.walletTransaction.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          type: 'CREDIT',
+          reason: 'CHECKOUT_REFUND',
+          amount: 18,
+          idempotencyKey: 'exception-refund:d-1',
+        }),
+      });
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: { deliveryId: 'd-1' },
+        data: { status: 'REFUNDED' },
+      });
+    });
+
+    it('no-ops for a $0 (fully credit-paid / free) charge', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({ userId, estimatedPrice: 0 });
+      await service.refundChargeToWallet('d-1');
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.walletTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('swallows the duplicate-refund unique violation (idempotent)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({ userId, estimatedPrice: 18 });
+      prisma.user.update.mockResolvedValue({ creditBalance: 18 });
+      prisma.walletTransaction.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'x',
+          meta: { target: 'wallet_transactions_idempotencyKey_key' },
+        }),
+      );
+      await expect(service.refundChargeToWallet('d-1')).resolves.toBeUndefined();
+    });
+  });
+
   describe('ensureReferralCode', () => {
     it('returns the existing code', async () => {
       prisma.user.findUnique.mockResolvedValue({ referralCode: 'ABCD2345' });

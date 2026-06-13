@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  DeliveryFailureReason,
   DeliveryStatus,
   Prisma,
   Role,
@@ -152,6 +153,15 @@ export class AdminService {
 
   forceCancel(deliveryId: string) {
     return this.deliveries.adminForceCancel(deliveryId);
+  }
+
+  /** Fail an in-flight delivery as a first-class exception (default ADMIN_ABORT,
+   * a drone-fault reason → refunds the customer). 404/409 like force-cancel. */
+  fail(deliveryId: string, reason?: DeliveryFailureReason) {
+    return this.deliveries.adminFail(
+      deliveryId,
+      reason ?? DeliveryFailureReason.ADMIN_ABORT,
+    );
   }
 
   /** Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent

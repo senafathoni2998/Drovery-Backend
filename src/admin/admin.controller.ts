@@ -17,6 +17,7 @@ import {
   AdminDeliveryQueryDto,
   AdminUserQueryDto,
   CreatePromoDto,
+  FailDeliveryDto,
   RefundDto,
   SetRoleDto,
   UpdatePromoDto,
@@ -47,6 +48,11 @@ export class AdminController {
   @Post('deliveries/:id/force-cancel')
   forceCancel(@Param('id') id: string) {
     return this.admin.forceCancel(id);
+  }
+
+  @Post('deliveries/:id/fail')
+  fail(@Param('id') id: string, @Body() dto: FailDeliveryDto) {
+    return this.admin.fail(id, dto.reason);
   }
 
   @Post('deliveries/:id/refund')
