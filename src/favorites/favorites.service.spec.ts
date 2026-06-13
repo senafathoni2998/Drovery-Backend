@@ -88,8 +88,8 @@ describe('FavoritesService', () => {
   describe('order', () => {
     it('places a delivery from an owned favorite (immediate by default)', async () => {
       prisma.favorite.findFirst.mockResolvedValue({
-        id: 'fav-1',
         ...srcDelivery,
+        id: 'fav-1',
       });
       await service.order(userId, 'fav-1');
       expect(deliveries.create).toHaveBeenCalledTimes(1);
@@ -101,7 +101,7 @@ describe('FavoritesService', () => {
     });
 
     it('honors a pickup override (schedule the reorder)', async () => {
-      prisma.favorite.findFirst.mockResolvedValue({ id: 'fav-1', ...srcDelivery });
+      prisma.favorite.findFirst.mockResolvedValue({ ...srcDelivery, id: 'fav-1' });
       await service.order(userId, 'fav-1', {
         pickupDate: '2026-12-25',
         pickupTime: '09:00',
