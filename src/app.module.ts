@@ -18,6 +18,7 @@ import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
+import { RolesGuard } from './common/guards/roles.guard';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
@@ -25,6 +26,7 @@ import { RecurringDeliveriesModule } from './recurring-deliveries/recurring-deli
 import { PromoModule } from './promo/promo.module';
 import { WalletModule } from './wallet/wallet.module';
 import { FavoritesModule } from './favorites/favorites.module';
+import { AdminModule } from './admin/admin.module';
 import { PricingModule } from './pricing/pricing.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -121,6 +123,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     PromoModule,
     WalletModule,
     FavoritesModule,
+    AdminModule,
     PricingModule,
     WorkflowsModule,
     PaymentsModule,
@@ -144,6 +147,11 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
+    },
+    // Role authorization — runs after JwtAuthGuard; inert without @Roles().
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
     },
   ],
 })

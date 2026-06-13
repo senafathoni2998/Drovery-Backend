@@ -508,6 +508,44 @@ export class DeliveriesService {
   }
 
   /**
+   * ADMIN-only force-cancel — bypasses the owner check and the CANCELABLE gate to
+   * cancel a stuck delivery in any non-terminal state. Single-winner conditional
+   * CAS (can't un-deliver / double-cancel), then best-effort cleanup (sim jobs,
+   * promo slot, spent credits). Caller must enforce the ADMIN role.
+   */
+  async adminForceCancel(deliveryId: string) {
+    const { count } = await this.prisma.delivery.updateMany({
+      where: {
+        id: deliveryId,
+        status: { notIn: [DeliveryStatus.DELIVERED, DeliveryStatus.CANCELED] },
+      },
+      data: { status: DeliveryStatus.CANCELED },
+    });
+    if (count === 0) {
+      const existing = await this.prisma.delivery.findUnique({
+        where: { id: deliveryId },
+        select: { status: true },
+      });
+      if (!existing) {
+        throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+      }
+      throw new ConflictException(
+        `Delivery cannot be canceled in "${existing.status}" status.`,
+      );
+    }
+
+    // Best-effort cleanup (reuses the same services the owner-cancel uses).
+    await this.simulationService.stopSimulation(deliveryId).catch(() => undefined);
+    await this.promoService.releaseForDelivery(deliveryId).catch(() => undefined);
+    await this.walletService.refundForDelivery(deliveryId).catch(() => undefined);
+
+    return this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { tracking: true, payment: true },
+    });
+  }
+
+  /**
    * "Send again" — clone a past delivery into a new one. Reuses create(), so it
    * re-runs serviceability/pricing/payment fresh (a now-unflyable route is
    * rejected). Defaults to an immediate pickup; an optional override can schedule it.

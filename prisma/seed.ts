@@ -29,6 +29,22 @@ async function main() {
 
   console.log(`Created user: ${user.email}`);
 
+  // Admin user for the admin/agent API (role set out-of-band, never via signup).
+  const adminHash = await bcrypt.hash('admin123', 10);
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@drovery.com' },
+    update: { role: 'ADMIN', emailVerified: true },
+    create: {
+      email: 'admin@drovery.com',
+      name: 'Drovery Admin',
+      passwordHash: adminHash,
+      role: 'ADMIN',
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
+    },
+  });
+  console.log(`Created admin: ${admin.email}`);
+
   // Create sample deliveries
   const deliveries = [
     {

@@ -37,6 +37,8 @@ type MockPrismaService = {
         deleteMany: jest.Mock;
         count: jest.Mock;
         upsert: jest.Mock;
+        groupBy: jest.Mock;
+        aggregate: jest.Mock;
       }
     : K extends '$transaction'
       ? jest.Mock
@@ -58,6 +60,8 @@ export function createMockPrismaService(): MockPrismaService {
     deleteMany: jest.fn(),
     count: jest.fn(),
     upsert: jest.fn(),
+    groupBy: jest.fn(),
+    aggregate: jest.fn(),
   });
 
   const mock: Record<string, unknown> = {

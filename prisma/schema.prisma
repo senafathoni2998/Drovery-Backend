@@ -8,6 +8,12 @@ datasource db {
 
 // ==================== USER ====================
 
+enum Role {
+  USER
+  AGENT // support agent — support inbox only
+  ADMIN // full operator access
+}
+
 model User {
   id              String    @id @default(uuid())
   email           String    @unique
@@ -20,6 +26,10 @@ model User {
   emailVerified    Boolean   @default(false)
   emailVerifiedAt  DateTime?
   stripeCustomerId String?
+
+  // Coarse role for the admin/agent API (consumers are USER). Set out-of-band
+  // (seed / promote endpoint), never via signup. Resolved fresh by RolesGuard.
+  role Role @default(USER)
 
   // Wallet credits (dollars; denormalized authoritative balance, ledger is the
   // audit trail). A DB CHECK (creditBalance >= 0) backstops the spend CAS.
