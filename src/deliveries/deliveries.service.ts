@@ -18,6 +18,7 @@ import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { PromoService } from '../promo/promo.service';
+import { WalletService } from '../wallet/wallet.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import {
@@ -55,6 +56,8 @@ const CANCELABLE_STATUSES: DeliveryStatus[] = [
 
 const MAX_SCHEDULE_MS = MAX_SCHEDULE_DAYS * 24 * 60 * 60 * 1000;
 
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 @Injectable()
 export class DeliveriesService {
   private readonly logger = new Logger(DeliveriesService.name);
@@ -68,6 +71,7 @@ export class DeliveriesService {
     private readonly proofService: ProofService,
     private readonly serviceabilityService: ServiceabilityService,
     private readonly promoService: PromoService,
+    private readonly walletService: WalletService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -120,7 +124,27 @@ export class DeliveriesService {
     const discount = promoCode
       ? this.promoService.computeDiscount(promoCode, originalTotal)
       : { discountAmount: 0, finalTotal: originalTotal };
-    const finalTotal = discount.finalTotal;
+    const afterPromo = discount.finalTotal;
+
+    // Wallet credits, STACKED AFTER the promo discount. Clamp to both the balance
+    // and the remaining charge (never negative). The authoritative debit is the
+    // CAS inside the transaction below; this read just sizes the charge.
+    let creditsToApply = 0;
+    if (dto.useCredits) {
+      const wallet = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { creditBalance: true },
+      });
+      creditsToApply = round2(
+        Math.max(0, Math.min(wallet?.creditBalance ?? 0, afterPromo)),
+      );
+    }
+    const finalTotal = round2(afterPromo - creditsToApply);
+
+    // Grant the referral reward on the referee's first delivery (no-op otherwise).
+    const pendingReferral = await this.prisma.referral.findFirst({
+      where: { refereeId: userId, status: 'PENDING' },
+    });
 
     // Recipient handoff OTP: store only the hash; the plaintext is returned
     // once below (the sender shares it with the recipient, who reads it back at
@@ -149,21 +173,34 @@ export class DeliveriesService {
       handoffCodeHash: this.hashHandoffCode(handoffCode),
     };
 
-    // With a promo, the delivery row + the redemption (global-cap CAS + per-user
-    // ledger insert) commit in ONE transaction — redeemWithinTx throws to roll the
-    // whole thing back on a cap loss, so there's never an orphan delivery or an
-    // over-counted code. Without a promo, the plain create is unchanged.
-    const delivery = promoCode
+    // When a promo, a credit-spend, or a pending referral reward is in play, the
+    // delivery row + those balance mutations commit in ONE transaction — each
+    // helper throws to roll the whole thing back on a race (cap loss / insufficient
+    // credits), so there's never an orphan delivery or an over-counted code. With
+    // none of them, the plain create is unchanged.
+    const needsTx = !!promoCode || creditsToApply > 0 || !!pendingReferral;
+    const delivery = needsTx
       ? await this.prisma.$transaction(async (tx) => {
           const created = await tx.delivery.create({ data: deliveryData });
-          await this.promoService.redeemWithinTx(
-            tx,
-            promoCode,
-            userId,
-            created.id,
-            originalTotal,
-            discount,
-          );
+          if (promoCode) {
+            await this.promoService.redeemWithinTx(
+              tx,
+              promoCode,
+              userId,
+              created.id,
+              originalTotal,
+              discount,
+            );
+          }
+          if (creditsToApply > 0) {
+            await this.walletService.debitWithinTx(tx, userId, creditsToApply, {
+              deliveryId: created.id,
+              idempotencyKey: `debit:${created.id}`,
+            });
+          }
+          if (pendingReferral) {
+            await this.walletService.maybeGrantReferralRewardWithinTx(tx, userId);
+          }
           return created;
         })
       : await this.prisma.delivery.create({ data: deliveryData });
@@ -183,7 +220,7 @@ export class DeliveriesService {
       }
     } else {
       this.logger.log(
-        `Delivery ${delivery.id} is free after promo — skipping payment.`,
+        `Delivery ${delivery.id} is free after promo/credits — skipping payment.`,
       );
     }
 
@@ -439,13 +476,20 @@ export class DeliveriesService {
       // The processor also guards on CANCELED status, so this is non-fatal.
     }
 
-    // Release any promo redemption so the code's slot is returned (best-effort,
-    // idempotent). No-op when the delivery used no promo.
+    // Release any promo redemption + refund any spent wallet credits so the slot
+    // and the credits are returned (best-effort, idempotent). No-ops when unused.
     try {
       await this.promoService.releaseForDelivery(deliveryId);
     } catch (error) {
       this.logger.warn(
         `Promo release failed for delivery ${deliveryId}: ${(error as Error).message}`,
+      );
+    }
+    try {
+      await this.walletService.refundForDelivery(deliveryId);
+    } catch (error) {
+      this.logger.warn(
+        `Credit refund failed for delivery ${deliveryId}: ${(error as Error).message}`,
       );
     }
 

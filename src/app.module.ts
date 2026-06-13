@@ -23,6 +23,7 @@ import { UsersModule } from './users/users.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
 import { RecurringDeliveriesModule } from './recurring-deliveries/recurring-deliveries.module';
 import { PromoModule } from './promo/promo.module';
+import { WalletModule } from './wallet/wallet.module';
 import { PricingModule } from './pricing/pricing.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -117,6 +118,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     DeliveriesModule,
     RecurringDeliveriesModule,
     PromoModule,
+    WalletModule,
     PricingModule,
     WorkflowsModule,
     PaymentsModule,

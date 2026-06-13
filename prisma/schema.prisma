@@ -21,6 +21,13 @@ model User {
   emailVerifiedAt  DateTime?
   stripeCustomerId String?
 
+  // Wallet credits (dollars; denormalized authoritative balance, ledger is the
+  // audit trail). A DB CHECK (creditBalance >= 0) backstops the spend CAS.
+  creditBalance Float   @default(0)
+  // The user's own shareable referral code (nullable for pre-existing rows;
+  // backfilled in the migration, lazily generated on read if still null).
+  referralCode  String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -38,6 +45,9 @@ model User {
   supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
   recurringDeliveries     RecurringDelivery[]
   promoRedemptions        PromoRedemption[]
+  walletTransactions      WalletTransaction[]
+  referralsMade           Referral[] @relation("ReferralReferrer")
+  referralReceived        Referral?  @relation("ReferralReferee")
 
   @@map("users")
 }
@@ -419,6 +429,68 @@ model PromoRedemption {
   @@index([promoCodeId])
   @@index([userId])
   @@map("promo_redemptions")
+}
+
+// ==================== WALLET & REFERRALS ====================
+
+enum WalletTxnType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTxnReason {
+  REFERRAL_REWARD // minted to the referrer
+  REFEREE_REWARD // minted to the referred user
+  CHECKOUT_SPEND // credits applied to a delivery
+  CHECKOUT_REFUND // credits returned when a delivery is canceled
+}
+
+// Append-only ledger; one row per balance delta. `amount` is a positive
+// magnitude (sign carried by `type`); `balanceAfter` snapshots the post-apply
+// balance for reconciliation. `idempotencyKey` makes reward/refund writes
+// exactly-once.
+model WalletTransaction {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type         WalletTxnType
+  reason       WalletTxnReason
+  amount       Float
+  balanceAfter Float
+
+  deliveryId     String? // provenance only (no FK — keeps Delivery untouched)
+  referralId     String?
+  idempotencyKey String? @unique // e.g. refund:<deliveryId>, referral-referrer:<refId>
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("wallet_transactions")
+}
+
+enum ReferralStatus {
+  PENDING // linked at signup; reward not yet earned
+  REWARDED // referee hit the milestone; both parties credited
+}
+
+// One row per referrer→referee pair; the exactly-once reward gate. A user can be
+// the referee of at most one referral (refereeId @unique).
+model Referral {
+  id         String @id @default(uuid())
+  referrerId String
+  referrer   User   @relation("ReferralReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  refereeId  String @unique
+  referee    User   @relation("ReferralReferee", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  status         ReferralStatus @default(PENDING)
+  referrerReward Float? // audit: $ minted to the referrer
+  refereeReward  Float? // audit: $ minted to the referee
+  rewardedAt     DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@index([referrerId])
+  @@map("referrals")
 }
 
 // ==================== SUPPORT ====================

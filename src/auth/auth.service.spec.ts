@@ -88,6 +88,7 @@ describe('AuthService', () => {
           email: dto.email,
           name: dto.name,
           passwordHash: 'hashed-password',
+          referralCode: expect.any(String),
         },
       });
       expect(result.user).toEqual({
@@ -102,6 +103,39 @@ describe('AuthService', () => {
         dto.email,
         expect.any(String),
       );
+    });
+
+    it('links a referral when a valid referralCode is supplied (best-effort)', async () => {
+      // 1st findUnique: email availability (null). 2nd: referrer lookup by code.
+      prisma.user.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'referrer-1', email: 'inviter@test.com' });
+      (mockedBcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
+      prisma.user.create.mockResolvedValue({
+        id: 'user-1',
+        email: dto.email,
+        name: dto.name,
+      });
+
+      await service.signup({ ...dto, referralCode: 'abcd2345' });
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { referralCode: 'ABCD2345' }, // uppercased
+      });
+      expect(prisma.referral.create).toHaveBeenCalledWith({
+        data: { referrerId: 'referrer-1', refereeId: 'user-1', status: 'PENDING' },
+      });
+    });
+
+    it('does not link or block signup for an unknown referralCode', async () => {
+      prisma.user.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      (mockedBcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
+      prisma.user.create.mockResolvedValue({ id: 'user-1', email: dto.email, name: dto.name });
+
+      const result = await service.signup({ ...dto, referralCode: 'NOPE9999' });
+
+      expect(prisma.referral.create).not.toHaveBeenCalled();
+      expect(result.user.id).toBe('user-1');
     });
 
     it('should throw ConflictException if email already exists', async () => {

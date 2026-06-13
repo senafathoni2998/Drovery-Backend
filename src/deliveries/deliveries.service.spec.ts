@@ -18,6 +18,7 @@ import { ServiceabilityService } from '../serviceability/serviceability.service'
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { PromoService } from '../promo/promo.service';
+import { WalletService } from '../wallet/wallet.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
 const SERVICEABLE = {
@@ -47,6 +48,11 @@ describe('DeliveriesService', () => {
     computeDiscount: jest.Mock;
     redeemWithinTx: jest.Mock;
     releaseForDelivery: jest.Mock;
+  };
+  let walletService: {
+    debitWithinTx: jest.Mock;
+    maybeGrantReferralRewardWithinTx: jest.Mock;
+    refundForDelivery: jest.Mock;
   };
 
   const userId = 'user-1';
@@ -113,6 +119,13 @@ describe('DeliveriesService', () => {
       redeemWithinTx: jest.fn().mockResolvedValue(undefined),
       releaseForDelivery: jest.fn().mockResolvedValue(undefined),
     };
+    walletService = {
+      debitWithinTx: jest.fn().mockResolvedValue(undefined),
+      maybeGrantReferralRewardWithinTx: jest.fn().mockResolvedValue(undefined),
+      refundForDelivery: jest.fn().mockResolvedValue(undefined),
+    };
+    // Default: no pending referral (keeps the no-promo path a plain create).
+    prisma.referral.findFirst.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -125,6 +138,7 @@ describe('DeliveriesService', () => {
         { provide: ProofService, useValue: proofService },
         { provide: ServiceabilityService, useValue: serviceability },
         { provide: PromoService, useValue: promoService },
+        { provide: WalletService, useValue: walletService },
       ],
     }).compile();
 
@@ -322,6 +336,43 @@ describe('DeliveriesService', () => {
         mockDelivery.id,
         18,
       );
+    });
+  });
+
+  describe('create — wallet credits & referral', () => {
+    it('applies wallet credits stacked after promo (debit + reduced charge)', async () => {
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
+      prisma.delivery.create.mockResolvedValue({ ...mockDelivery, estimatedPrice: 8 });
+
+      await service.create(userId, { ...createDto, useCredits: true });
+
+      // 18 (total) - 10 (credits, clamped to balance) = 8 charged + stored.
+      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(8);
+      expect(walletService.debitWithinTx).toHaveBeenCalledWith(
+        expect.anything(),
+        userId,
+        10,
+        expect.objectContaining({ deliveryId: mockDelivery.id }),
+      );
+      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(mockDelivery.id, 8);
+    });
+
+    it('grants the referral reward on the first delivery (pending referral present)', async () => {
+      prisma.referral.findFirst.mockResolvedValue({ id: 'ref-1', refereeId: userId });
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.create(userId, createDto);
+
+      expect(walletService.maybeGrantReferralRewardWithinTx).toHaveBeenCalledWith(
+        expect.anything(),
+        userId,
+      );
+    });
+
+    it('does not spend credits when useCredits is absent', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      await service.create(userId, createDto);
+      expect(walletService.debitWithinTx).not.toHaveBeenCalled();
     });
   });
 

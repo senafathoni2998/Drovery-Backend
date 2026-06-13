@@ -1,6 +1,7 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsNumber,
@@ -57,6 +58,12 @@ export class CreateDeliveryDto {
   @IsString()
   @MaxLength(64)
   promoCode?: string;
+
+  // Apply available wallet credits to the price (server-computed amount: as much
+  // as the post-promo total, capped at the balance).
+  @IsOptional()
+  @IsBoolean()
+  useCredits?: boolean;
 
   @IsOptional()
   @IsNumber()

@@ -10,8 +10,11 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 
+import { Prisma } from '@prisma/client';
+
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { generateReferralCode } from '../wallet/wallet.constants';
 import { LoginDto, SignupDto } from './dto';
 
 const BCRYPT_SALT_ROUNDS = 12;
@@ -41,13 +44,60 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_SALT_ROUNDS);
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        name: dto.name,
-        passwordHash,
-      },
-    });
+    // Allocate the new user's own referral code, retrying on the (rare) unique
+    // collision. Other create errors (e.g. an email race) bubble up.
+    let user: { id: string; email: string; name: string } | undefined;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        user = await this.prisma.user.create({
+          data: {
+            email: dto.email,
+            name: dto.name,
+            passwordHash,
+            referralCode: generateReferralCode(),
+          },
+        });
+        break;
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === 'P2002' &&
+          String((e.meta as { target?: unknown })?.target ?? '').includes(
+            'referralCode',
+          )
+        ) {
+          continue; // code collision — regenerate
+        }
+        throw e;
+      }
+    }
+    if (!user) {
+      throw new ConflictException('Could not complete signup, please try again');
+    }
+
+    // Link an inbound referral (best-effort — an unknown/self code never blocks
+    // signup). The reward fires on this user's first delivery.
+    if (dto.referralCode) {
+      try {
+        const code = dto.referralCode.trim().toUpperCase();
+        const referrer = await this.prisma.user.findUnique({
+          where: { referralCode: code },
+        });
+        if (referrer && referrer.id !== user.id && referrer.email !== dto.email) {
+          await this.prisma.referral.create({
+            data: {
+              referrerId: referrer.id,
+              refereeId: user.id,
+              status: 'PENDING',
+            },
+          });
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Referral link failed for ${user.email}: ${(error as Error).message}`,
+        );
+      }
+    }
 
     // Kick off email verification (best-effort — never block signup on email).
     try {

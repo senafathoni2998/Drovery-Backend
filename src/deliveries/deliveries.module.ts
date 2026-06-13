@@ -8,6 +8,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { PromoModule } from '../promo/promo.module';
 import { ServiceabilityModule } from '../serviceability/serviceability.module';
+import { WalletModule } from '../wallet/wallet.module';
 import { StorageModule } from '../storage/storage.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
@@ -37,6 +38,7 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     StorageModule,
     ServiceabilityModule,
     PromoModule,
+    WalletModule,
     BullModule.registerQueue({ name: SIM_QUEUE }),
     // JwtService for the WS gateway's handshake auth. AuthModule only exports
     // AuthService, so register Jwt here (same secret resolved from config).
