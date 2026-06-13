@@ -30,13 +30,23 @@ describe('RecurringMaterializer', () => {
   });
 
   beforeEach(() => {
+    // Freeze the clock to a fixed instant so these scenarios are deterministic
+    // regardless of wall-clock: 02:00 UTC = 09:00 WIB (service tz, no DST). This
+    // keeps the next service-tz-aligned 08:00 occurrence > 6h (LOOKAHEAD_MS) away,
+    // so a baseSchedule (nextRunAt = now+60s) yields exactly ONE in-window
+    // occurrence. Run between ~02:00–08:00 WIB on a real clock, a second aligned
+    // occurrence falls inside the lookahead and the count assertions flake.
+    jest.useFakeTimers({ now: new Date('2026-03-16T02:00:00.000Z') });
     prisma = createMockPrismaService();
     deliveries = { create: jest.fn().mockResolvedValue({ id: 'd-1' }) };
     prisma.recurringDelivery.updateMany.mockResolvedValue({ count: 1 });
     mat = new RecurringMaterializer(prisma as any, deliveries as any);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
 
   it('claims an occurrence (CAS) and creates a delivery once', async () => {
     prisma.recurringDelivery.findMany.mockResolvedValue([baseSchedule()]);
