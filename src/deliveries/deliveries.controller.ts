@@ -11,7 +11,12 @@ import {
 
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { DeliveriesService } from './deliveries.service';
-import { ConfirmHandoffDto, CreateDeliveryDto, DeliveryQueryDto } from './dto';
+import {
+  ConfirmHandoffDto,
+  CreateDeliveryDto,
+  DeliveryQueryDto,
+  ReorderDto,
+} from './dto';
 
 @Controller('deliveries')
 export class DeliveriesController {
@@ -66,6 +71,16 @@ export class DeliveriesController {
     @Param('id') id: string,
   ) {
     return this.deliveriesService.cancel(userId, id);
+  }
+
+  // "Send again" — clone this delivery into a new one (immediate by default).
+  @Post(':id/reorder')
+  reorder(
+    @CurrentUser('sub') userId: string,
+    @Param('id') id: string,
+    @Body() dto: ReorderDto,
+  ) {
+    return this.deliveriesService.reorder(userId, id, dto);
   }
 
   @Post(':id/confirm-handoff')

@@ -376,6 +376,46 @@ describe('DeliveriesService', () => {
     });
   });
 
+  describe('reorder', () => {
+    it('clones a past delivery into a new one (via create) with an immediate pickup', async () => {
+      // findOne (owner-scoped) returns the source; create() then runs fresh.
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        userId,
+        fromAddress: 'Old From',
+        toAddress: 'Old To',
+        fromLat: -6.9,
+        fromLng: 107.6,
+        toLat: -6.92,
+        toLng: 107.62,
+        receiver: 'Repeat Bob',
+        packages: 'Same box',
+        packageSize: 'Medium',
+        packageWeight: 2,
+        packageTypes: ['electronics'],
+      });
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.reorder(userId, 'delivery-1');
+
+      // A NEW delivery row was created, cloning the source's params.
+      const data = prisma.delivery.create.mock.calls[0][0].data;
+      expect(data.fromAddress).toBe('Old From');
+      expect(data.receiver).toBe('Repeat Bob');
+      expect(data.pickupDate).toBeInstanceOf(Date); // create() wraps the string
+      expect(data.pickupTime).toMatch(/^\d{2}:\d{2}$/);
+      // Immediate (now) → PENDING, not SCHEDULED.
+      expect(data.status).toBe(DeliveryStatus.PENDING);
+    });
+
+    it('throws NotFound when reordering a delivery the user does not own', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({ ...mockDelivery, userId: 'other' });
+      await expect(service.reorder(userId, 'delivery-1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('create — serviceability gate', () => {
     it('rejects out-of-area with 422 and NO side effects', async () => {
       serviceability.checkServiceability.mockResolvedValue({

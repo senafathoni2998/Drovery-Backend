@@ -25,6 +25,7 @@ import {
   MAX_SCHEDULE_DAYS,
   SCHEDULE_THRESHOLD_MS,
   computeScheduledFor,
+  nowInServiceTz,
 } from './delivery-schedule';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
 
@@ -503,6 +504,35 @@ export class DeliveriesService {
         proofOfDelivery: true,
         rating: true,
       },
+    });
+  }
+
+  /**
+   * "Send again" — clone a past delivery into a new one. Reuses create(), so it
+   * re-runs serviceability/pricing/payment fresh (a now-unflyable route is
+   * rejected). Defaults to an immediate pickup; an optional override can schedule it.
+   */
+  async reorder(
+    userId: string,
+    deliveryId: string,
+    overrides?: { pickupDate?: string; pickupTime?: string },
+  ) {
+    const src = await this.findOne(userId, deliveryId); // owner-scoped (404 otherwise)
+    const now = nowInServiceTz();
+    return this.create(userId, {
+      fromAddress: src.fromAddress,
+      toAddress: src.toAddress,
+      receiver: src.receiver,
+      packages: src.packages,
+      packageSize: src.packageSize,
+      packageWeight: src.packageWeight,
+      packageTypes: src.packageTypes,
+      fromLat: src.fromLat ?? undefined,
+      fromLng: src.fromLng ?? undefined,
+      toLat: src.toLat ?? undefined,
+      toLng: src.toLng ?? undefined,
+      pickupDate: overrides?.pickupDate ?? now.date,
+      pickupTime: overrides?.pickupTime ?? now.time,
     });
   }
 

@@ -19,6 +19,28 @@ export function serviceTz(): string {
   return process.env.NOTIFICATIONS_TZ ?? 'Asia/Jakarta';
 }
 
+/** "Now" as a pickup date + time in the service timezone (for immediate orders).
+ * en-CA renders the date as YYYY-MM-DD; hour12:false gives HH:MM. */
+export function nowInServiceTz(tz: string = serviceTz()): {
+  date: string;
+  time: string;
+} {
+  const now = new Date();
+  const date = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  const time = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+  return { date, time };
+}
+
 /** Milliseconds that `tz` is ahead of UTC at the given instant. */
 function tzOffsetMs(date: Date, tz: string): number {
   const parts = new Intl.DateTimeFormat('en-US', {

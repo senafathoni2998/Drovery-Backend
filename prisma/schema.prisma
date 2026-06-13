@@ -48,6 +48,7 @@ model User {
   walletTransactions      WalletTransaction[]
   referralsMade           Referral[] @relation("ReferralReferrer")
   referralReceived        Referral?  @relation("ReferralReferee")
+  favorites               Favorite[]
 
   @@map("users")
 }
@@ -429,6 +430,35 @@ model PromoRedemption {
   @@index([promoCodeId])
   @@index([userId])
   @@map("promo_redemptions")
+}
+
+// ==================== FAVORITES ====================
+
+// A saved delivery template for quick reorder (snapshot of a delivery's params,
+// minus the pickup window).
+model Favorite {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label         String
+  fromAddress   String
+  toAddress     String
+  fromLat       Float?
+  fromLng       Float?
+  toLat         Float?
+  toLng         Float?
+  receiver      String
+  packages      String
+  packageSize   String
+  packageWeight Float
+  packageTypes  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("favorites")
 }
 
 // ==================== WALLET & REFERRALS ====================
