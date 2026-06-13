@@ -1,6 +1,9 @@
 import 'dotenv/config';
 // Initialize Sentry before any app modules load (no-op without SENTRY_DSN).
 import './common/monitoring/sentry';
+// Initialize OpenTelemetry tracing BEFORE the module graph (patches pg/ioredis at
+// require time). No-op unless enabled. MUST stay above the AppModule import.
+import { shutdownTracing } from './common/monitoring/tracing';
 
 import { createServer } from 'http';
 import { Logger } from '@nestjs/common';
@@ -64,10 +67,13 @@ async function bootstrap() {
   server.listen(metricsPort, () =>
     logger.log(`Worker metrics on :${metricsPort}/metrics`),
   );
-  // Close the metrics server on shutdown alongside Nest's hooks.
-  const closeServer = () => server.close();
-  process.on('SIGTERM', closeServer);
-  process.on('SIGINT', closeServer);
+  // Close the metrics server + flush trace spans on shutdown alongside Nest's hooks.
+  const onShutdown = () => {
+    server.close();
+    void shutdownTracing();
+  };
+  process.on('SIGTERM', onShutdown);
+  process.on('SIGINT', onShutdown);
 
   logger.log('Drovery simulation worker running — processing BullMQ jobs');
 }

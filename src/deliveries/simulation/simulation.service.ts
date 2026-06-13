@@ -13,6 +13,7 @@ import {
   buildPositionTicks,
   resolveCoords,
 } from './simulation.constants';
+import { injectTraceCarrier } from '../../common/monitoring/tracing';
 
 const JOB_OPTS = {
   // Retry transient failures (DB blip, etc.) with backoff. Handlers are
@@ -46,15 +47,17 @@ export class SimulationService {
   ): Promise<void> {
     const c = resolveCoords(coords);
 
+    // injectTraceCarrier stamps the active trace context onto the job data (a
+    // no-op pass-through when tracing is off) so the worker continues this trace.
     const stageJobs = STAGES.map((stage, i) => ({
       name: STAGE_JOB,
-      data: { deliveryId, userId, coords: c, stageIndex: i },
+      data: injectTraceCarrier({ deliveryId, userId, coords: c, stageIndex: i }),
       opts: { ...JOB_OPTS, delay: stage.delayMs, jobId: `${deliveryId}:stage:${i}` },
     }));
 
     const positionJobs = buildPositionTicks(c).map((tick, j) => ({
       name: POSITION_JOB,
-      data: { deliveryId, lat: tick.lat, lng: tick.lng },
+      data: injectTraceCarrier({ deliveryId, lat: tick.lat, lng: tick.lng }),
       opts: { ...JOB_OPTS, delay: tick.delay, jobId: `${deliveryId}:pos:${j}` },
     }));
 
@@ -86,7 +89,7 @@ export class SimulationService {
     await this.withTimeout(
       this.queue.add(
         KICKOFF_JOB,
-        { deliveryId, userId, coords: c },
+        injectTraceCarrier({ deliveryId, userId, coords: c }),
         // NOTE: queue.add() rejects a custom jobId containing ':' ("Custom Id
         // cannot contain :"), so the kickoff id uses a '-' separator (the
         // stage/pos ids use ':' but go through addBulk, which tolerates it).

@@ -3,6 +3,10 @@
 import 'dotenv/config';
 // Initialize Sentry before any app modules load (no-op without SENTRY_DSN).
 import { sentryEnabled } from './common/monitoring/sentry';
+// Initialize OpenTelemetry tracing BEFORE the module graph (so http/express/pg/
+// ioredis are patched at require time). No-op unless TRACING_ENABLED / an OTLP
+// endpoint is set (and Sentry is off). MUST stay above the AppModule import.
+import { tracingEnabled, shutdownTracing } from './common/monitoring/tracing';
 
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -65,12 +69,22 @@ async function bootstrap() {
   // rolling deploy finishes active jobs instead of orphaning them.
   app.enableShutdownHooks();
 
+  // Flush buffered trace spans on shutdown (no-op when tracing is disabled).
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(sig, () => {
+      void shutdownTracing();
+    });
+  }
+
   const port = config.get<number>('port', 3000);
   await app.listen(port);
 
   console.log(`Drovery API running on http://localhost:${port}/${prefix}`);
   console.log(
     `Sentry error tracking: ${sentryEnabled ? 'enabled' : 'disabled (no SENTRY_DSN)'}`,
+  );
+  console.log(
+    `Distributed tracing: ${tracingEnabled ? 'enabled (OpenTelemetry)' : 'disabled'}`,
   );
 }
 

@@ -71,20 +71,24 @@ export const POSITION_JOB = 'position';
 // flips SCHEDULED → PENDING, then enqueues the normal stage/position jobs.
 export const KICKOFF_JOB = 'kickoff';
 
-export interface KickoffJobData {
+// `_carrier` (optional) holds the injected W3C trace context so the worker can
+// continue the enqueueing request's trace; absent unless tracing is enabled.
+type TraceCarrier = { _carrier?: Record<string, string> };
+
+export interface KickoffJobData extends TraceCarrier {
   deliveryId: string;
   userId: string;
   coords: DeliveryCoords;
 }
 
-export interface StageJobData {
+export interface StageJobData extends TraceCarrier {
   deliveryId: string;
   userId: string;
   coords: DeliveryCoords;
   stageIndex: number;
 }
 
-export interface PositionJobData {
+export interface PositionJobData extends TraceCarrier {
   deliveryId: string;
   lat: number;
   lng: number;

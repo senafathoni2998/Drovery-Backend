@@ -14,6 +14,7 @@ import { validate } from './config/validation';
 import { buildRedisOptions } from './config/redis';
 import { redactTokenInUrl } from './common/redact';
 import { CacheModule } from './cache/cache.module';
+import { activeTraceId } from './common/monitoring/tracing';
 import { I18nModule } from './i18n/i18n.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -73,6 +74,12 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.LOG_LEVEL ?? 'info',
+        // Correlate logs with traces: stamp the active OTel trace id on every log
+        // line (no-op — emits nothing — when tracing is disabled).
+        mixin: () => {
+          const traceId = activeTraceId();
+          return traceId ? { trace_id: traceId } : {};
+        },
         genReqId: (req, res) => {
           const incoming = req.headers['x-request-id'];
           const id =

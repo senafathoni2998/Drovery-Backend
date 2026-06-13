@@ -4,6 +4,7 @@ import { DeliveryStatus } from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { withJobSpan } from '../../common/monitoring/tracing';
 import { I18nService } from '../../i18n/i18n.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
@@ -55,13 +56,19 @@ export class SimulationProcessor extends WorkerHost {
   }
 
   async process(job: Job): Promise<void> {
-    if (job.name === STAGE_JOB) {
-      await this.handleStage(job.data as StageJobData);
-    } else if (job.name === POSITION_JOB) {
-      await this.handlePosition(job.data as PositionJobData);
-    } else if (job.name === KICKOFF_JOB) {
-      await this.handleKickoff(job.data as KickoffJobData);
-    }
+    // Continue the enqueueing request's trace (carrier injected at enqueue) under a
+    // CONSUMER span, so this job's DB/Redis spans share the create request's traceId.
+    // No-op wrapper (runs the dispatch directly) when tracing is disabled.
+    const carrier = (job.data as { _carrier?: unknown })?._carrier;
+    await withJobSpan(job.name, carrier, async () => {
+      if (job.name === STAGE_JOB) {
+        await this.handleStage(job.data as StageJobData);
+      } else if (job.name === POSITION_JOB) {
+        await this.handlePosition(job.data as PositionJobData);
+      } else if (job.name === KICKOFF_JOB) {
+        await this.handleKickoff(job.data as KickoffJobData);
+      }
+    });
   }
 
   /**
