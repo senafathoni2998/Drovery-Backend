@@ -20,6 +20,8 @@ type MockPrismaService = {
     | 'notificationPreference'
     | 'supportChatMessage'
     | 'recurringDelivery'
+    | 'promoCode'
+    | 'promoRedemption'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -55,7 +57,7 @@ export function createMockPrismaService(): MockPrismaService {
     upsert: jest.fn(),
   });
 
-  return {
+  const mock: Record<string, unknown> = {
     user: createModelMock(),
     delivery: createModelMock(),
     deliveryTracking: createModelMock(),
@@ -74,10 +76,15 @@ export function createMockPrismaService(): MockPrismaService {
     notificationPreference: createModelMock(),
     supportChatMessage: createModelMock(),
     recurringDelivery: createModelMock(),
-    $transaction: jest.fn((args) =>
-      Array.isArray(args) ? Promise.all(args) : args(),
-    ),
+    promoCode: createModelMock(),
+    promoRedemption: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
-  } as unknown as MockPrismaService;
+  };
+  // Supports both forms: array (Promise.all) AND the interactive callback form,
+  // to which we pass the same mock as the transaction client (so tx.model.* works).
+  mock.$transaction = jest.fn((args) =>
+    Array.isArray(args) ? Promise.all(args) : args(mock),
+  );
+  return mock as unknown as MockPrismaService;
 }

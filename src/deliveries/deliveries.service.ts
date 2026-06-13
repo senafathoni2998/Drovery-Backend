@@ -17,6 +17,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
+import { PromoService } from '../promo/promo.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import {
@@ -66,6 +67,7 @@ export class DeliveriesService {
     private readonly paymentsService: PaymentsService,
     private readonly proofService: ProofService,
     private readonly serviceabilityService: ServiceabilityService,
+    private readonly promoService: PromoService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -104,47 +106,84 @@ export class DeliveriesService {
       );
     }
 
+    // Apply an optional promo code. validateForRedeem throws (422/409) BEFORE any
+    // write; the actual redemption is co-committed with the delivery below so a
+    // code can never be over-redeemed. No code → charge the full price.
+    const originalTotal = pricing.total;
+    const promoCode = dto.promoCode
+      ? await this.promoService.validateForRedeem(
+          dto.promoCode,
+          userId,
+          originalTotal,
+        )
+      : null;
+    const discount = promoCode
+      ? this.promoService.computeDiscount(promoCode, originalTotal)
+      : { discountAmount: 0, finalTotal: originalTotal };
+    const finalTotal = discount.finalTotal;
+
     // Recipient handoff OTP: store only the hash; the plaintext is returned
     // once below (the sender shares it with the recipient, who reads it back at
     // handoff). The drone won't finalize as DELIVERED without it.
     const handoffCode = this.generateHandoffCode();
 
-    const delivery = await this.prisma.delivery.create({
-      data: {
-        trackingId,
-        userId,
-        status: isScheduled
-          ? DeliveryStatus.SCHEDULED
-          : DeliveryStatus.PENDING,
-        scheduledFor: isScheduled ? scheduledFor : null,
-        fromAddress: dto.fromAddress,
-        toAddress: dto.toAddress,
-        fromLat: coords.fromLat,
-        fromLng: coords.fromLng,
-        toLat: coords.toLat,
-        toLng: coords.toLng,
-        receiver: dto.receiver,
-        packages: dto.packages,
-        packageSize: dto.packageSize,
-        packageWeight: dto.packageWeight,
-        packageTypes: dto.packageTypes,
-        pickupDate: new Date(dto.pickupDate),
-        pickupTime: dto.pickupTime,
-        estimatedPrice: pricing.total,
-        handoffCodeHash: this.hashHandoffCode(handoffCode),
-      },
-    });
+    const deliveryData = {
+      trackingId,
+      userId,
+      status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,
+      scheduledFor: isScheduled ? scheduledFor : null,
+      fromAddress: dto.fromAddress,
+      toAddress: dto.toAddress,
+      fromLat: coords.fromLat,
+      fromLng: coords.fromLng,
+      toLat: coords.toLat,
+      toLng: coords.toLng,
+      receiver: dto.receiver,
+      packages: dto.packages,
+      packageSize: dto.packageSize,
+      packageWeight: dto.packageWeight,
+      packageTypes: dto.packageTypes,
+      pickupDate: new Date(dto.pickupDate),
+      pickupTime: dto.pickupTime,
+      estimatedPrice: finalTotal, // the discounted total is the charged amount
+      handoffCodeHash: this.hashHandoffCode(handoffCode),
+    };
 
-    // Create the payment (Stripe PaymentIntent) for the delivery. Best-effort:
-    // a payment hiccup must not block the delivery from being created.
-    try {
-      await this.paymentsService.createDeliveryPayment(
-        delivery.id,
-        pricing.total,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Payment creation failed for delivery ${delivery.id}: ${(error as Error).message}`,
+    // With a promo, the delivery row + the redemption (global-cap CAS + per-user
+    // ledger insert) commit in ONE transaction — redeemWithinTx throws to roll the
+    // whole thing back on a cap loss, so there's never an orphan delivery or an
+    // over-counted code. Without a promo, the plain create is unchanged.
+    const delivery = promoCode
+      ? await this.prisma.$transaction(async (tx) => {
+          const created = await tx.delivery.create({ data: deliveryData });
+          await this.promoService.redeemWithinTx(
+            tx,
+            promoCode,
+            userId,
+            created.id,
+            originalTotal,
+            discount,
+          );
+          return created;
+        })
+      : await this.prisma.delivery.create({ data: deliveryData });
+
+    // Create the payment (Stripe PaymentIntent) for the discounted total.
+    // Best-effort; skipped entirely for a free order (Stripe rejects $0 intents).
+    if (Math.round(finalTotal * 100) > 0) {
+      try {
+        await this.paymentsService.createDeliveryPayment(
+          delivery.id,
+          finalTotal,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Payment creation failed for delivery ${delivery.id}: ${(error as Error).message}`,
+        );
+      }
+    } else {
+      this.logger.log(
+        `Delivery ${delivery.id} is free after promo — skipping payment.`,
       );
     }
 
@@ -398,6 +437,16 @@ export class DeliveriesService {
       await this.simulationService.stopSimulation(deliveryId);
     } catch {
       // The processor also guards on CANCELED status, so this is non-fatal.
+    }
+
+    // Release any promo redemption so the code's slot is returned (best-effort,
+    // idempotent). No-op when the delivery used no promo.
+    try {
+      await this.promoService.releaseForDelivery(deliveryId);
+    } catch (error) {
+      this.logger.warn(
+        `Promo release failed for delivery ${deliveryId}: ${(error as Error).message}`,
+      );
     }
 
     return this.prisma.delivery.update({

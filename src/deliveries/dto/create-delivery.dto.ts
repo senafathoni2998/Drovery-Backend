@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 import { PACKAGE_SIZES, PACKAGE_TYPES } from '../../common/constants';
@@ -49,6 +50,13 @@ export class CreateDeliveryDto {
   @IsString()
   @IsNotEmpty()
   pickupTime: string;
+
+  // Optional promo code applied to the price at checkout (validated + redeemed
+  // atomically with delivery creation).
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  promoCode?: string;
 
   @IsOptional()
   @IsNumber()

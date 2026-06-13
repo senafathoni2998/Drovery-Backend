@@ -37,6 +37,7 @@ model User {
   notificationPreference  NotificationPreference?
   supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
   recurringDeliveries     RecurringDelivery[]
+  promoRedemptions        PromoRedemption[]
 
   @@map("users")
 }
@@ -354,6 +355,70 @@ model Payment {
   createdAt DateTime @default(now())
 
   @@map("payments")
+}
+
+// ==================== PROMO CODES ====================
+// NOTE: no admin CRUD surface yet — codes are reference data seeded via the
+// migration (and prisma/seed.ts). Admin management is deferred.
+
+enum PromoDiscountType {
+  PERCENT
+  FIXED
+}
+
+enum PromoRedemptionStatus {
+  REDEEMED
+  RELEASED // cancelled delivery → slot returned, row kept for audit
+}
+
+model PromoCode {
+  id            String            @id @default(uuid())
+  code          String            @unique // stored UPPERCASE; lookups uppercase+trim
+  description   String?
+  discountType  PromoDiscountType
+  discountValue Float // PERCENT: whole percent (0<v<=100); FIXED: dollars (>0)
+  minOrderTotal Float             @default(0) // min PRE-discount total to qualify; 0 = no gate
+  maxDiscount   Float? // caps the discount in $ (mainly PERCENT); null = uncapped
+  startsAt      DateTime? // null = active since forever
+  endsAt        DateTime? // null = never expires (half-open: now >= endsAt is expired)
+  active        Boolean           @default(true) // kill switch independent of the window
+
+  maxRedemptions Int? // GLOBAL cap; null = unlimited
+  timesRedeemed  Int  @default(0) // conditional-increment CAS target
+  perUserLimit   Int  @default(1) // only =1 is race-safely enforced (partial unique index)
+
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  redemptions PromoRedemption[]
+
+  @@map("promo_codes")
+}
+
+model PromoRedemption {
+  id          String    @id @default(uuid())
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Provenance only — no FK to Delivery (keeps the Delivery model untouched,
+  // like RecurringDelivery.lastDeliveryId).
+  deliveryId  String    @unique
+
+  discountAmount Float // audit: $ discount applied
+  originalTotal  Float // audit: pre-discount total
+  finalTotal     Float // audit: charged total (== Stripe amount)
+
+  status     PromoRedemptionStatus @default(REDEEMED)
+  redeemedAt DateTime              @default(now())
+  releasedAt DateTime?
+
+  // A PARTIAL unique index (promoCodeId,userId) WHERE status='REDEEMED' enforces
+  // the per-user limit (=1) race-free; it is hand-added in migration.sql because
+  // Prisma can't express a partial unique. (Do NOT add @@unique here — a full
+  // unique would block cancel-then-reapply.)
+  @@index([promoCodeId])
+  @@index([userId])
+  @@map("promo_redemptions")
 }
 
 // ==================== SUPPORT ====================

@@ -17,6 +17,7 @@ import { PricingService } from '../pricing/pricing.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
+import { PromoService } from '../promo/promo.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
 const SERVICEABLE = {
@@ -41,6 +42,12 @@ describe('DeliveriesService', () => {
   let paymentsService: { createDeliveryPayment: jest.Mock };
   let proofService: { createAutoProof: jest.Mock };
   let serviceability: { checkServiceability: jest.Mock };
+  let promoService: {
+    validateForRedeem: jest.Mock;
+    computeDiscount: jest.Mock;
+    redeemWithinTx: jest.Mock;
+    releaseForDelivery: jest.Mock;
+  };
 
   const userId = 'user-1';
 
@@ -100,6 +107,12 @@ describe('DeliveriesService', () => {
     serviceability = {
       checkServiceability: jest.fn().mockResolvedValue(SERVICEABLE),
     };
+    promoService = {
+      validateForRedeem: jest.fn(),
+      computeDiscount: jest.fn(),
+      redeemWithinTx: jest.fn().mockResolvedValue(undefined),
+      releaseForDelivery: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -111,6 +124,7 @@ describe('DeliveriesService', () => {
         { provide: PaymentsService, useValue: paymentsService },
         { provide: ProofService, useValue: proofService },
         { provide: ServiceabilityService, useValue: serviceability },
+        { provide: PromoService, useValue: promoService },
       ],
     }).compile();
 
@@ -243,6 +257,71 @@ describe('DeliveriesService', () => {
         status: 400,
       });
       expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('create — promo codes', () => {
+    const fakeCode = { id: 'promo-1', code: 'WELCOME10' };
+
+    it('applies the discount: charges + stores the discounted total and redeems atomically', async () => {
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 1.8,
+        finalTotal: 16.2,
+      });
+      prisma.delivery.create.mockResolvedValue({
+        ...mockDelivery,
+        estimatedPrice: 16.2,
+      });
+
+      await service.create(userId, { ...createDto, promoCode: 'WELCOME10' });
+
+      expect(promoService.validateForRedeem).toHaveBeenCalledWith(
+        'WELCOME10',
+        userId,
+        18, // pricing.total
+      );
+      // The discounted total is what gets stored AND charged.
+      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(16.2);
+      expect(promoService.redeemWithinTx).toHaveBeenCalledWith(
+        expect.anything(), // tx client
+        fakeCode,
+        userId,
+        mockDelivery.id,
+        18,
+        { discountAmount: 1.8, finalTotal: 16.2 },
+      );
+      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
+        mockDelivery.id,
+        16.2,
+      );
+    });
+
+    it('skips payment for a free order (100% / over-value code)', async () => {
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 18,
+        finalTotal: 0,
+      });
+      prisma.delivery.create.mockResolvedValue({
+        ...mockDelivery,
+        estimatedPrice: 0,
+      });
+
+      await service.create(userId, { ...createDto, promoCode: 'FREE100' });
+
+      expect(paymentsService.createDeliveryPayment).not.toHaveBeenCalled();
+    });
+
+    it('does not touch promo when no code is supplied (unchanged path)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      await service.create(userId, createDto);
+      expect(promoService.validateForRedeem).not.toHaveBeenCalled();
+      expect(promoService.redeemWithinTx).not.toHaveBeenCalled();
+      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
+        mockDelivery.id,
+        18,
+      );
     });
   });
 
@@ -492,6 +571,21 @@ describe('DeliveriesService', () => {
       const result = await service.cancel(userId, 'delivery-1');
 
       expect(result.status).toBe(DeliveryStatus.CANCELED);
+    });
+
+    it('releases any promo redemption on cancel (best-effort)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        status: DeliveryStatus.PENDING,
+      });
+      prisma.delivery.update.mockResolvedValue({
+        ...mockDelivery,
+        status: DeliveryStatus.CANCELED,
+      });
+
+      await service.cancel(userId, 'delivery-1');
+
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith('delivery-1');
     });
 
     it('should cancel a SCHEDULED delivery (removes the pending kickoff job)', async () => {

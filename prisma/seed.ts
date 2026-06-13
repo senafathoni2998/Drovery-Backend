@@ -156,6 +156,40 @@ async function main() {
   });
 
   console.log('Created payment methods');
+
+  // Demo promo codes (mirror prisma/migrations/*_add_promo_codes/migration.sql —
+  // the migration is the source of truth; these upserts re-assert for local seeds).
+  await prisma.promoCode.upsert({
+    where: { code: 'WELCOME10' },
+    update: {},
+    create: {
+      code: 'WELCOME10',
+      description: '10% off your first delivery (up to $5)',
+      discountType: 'PERCENT',
+      discountValue: 10,
+      minOrderTotal: 0,
+      maxDiscount: 5,
+      active: true,
+      maxRedemptions: 1000,
+      perUserLimit: 1,
+    },
+  });
+  await prisma.promoCode.upsert({
+    where: { code: 'DRONE5' },
+    update: {},
+    create: {
+      code: 'DRONE5',
+      description: '$5 off orders of $15 or more',
+      discountType: 'FIXED',
+      discountValue: 5,
+      minOrderTotal: 15,
+      active: true,
+      maxRedemptions: 500,
+      perUserLimit: 1,
+    },
+  });
+  console.log('Created promo codes');
+
   console.log('Seeding complete!');
 }
 
