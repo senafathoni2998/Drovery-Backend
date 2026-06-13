@@ -87,13 +87,13 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Hydrate / EditProfile read | `GET /users/me` | jwt | full user |
 | EditProfile save | `PATCH /users/me` | jwt | `{name?,phone?,address?,bio?}` |
 | Profile stats | `GET /users/me/stats` | jwt | `{total,active,completed}` |
-| **Confirmation screen** | `POST /deliveries` | jwt | the real "create delivery" |
-| Orders list | `GET /deliveries?status&q&sort&page&limit` | jwt | `PaginatedResponse<Delivery>` |
+| **Confirmation screen** | `POST /deliveries` | jwt | the real "create delivery". A future `pickupDate`+`pickupTime` (> ~1 min ahead, ≤ 60 days) defers the lifecycle: returns status `SCHEDULED` + `scheduledFor`, and the drone starts flying at the pickup window; now/past pickups fly immediately as before |
+| Orders list | `GET /deliveries?status&q&sort&page&limit` | jwt | `PaginatedResponse<Delivery>`. `status` ∈ `current` (in-flight) · `scheduled` (upcoming) · `completed` · `canceled` |
 | Home — active | `GET /deliveries/active` | jwt | `Delivery[]` |
 | Home — recent | `GET /deliveries/recent` | jwt | `Delivery[]` |
 | Detail / Track-on-map | `GET /deliveries/{id}` | jwt | single Delivery (embeds tracking/workflowSteps/payment) |
 | Track package | `GET /deliveries/track?trackingId=` | jwt | lookup by human tracking ID |
-| Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (PENDING/CONFIRMED only) |
+| Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (SCHEDULED/PENDING/CONFIRMED only) |
 | Recipient handoff (enter code) | `POST /deliveries/{id}/confirm-handoff` | jwt | confirm OTP → DELIVERED + proof (see §5) |
 | Rate a delivery | `POST /deliveries/{id}/rating`, `GET /deliveries/{id}/rating` | jwt | 1–5 stars + comment (DELIVERED only, owner-scoped, upsert); embedded in `GET /deliveries/{id}` |
 | Address book | `GET/POST /addresses`, `GET/PATCH/DELETE /addresses/{id}`, `POST /addresses/{id}/default`, `GET /addresses/recent` | jwt | saved addresses (default first, geocoded on save) + recent-from-history |
