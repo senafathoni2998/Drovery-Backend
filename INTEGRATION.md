@@ -98,6 +98,8 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Track package | `GET /deliveries/track?trackingId=` | jwt | lookup by human tracking ID |
 | Delivery detail (Cancel button) | `POST /deliveries/{id}/cancel` | jwt | cancel (SCHEDULED/PENDING/CONFIRMED only) |
 | Recurring deliveries | `POST/GET /recurring-deliveries`, `GET /recurring-deliveries/{id}`, `POST .../{id}/pause`, `POST .../{id}/resume`, `DELETE .../{id}` | jwt | repeating schedule (DAILY / WEEKLY by `daysOfWeek` + `timeOfDay`, `startDate`/`endDate`); a worker auto-creates a (SCHEDULED) delivery per occurrence. `?active=true\|false` filter. **Not yet wired in the app** |
+| Reorder ("send again") | `POST /deliveries/{id}/reorder` | jwt | clone a past delivery into a new one (immediate; optional `{pickupDate,pickupTime}` to reschedule) |
+| Favorites | `POST /favorites` (`{label, deliveryId}`), `GET /favorites`, `DELETE /favorites/{id}`, `POST /favorites/{id}/order` | jwt | save a delivery as a reusable template + one-tap reorder |
 | Recipient handoff (enter code) | `POST /deliveries/{id}/confirm-handoff` | jwt | confirm OTP → DELIVERED + proof (see §5) |
 | Rate a delivery | `POST /deliveries/{id}/rating`, `GET /deliveries/{id}/rating` | jwt | 1–5 stars + comment (DELIVERED only, owner-scoped, upsert); embedded in `GET /deliveries/{id}` |
 | Address book | `GET/POST /addresses`, `GET/PATCH/DELETE /addresses/{id}`, `POST /addresses/{id}/default`, `GET /addresses/recent` | jwt | saved addresses (default first, geocoded on save) + recent-from-history |
