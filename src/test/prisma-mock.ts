@@ -19,6 +19,7 @@ type MockPrismaService = {
     | 'deliveryRating'
     | 'notificationPreference'
     | 'supportChatMessage'
+    | 'recurringDelivery'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -28,6 +29,7 @@ type MockPrismaService = {
         update: jest.Mock;
         updateMany: jest.Mock;
         delete: jest.Mock;
+        deleteMany: jest.Mock;
         count: jest.Mock;
         upsert: jest.Mock;
       }
@@ -48,6 +50,7 @@ export function createMockPrismaService(): MockPrismaService {
     update: jest.fn(),
     updateMany: jest.fn(),
     delete: jest.fn(),
+    deleteMany: jest.fn(),
     count: jest.fn(),
     upsert: jest.fn(),
   });
@@ -70,6 +73,7 @@ export function createMockPrismaService(): MockPrismaService {
     deliveryRating: createModelMock(),
     notificationPreference: createModelMock(),
     supportChatMessage: createModelMock(),
+    recurringDelivery: createModelMock(),
     $transaction: jest.fn((args) =>
       Array.isArray(args) ? Promise.all(args) : args(),
     ),

@@ -15,7 +15,7 @@ export const SCHEDULE_THRESHOLD_MS = 60_000;
  * and keeps one-off scheduling distinct from recurring, which is a later item). */
 export const MAX_SCHEDULE_DAYS = 60;
 
-function serviceTz(): string {
+export function serviceTz(): string {
   return process.env.NOTIFICATIONS_TZ ?? 'Asia/Jakarta';
 }
 
@@ -46,7 +46,7 @@ function tzOffsetMs(date: Date, tz: string): number {
 }
 
 /** Interpret wall-clock components in `tz` as a UTC instant. */
-function zonedWallClockToUtc(
+export function zonedWallClockToUtc(
   y: number,
   mo: number,
   d: number,

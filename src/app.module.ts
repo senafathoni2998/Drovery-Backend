@@ -21,6 +21,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
+import { RecurringDeliveriesModule } from './recurring-deliveries/recurring-deliveries.module';
 import { PricingModule } from './pricing/pricing.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -113,6 +114,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     AuthModule,
     UsersModule,
     DeliveriesModule,
+    RecurringDeliveriesModule,
     PricingModule,
     WorkflowsModule,
     PaymentsModule,

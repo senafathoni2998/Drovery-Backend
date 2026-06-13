@@ -36,6 +36,7 @@ model User {
   deliveryRatings         DeliveryRating[]
   notificationPreference  NotificationPreference?
   supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
+  recurringDeliveries     RecurringDelivery[]
 
   @@map("users")
 }
@@ -189,6 +190,54 @@ model Delivery {
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
+}
+
+enum RecurrenceFreq {
+  DAILY
+  WEEKLY
+}
+
+// A user-defined repeating delivery. A materialization worker advances `nextRunAt`
+// and calls DeliveriesService.create() for each occurrence, so every instance
+// flows through the normal serviceability/pricing/payment/handoff/scheduling path.
+model RecurringDelivery {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Recurrence rule (all wall-clock parts interpreted in the service tz).
+  freq       RecurrenceFreq
+  daysOfWeek Int[]    @default([]) // WEEKLY only; 0=Sun..6=Sat. Empty for DAILY.
+  timeOfDay  String // "HH:MM" 24h
+  startDate  DateTime // inclusive lower bound (first occurrence is on/after this)
+  endDate    DateTime? // inclusive upper bound; null = open-ended
+  active     Boolean  @default(true) // pause/resume
+
+  // Cursor (the CAS target): next occurrence we still owe a Delivery for; null once exhausted.
+  nextRunAt          DateTime?
+  lastMaterializedAt DateTime?
+  lastDeliveryId     String? // provenance only; intentionally NO FK (keeps Delivery untouched)
+
+  // Delivery template — a snapshot of CreateDeliveryDto minus pickupDate
+  // (pickupTime is `timeOfDay`).
+  fromAddress   String
+  toAddress     String
+  fromLat       Float?
+  fromLng       Float?
+  toLat         Float?
+  toLng         Float?
+  receiver      String
+  packages      String
+  packageSize   String
+  packageWeight Float
+  packageTypes  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([active, nextRunAt]) // hot scan predicate
+  @@map("recurring_deliveries")
 }
 
 model DeliveryRating {
