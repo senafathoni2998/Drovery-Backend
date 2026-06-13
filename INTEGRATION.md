@@ -87,7 +87,8 @@ All paths are relative to `…/api/v1`. "Public" = mobile sends `skipAuth`.
 | Hydrate / EditProfile read | `GET /users/me` | jwt | full user |
 | EditProfile save | `PATCH /users/me` | jwt | `{name?,phone?,address?,bio?}` |
 | Profile stats | `GET /users/me/stats` | jwt | `{total,active,completed}` |
-| **Confirmation screen** | `POST /deliveries` | jwt | the real "create delivery". A future `pickupDate`+`pickupTime` (> ~1 min ahead, ≤ 60 days) defers the lifecycle: returns status `SCHEDULED` + `scheduledFor`, and the drone starts flying at the pickup window; now/past pickups fly immediately as before |
+| **Confirmation screen** | `POST /deliveries` | jwt | the real "create delivery". A future `pickupDate`+`pickupTime` (> ~1 min ahead, ≤ 60 days) defers the lifecycle: returns status `SCHEDULED` + `scheduledFor`, and the drone starts flying at the pickup window; now/past pickups fly immediately. Optional `promoCode` discounts the price (atomically redeemed; `estimatedPrice` = discounted total) |
+| Promo code preview | `POST /promo/validate` | jwt | `{code, orderTotal}` → `{valid:true, discountAmount, finalTotal, …}` or `{valid:false, reason}` (advisory, always 200). Demo codes: `WELCOME10` (10% ≤ $5), `DRONE5` ($5 off $15+) |
 | Orders list | `GET /deliveries?status&q&sort&page&limit` | jwt | `PaginatedResponse<Delivery>`. `status` ∈ `current` (in-flight) · `scheduled` (upcoming) · `completed` · `canceled` |
 | Home — active | `GET /deliveries/active` | jwt | `Delivery[]` |
 | Home — recent | `GET /deliveries/recent` | jwt | `Delivery[]` |
