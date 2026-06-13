@@ -389,7 +389,7 @@ export class DeliveriesService {
 
     if (!CANCELABLE_STATUSES.includes(delivery.status)) {
       throw new BadRequestException(
-        `Delivery cannot be canceled in "${delivery.status}" status. Only PENDING or CONFIRMED deliveries can be canceled.`,
+        `Delivery cannot be canceled in "${delivery.status}" status. Only ${CANCELABLE_STATUSES.join(', ')} deliveries can be canceled.`,
       );
     }
 

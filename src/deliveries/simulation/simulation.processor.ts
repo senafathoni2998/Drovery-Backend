@@ -52,24 +52,40 @@ export class SimulationProcessor extends WorkerHost {
   }
 
   /**
-   * Fires at a scheduled delivery's pickup window. Atomically flips
-   * SCHEDULED → PENDING (the single-winner guard makes a retry / a cancel race a
-   * no-op), then enqueues the normal lifecycle. If the delivery was canceled or
-   * already kicked off, the CAS matches 0 rows and we stop.
+   * Fires at a scheduled delivery's pickup window: enqueues the normal lifecycle
+   * and flips SCHEDULED → PENDING.
+   *
+   * Ordering matters: we ENQUEUE FIRST, then flip the status. startSimulation is
+   * idempotent (deterministic jobIds dedup), so if the enqueue fails transiently
+   * the job can retry and re-enqueue. Flipping first would consume the
+   * SCHEDULED→PENDING transition, so a retry's CAS would no-op and the lifecycle
+   * jobs would never be enqueued — stranding the delivery in PENDING forever.
+   *
+   * The leading status read skips a canceled / already-kicked-off delivery (so we
+   * don't enqueue jobs for it); the final CAS is the authoritative single-winner
+   * guard (a cancel that races in still leaves the delivery CANCELED, and the
+   * stage jobs are themselves monotonic-CAS-guarded, so they no-op).
    */
   private async handleKickoff({
     deliveryId,
     userId,
     coords,
   }: KickoffJobData): Promise<void> {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      select: { status: true },
+    });
+    if (!delivery || delivery.status !== DeliveryStatus.SCHEDULED) return;
+
+    await this.simulationService.startSimulation(deliveryId, userId, coords);
+
     const { count } = await this.prisma.delivery.updateMany({
       where: { id: deliveryId, status: DeliveryStatus.SCHEDULED },
       data: { status: DeliveryStatus.PENDING },
     });
-    if (count === 0) return;
-
-    await this.simulationService.startSimulation(deliveryId, userId, coords);
-    this.logger.log(`Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)`);
+    if (count > 0) {
+      this.logger.log(`Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)`);
+    }
   }
 
   private async handleStage({

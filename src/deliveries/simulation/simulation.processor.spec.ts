@@ -132,23 +132,26 @@ describe('SimulationProcessor', () => {
     const kickoffJob = () =>
       ({ name: 'kickoff', data: { deliveryId: 'd-1', userId: 'u-1', coords } }) as any;
 
-    it('flips SCHEDULED → PENDING via the CAS and starts the simulation', async () => {
+    it('starts the simulation then flips SCHEDULED → PENDING via the CAS', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({ status: DeliveryStatus.SCHEDULED });
       prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
       await processor.process(kickoffJob());
 
+      // Enqueue happens BEFORE the status flip (so a retry can recover).
+      expect(simulationService.startSimulation).toHaveBeenCalledWith('d-1', 'u-1', coords);
       const call = prisma.delivery.updateMany.mock.calls[0][0];
       expect(call.where).toEqual({ id: 'd-1', status: DeliveryStatus.SCHEDULED });
       expect(call.data).toEqual({ status: DeliveryStatus.PENDING });
-      expect(simulationService.startSimulation).toHaveBeenCalledWith('d-1', 'u-1', coords);
     });
 
     it('is a no-op when the delivery is no longer SCHEDULED (canceled / already kicked off)', async () => {
-      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+      prisma.delivery.findUnique.mockResolvedValue({ status: DeliveryStatus.CANCELED });
 
       await processor.process(kickoffJob());
 
       expect(simulationService.startSimulation).not.toHaveBeenCalled();
+      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
     });
   });
 });
