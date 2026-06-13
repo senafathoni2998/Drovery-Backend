@@ -4,6 +4,7 @@ import { DeliveryStatus } from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { I18nService } from '../../i18n/i18n.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { TrackingService } from '../tracking/tracking.service';
@@ -38,8 +39,19 @@ export class SimulationProcessor extends WorkerHost {
     private readonly trackingPublisher: TrackingPublisher,
     private readonly notificationsService: NotificationsService,
     private readonly simulationService: SimulationService,
+    private readonly i18n: I18nService,
   ) {
     super();
+  }
+
+  /** The delivery owner's language (worker has no request context). Falls back to
+   * the default locale if the user/row is missing — translate() handles it. */
+  private async resolveLocale(userId: string): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { locale: true },
+    });
+    return user?.locale ?? null;
   }
 
   async process(job: Job): Promise<void> {
@@ -116,13 +128,30 @@ export class SimulationProcessor extends WorkerHost {
 
     const dronePos = dronePositionForStage(stage.status, coords);
 
+    // Localize all user-facing strings to the delivery OWNER's language (worker
+    // has no request context — resolve User.locale by userId; a cheap indexed PK
+    // read). This sits in the post-CAS / pre-side-effect window, so a transient DB
+    // error here must NOT escape (the CAS already committed; a thrown error would
+    // fail the job and the retry's CAS no-ops, stranding the side-effects). Swallow
+    // to null → translate() falls back to English. translate() itself never throws.
+    const locale = await this.resolveLocale(userId).catch((error) => {
+      this.logger.warn(
+        `Locale resolve failed for ${userId}, falling back to default: ${(error as Error).message}`,
+      );
+      return null;
+    });
+    const base = `notification.stage.${stage.status}`;
+    const title = this.i18n.translate(`${base}.title`, locale);
+    const body = this.i18n.translate(`${base}.body`, locale);
+    const droneStatus = this.i18n.translate(`${base}.droneStatus`, locale);
+
     // Side effects are best-effort: a transient failure must not fail the
     // already-applied transition (which would skip on retry via the CAS above).
     await this.safe(() =>
       this.trackingService.updateTracking(deliveryId, {
         droneLat: dronePos?.lat,
         droneLng: dronePos?.lng,
-        droneStatus: stage.droneStatus,
+        droneStatus,
         eta:
           stage.status === DeliveryStatus.AWAITING_HANDOFF
             ? undefined
@@ -131,7 +160,7 @@ export class SimulationProcessor extends WorkerHost {
     );
 
     await this.safe(() =>
-      this.notificationsService.create(userId, stage.title, stage.body, {
+      this.notificationsService.create(userId, title, body, {
         deliveryId,
         status: stage.status,
       }),
@@ -140,7 +169,7 @@ export class SimulationProcessor extends WorkerHost {
     await this.trackingPublisher.publishUpdate({
       deliveryId,
       status: stage.status,
-      droneStatus: stage.droneStatus,
+      droneStatus,
       droneLat: dronePos?.lat,
       droneLng: dronePos?.lng,
     });

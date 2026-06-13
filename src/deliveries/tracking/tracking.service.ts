@@ -20,6 +20,15 @@ export class TrackingService {
     return tracking;
   }
 
+  /**
+   * Upserts the latest drone position/status snapshot. NOTE: `droneStatus` is a
+   * human label persisted ALREADY-LOCALIZED to the delivery owner's locale at the
+   * time of the event (a point-in-time snapshot, like the persisted notification
+   * rows + the support auto-ack) — it is NOT re-translated on read, so if the
+   * owner switches locale mid-delivery the label stays in the prior language until
+   * the next event writes it. The discrete `status` enum on the Delivery row is the
+   * locale-independent source of truth a client can map to its own label.
+   */
   async updateTracking(
     deliveryId: string,
     data: {

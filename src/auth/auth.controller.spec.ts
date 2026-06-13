@@ -49,9 +49,10 @@ describe('AuthController', () => {
     it('should delegate to authService.signup', async () => {
       const dto = { name: 'John', email: 'john@test.com', password: 'pass123' };
 
-      const result = await controller.signup(dto);
+      const result = await controller.signup(dto, 'id-ID');
 
-      expect(authService.signup).toHaveBeenCalledWith(dto);
+      // The controller parses Accept-Language → a supported Locale ('id').
+      expect(authService.signup).toHaveBeenCalledWith(dto, 'id');
       expect(result).toEqual(mockAuthResult);
     });
   });
@@ -93,9 +94,15 @@ describe('AuthController', () => {
 
   describe('forgotPassword', () => {
     it('should delegate the email to authService.forgotPassword', async () => {
-      const result = await controller.forgotPassword({ email: 'john@test.com' });
+      const result = await controller.forgotPassword(
+        { email: 'john@test.com' },
+        'en-US',
+      );
 
-      expect(authService.forgotPassword).toHaveBeenCalledWith('john@test.com');
+      expect(authService.forgotPassword).toHaveBeenCalledWith(
+        'john@test.com',
+        'en',
+      );
       expect(result).toEqual({ success: true });
     });
   });

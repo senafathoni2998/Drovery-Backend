@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DeliveryStatus } from '@prisma/client';
 
 import { createMockPrismaService } from '../../test/prisma-mock';
+import { I18nService } from '../../i18n/i18n.service';
 import { PHASE_TO_STATUS } from './telemetry.constants';
 import { TelemetryService } from './telemetry.service';
 
@@ -39,6 +40,7 @@ describe('TelemetryService', () => {
       tracking as any,
       publisher as any,
       deliveries as any,
+      new I18nService(), // pure; localizes the happy-phase map label
     );
   });
 
@@ -69,6 +71,49 @@ describe('TelemetryService', () => {
       expect.objectContaining({ deliveryId: 'd-1', status: 'DRONE_ASSIGNED' }),
     );
     expect(res).toEqual({ applied: true, status: 'DRONE_ASSIGNED' });
+  });
+
+  it('localizes the LIVE live-map drone-status label to the owner locale', async () => {
+    prisma.delivery.findUnique.mockResolvedValue(
+      liveDelivery('PENDING', { user: { locale: 'id' } }),
+    );
+
+    await service.ingest({
+      deliveryId: 'd-1',
+      droneId: 'drone-1',
+      phase: 'ASSIGNED',
+      lat: -6.9,
+      lng: 107.6,
+    });
+
+    // Same catalog the sim uses → identical Indonesian label across LIVE/SIMULATED.
+    expect(tracking.updateTracking).toHaveBeenCalledWith(
+      'd-1',
+      expect.objectContaining({ droneStatus: 'Drone ditugaskan' }),
+    );
+    expect(publisher.publishUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ droneStatus: 'Drone ditugaskan' }),
+    );
+  });
+
+  it('prefers a gateway-supplied droneStatus over the localized label', async () => {
+    prisma.delivery.findUnique.mockResolvedValue(
+      liveDelivery('PENDING', { user: { locale: 'id' } }),
+    );
+
+    await service.ingest({
+      deliveryId: 'd-1',
+      droneId: 'drone-1',
+      phase: 'ASSIGNED',
+      lat: -6.9,
+      lng: 107.6,
+      droneStatus: 'Custom gateway status',
+    });
+
+    expect(tracking.updateTracking).toHaveBeenCalledWith(
+      'd-1',
+      expect.objectContaining({ droneStatus: 'Custom gateway status' }),
+    );
   });
 
   it('is a no-op for an out-of-order / duplicate phase (CAS matches nothing)', async () => {

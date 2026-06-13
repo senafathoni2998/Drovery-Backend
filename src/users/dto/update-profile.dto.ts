@@ -1,4 +1,6 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
+
+import { SUPPORTED_LOCALES } from '../../i18n/catalog';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -16,4 +18,9 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   bio?: string;
+
+  // Preferred language for server-emitted content (notifications/emails/support).
+  @IsOptional()
+  @IsIn(SUPPORTED_LOCALES)
+  locale?: string;
 }

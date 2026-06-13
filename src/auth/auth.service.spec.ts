@@ -89,6 +89,7 @@ describe('AuthService', () => {
           name: dto.name,
           passwordHash: 'hashed-password',
           referralCode: expect.any(String),
+          locale: 'en',
         },
       });
       expect(result.user).toEqual({
@@ -102,6 +103,7 @@ describe('AuthService', () => {
       expect(mailService.sendVerificationEmail).toHaveBeenCalledWith(
         dto.email,
         expect.any(String),
+        'en',
       );
     });
 
@@ -310,6 +312,7 @@ describe('AuthService', () => {
       expect(mailService.sendPasswordResetEmail).toHaveBeenCalledWith(
         'john@test.com',
         expect.any(String),
+        'en',
       );
     });
 
@@ -423,6 +426,7 @@ describe('AuthService', () => {
       expect(mailService.sendVerificationEmail).toHaveBeenCalledWith(
         'john@test.com',
         expect.any(String),
+        'en',
       );
     });
 

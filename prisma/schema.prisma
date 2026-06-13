@@ -31,6 +31,11 @@ model User {
   // (seed / promote endpoint), never via signup. Resolved fresh by RolesGuard.
   role Role @default(USER)
 
+  // BCP-47 base language for server-emitted user-facing content (notifications,
+  // emails, support). A plain string (not an enum) so the set extends without a
+  // migration; I18nService normalizes any unknown value to the default ('en').
+  locale String @default("en")
+
   // Wallet credits (dollars; denormalized authoritative balance, ledger is the
   // audit trail). A DB CHECK (creditBalance >= 0) backstops the spend CAS.
   creditBalance Float   @default(0)

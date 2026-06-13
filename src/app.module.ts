@@ -14,6 +14,7 @@ import { validate } from './config/validation';
 import { buildRedisOptions } from './config/redis';
 import { redactTokenInUrl } from './common/redact';
 import { CacheModule } from './cache/cache.module';
+import { I18nModule } from './i18n/i18n.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -111,6 +112,9 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
 
     // Redis-backed cache (geocoding, etc.)
     CacheModule,
+
+    // Global localization (in-house, non-request-scoped — shared by the worker too)
+    I18nModule,
 
     // Database
     PrismaModule,

@@ -18,6 +18,7 @@ import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 import { GeoService } from '../geo/geo.service';
+import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
@@ -32,7 +33,7 @@ import {
   FAILABLE_STATUSES,
   RETURNABLE_STATUSES,
   TERMINAL_STATUSES,
-  exceptionComms,
+  exceptionMessageKey,
   isDroneFaultReason,
 } from './delivery-exceptions';
 import {
@@ -92,6 +93,7 @@ export class DeliveriesService {
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
     private readonly trackingPublisher: TrackingPublisher,
+    private readonly i18n: I18nService,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -724,15 +726,18 @@ export class DeliveriesService {
   ): Promise<void> {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id: deliveryId },
-      select: { userId: true },
+      select: { userId: true, user: { select: { locale: true } } },
     });
     if (!delivery) return;
-    const comms = exceptionComms(status, reason);
+    // Localize to the delivery OWNER's language (the notified party — NOT the
+    // actor, which may be an admin). Folded into the read above (no extra query).
+    const locale = delivery.user?.locale;
+    const base = `notification.exception.${exceptionMessageKey(status, reason)}`;
     await this.safe(() =>
       this.notificationsService.create(
         delivery.userId,
-        comms.title,
-        comms.body,
+        this.i18n.translate(`${base}.title`, locale),
+        this.i18n.translate(`${base}.body`, locale),
         { deliveryId, status, failureReason: reason },
         'delivery',
       ),
@@ -741,7 +746,7 @@ export class DeliveriesService {
       this.trackingPublisher.publishUpdate({
         deliveryId,
         status,
-        droneStatus: comms.droneStatus,
+        droneStatus: this.i18n.translate(`${base}.droneStatus`, locale),
       }),
     );
   }

@@ -48,16 +48,6 @@ export const EXCEPTION_PHASE_TO_STATUS: Record<ExceptionPhase, DeliveryStatus> =
   RETURNED: DeliveryStatus.RETURNED_TO_BASE,
 };
 
-/** Human-readable drone status used when a message omits its own `droneStatus`
- * (partial — only the position-bearing happy phases need a default). */
-export const PHASE_DRONE_STATUS: Partial<Record<DronePhase, string>> = {
-  CONFIRMED: 'Delivery confirmed',
-  ASSIGNED: 'Drone assigned',
-  PICKUP: 'On the way to Pickup Location',
-  IN_TRANSIT: 'En route to destination',
-  ARRIVED: 'Awaiting recipient handoff',
-};
-
 /** The transport-agnostic telemetry message both the HTTP and MQTT paths produce. */
 export interface TelemetryMessage {
   deliveryId: string;

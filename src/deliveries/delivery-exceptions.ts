@@ -61,64 +61,18 @@ export function isDroneFaultReason(reason: DeliveryFailureReason): boolean {
   return reason !== DeliveryFailureReason.RECIPIENT_UNAVAILABLE;
 }
 
-export interface ExceptionComms {
-  title: string;
-  body: string;
-  droneStatus: string;
-}
-
-// Failure copy keyed by reason (the WHAT is DELIVERY_FAILED, the WHY varies).
-const FAILED_COMMS: Record<DeliveryFailureReason, ExceptionComms> = {
-  WEATHER_ABORT: {
-    title: 'Delivery Aborted — Weather',
-    body: 'Unsafe weather forced your drone to abort. Your payment has been refunded to your wallet.',
-    droneStatus: 'Aborted — weather',
-  },
-  MECHANICAL: {
-    title: 'Delivery Failed',
-    body: 'A technical issue grounded the drone. Your payment has been refunded to your wallet.',
-    droneStatus: 'Grounded — technical issue',
-  },
-  UNSAFE_DROP_ZONE: {
-    title: "Couldn't Complete Delivery",
-    body: "The drone couldn't find a safe spot to drop your package. Your payment has been refunded.",
-    droneStatus: 'Aborted — unsafe drop zone',
-  },
-  RECIPIENT_UNAVAILABLE: {
-    title: 'Handoff Failed',
-    body: "We couldn't verify the recipient after several attempts, so the delivery was stopped. Contact support if you need a refund.",
-    droneStatus: 'Stopped — recipient unavailable',
-  },
-  ADMIN_ABORT: {
-    title: 'Delivery Stopped',
-    body: 'Your delivery was stopped by support. Your payment has been refunded to your wallet.',
-    droneStatus: 'Stopped by support',
-  },
-  OTHER: {
-    title: 'Delivery Failed',
-    body: "Your delivery couldn't be completed. Your payment has been refunded to your wallet.",
-    droneStatus: 'Delivery failed',
-  },
-};
-
-const RETURNING_COMMS: ExceptionComms = {
-  title: 'Drone Returning to Base',
-  body: 'Your drone is heading back. You can watch it return live on the map.',
-  droneStatus: 'Returning to base',
-};
-
-const RETURNED_COMMS: ExceptionComms = {
-  title: 'Drone Returned Safely',
-  body: 'Your package made it back to base. Your payment has been refunded to your wallet.',
-  droneStatus: 'Returned to base',
-};
-
-/** The notification + WS copy for an exception transition. */
-export function exceptionComms(
+/**
+ * The catalog key segment for an exception transition's user-facing comms —
+ * `notification.exception.<key>.{title,body,droneStatus}` (localized by I18nService;
+ * the strings live in src/i18n/catalog). The WHAT is the status, the WHY is the
+ * reason: RETURNING/RETURNED_TO_BASE are reason-independent; a DELIVERY_FAILED keys
+ * off its reason (defaulting to OTHER).
+ */
+export function exceptionMessageKey(
   status: DeliveryStatus,
   reason?: DeliveryFailureReason | null,
-): ExceptionComms {
-  if (status === DeliveryStatus.RETURNING) return RETURNING_COMMS;
-  if (status === DeliveryStatus.RETURNED_TO_BASE) return RETURNED_COMMS;
-  return FAILED_COMMS[reason ?? DeliveryFailureReason.OTHER];
+): string {
+  if (status === DeliveryStatus.RETURNING) return 'RETURNING';
+  if (status === DeliveryStatus.RETURNED_TO_BASE) return 'RETURNED';
+  return reason ?? DeliveryFailureReason.OTHER;
 }

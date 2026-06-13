@@ -12,6 +12,7 @@ import * as crypto from 'crypto';
 import { DeliveriesService } from './deliveries.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
+import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PricingService } from '../pricing/pricing.service';
@@ -149,6 +150,7 @@ describe('DeliveriesService', () => {
         { provide: WalletService, useValue: walletService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: TrackingPublisher, useValue: trackingPublisher },
+        { provide: I18nService, useValue: new I18nService() },
       ],
     }).compile();
 
@@ -989,6 +991,28 @@ describe('DeliveriesService', () => {
       await service.failExceptional('delivery-1', 'MECHANICAL' as any);
       const cas = prisma.delivery.updateMany.mock.calls[0][0];
       expect(cas.where.status.in).toContain('RETURNING');
+    });
+
+    it('localizes the exception notification + map label to the owner locale', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+      // announceException reads userId + the owner's locale in one query.
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId,
+        user: { locale: 'id' },
+      });
+
+      await service.failExceptional('delivery-1', 'WEATHER_ABORT' as any);
+
+      expect(notificationsService.create).toHaveBeenCalledWith(
+        userId,
+        'Pengiriman Dibatalkan — Cuaca',
+        expect.stringContaining('Cuaca buruk'),
+        expect.objectContaining({ failureReason: 'WEATHER_ABORT' }),
+        'delivery',
+      );
+      expect(trackingPublisher.publishUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ droneStatus: 'Dibatalkan — cuaca' }),
+      );
     });
 
     it('beginReturnToBase enters RETURNING from a package-carrying state and refunds at the abort', async () => {

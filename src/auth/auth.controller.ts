@@ -1,6 +1,15 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 
+import { parseLocale } from '../i18n/accept-language';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
@@ -23,8 +32,12 @@ export class AuthController {
 
   @Public()
   @Post('signup')
-  signup(@Body() dto: SignupDto) {
-    return this.authService.signup(dto);
+  signup(
+    @Body() dto: SignupDto,
+    @Headers('accept-language') acceptLanguage?: string,
+  ) {
+    // Best-effort default locale from the browser/app; the user can change it later.
+    return this.authService.signup(dto, parseLocale(acceptLanguage));
   }
 
   @Public()
@@ -55,8 +68,12 @@ export class AuthController {
   @Public()
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto.email);
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+    @Headers('accept-language') acceptLanguage?: string,
+  ) {
+    // Locale from the header ONLY (anonymous flow — never reveals account existence).
+    return this.authService.forgotPassword(dto.email, parseLocale(acceptLanguage));
   }
 
   @Public()

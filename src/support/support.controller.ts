@@ -3,11 +3,13 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Query,
 } from '@nestjs/common';
 
+import { parseLocale } from '../i18n/accept-language';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import {
@@ -32,8 +34,8 @@ export class SupportController {
 
   @Public()
   @Get('faq')
-  getFaqs() {
-    return this.supportService.getFaqs();
+  getFaqs(@Headers('accept-language') acceptLanguage?: string) {
+    return this.supportService.getFaqs(parseLocale(acceptLanguage));
   }
 
   @Get('tickets')

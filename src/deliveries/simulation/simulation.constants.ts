@@ -47,51 +47,21 @@ export const POSITION_UPDATE_MS = 5_000;
 export interface SimStage {
   status: DeliveryStatus;
   delayMs: number;
-  droneStatus: string;
-  title: string;
-  body: string;
 }
 
-// Each simulation stage: when it fires, what status it sets, and what it tells the user
+// Each simulation stage: when it fires + which status it sets. The user-facing
+// title/body and the drone-status map label are localized by I18nService keyed on
+// the status — `notification.stage.<status>.{title,body,droneStatus}` (the single
+// source of those strings now lives in src/i18n/catalog).
 export const STAGES: SimStage[] = [
-  {
-    status: DeliveryStatus.CONFIRMED,
-    delayMs: 10_000,
-    droneStatus: 'Delivery confirmed',
-    title: 'Delivery Confirmed',
-    body: 'Your delivery has been confirmed and is being processed.',
-  },
-  {
-    status: DeliveryStatus.DRONE_ASSIGNED,
-    delayMs: 25_000,
-    droneStatus: 'Drone assigned',
-    title: 'Drone Assigned',
-    body: 'A drone has been assigned to your delivery.',
-  },
-  {
-    status: DeliveryStatus.PICKUP_IN_PROGRESS,
-    delayMs: 45_000,
-    droneStatus: 'On the way to Pickup Location',
-    title: 'Pickup In Progress',
-    body: 'The drone is heading to the pickup location.',
-  },
-  {
-    status: DeliveryStatus.IN_TRANSIT,
-    delayMs: 70_000,
-    droneStatus: 'En route to destination',
-    title: 'Package In Transit',
-    body: 'Your package has been picked up and is on its way!',
-  },
-  {
-    // Terminal AUTO stage: the drone arrives and waits. The final transition to
-    // DELIVERED (+ proof) happens only when the recipient confirms the handoff
-    // OTP via POST /deliveries/:id/confirm-handoff — the sim never auto-delivers.
-    status: DeliveryStatus.AWAITING_HANDOFF,
-    delayMs: 120_000,
-    droneStatus: 'Awaiting recipient handoff',
-    title: 'Awaiting Handoff',
-    body: 'Your package has arrived. Share your handoff code with the recipient to complete delivery.',
-  },
+  { status: DeliveryStatus.CONFIRMED, delayMs: 10_000 },
+  { status: DeliveryStatus.DRONE_ASSIGNED, delayMs: 25_000 },
+  { status: DeliveryStatus.PICKUP_IN_PROGRESS, delayMs: 45_000 },
+  { status: DeliveryStatus.IN_TRANSIT, delayMs: 70_000 },
+  // Terminal AUTO stage: the drone arrives and waits. The final transition to
+  // DELIVERED (+ proof) happens only when the recipient confirms the handoff
+  // OTP via POST /deliveries/:id/confirm-handoff — the sim never auto-delivers.
+  { status: DeliveryStatus.AWAITING_HANDOFF, delayMs: 120_000 },
 ];
 
 // ── Job payloads ────────────────────────────────────────────

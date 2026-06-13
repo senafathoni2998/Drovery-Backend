@@ -1,34 +1,51 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import { Locale } from '../i18n/catalog';
+import { I18nService } from '../i18n/i18n.service';
+
 /**
  * Email gateway. Today it logs the message (so password reset works end-to-end
  * in development); swap the body of `send()` for a real provider (SendGrid /
  * SES / SMTP) — the rest of the app calls these typed methods and is unaffected.
+ * Subjects/bodies are localized via the catalog; the locale is the recipient's
+ * (passed by the caller — Accept-Language for the anonymous reset, the user's
+ * stored locale otherwise).
  */
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly i18n: I18nService,
+  ) {}
 
-  async sendPasswordResetEmail(to: string, token: string): Promise<void> {
+  async sendPasswordResetEmail(
+    to: string,
+    token: string,
+    locale: Locale = 'en',
+  ): Promise<void> {
     // Deep link the mobile app handles (scheme "droverymobile"), plus the raw
     // token so the user can paste it manually if the link can't open.
     const deepLink = `droverymobile://reset-password?token=${token}`;
     await this.send(
       to,
-      'Reset your Drovery password',
-      `Tap to reset your password: ${deepLink}\n\nOr enter this code in the app: ${token}\n\nThis link expires in 1 hour. If you didn't request it, ignore this email.`,
+      this.i18n.translate('email.passwordReset.subject', locale),
+      this.i18n.translate('email.passwordReset.body', locale, { deepLink, token }),
     );
   }
 
-  async sendVerificationEmail(to: string, token: string): Promise<void> {
+  async sendVerificationEmail(
+    to: string,
+    token: string,
+    locale: Locale = 'en',
+  ): Promise<void> {
     const deepLink = `droverymobile://verify-email?token=${token}`;
     await this.send(
       to,
-      'Verify your Drovery email',
-      `Welcome to Drovery! Tap to verify your email: ${deepLink}\n\nOr enter this code in the app: ${token}\n\nThis link expires in 24 hours.`,
+      this.i18n.translate('email.verification.subject', locale),
+      this.i18n.translate('email.verification.body', locale, { deepLink, token }),
     );
   }
 

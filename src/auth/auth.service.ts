@@ -12,6 +12,8 @@ import * as crypto from 'crypto';
 
 import { Prisma } from '@prisma/client';
 
+import { Locale } from '../i18n/catalog';
+import { parseLocale } from '../i18n/accept-language';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { generateReferralCode } from '../wallet/wallet.constants';
@@ -33,7 +35,7 @@ export class AuthService {
     private readonly mail: MailService,
   ) {}
 
-  async signup(dto: SignupDto) {
+  async signup(dto: SignupDto, locale: Locale = 'en') {
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -55,6 +57,7 @@ export class AuthService {
             name: dto.name,
             passwordHash,
             referralCode: generateReferralCode(),
+            locale,
           },
         });
         break;
@@ -101,7 +104,7 @@ export class AuthService {
 
     // Kick off email verification (best-effort — never block signup on email).
     try {
-      await this.issueEmailVerification(user.id, user.email);
+      await this.issueEmailVerification(user.id, user.email, locale);
     } catch (error) {
       this.logger.warn(
         `Verification email failed for ${user.email}: ${(error as Error).message}`,
@@ -198,7 +201,13 @@ export class AuthService {
    * Starts a password reset. Always resolves the same way regardless of whether
    * the email exists, to avoid leaking which addresses are registered.
    */
-  async forgotPassword(email: string): Promise<{ success: true }> {
+  async forgotPassword(
+    email: string,
+    locale: Locale = 'en',
+  ): Promise<{ success: true }> {
+    // locale comes from the request's Accept-Language ONLY — never from the
+    // looked-up user — so the response/behavior is identical whether or not the
+    // account exists (account-existence non-disclosure is preserved).
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (user) {
@@ -217,7 +226,7 @@ export class AuthService {
         },
       });
 
-      await this.mail.sendPasswordResetEmail(user.email, rawToken);
+      await this.mail.sendPasswordResetEmail(user.email, rawToken, locale);
     }
 
     return { success: true };
@@ -262,7 +271,11 @@ export class AuthService {
   // ── Email verification ────────────────────────────────────────────────────
 
   /** Issues a fresh verification token and emails it (invalidating prior ones). */
-  private async issueEmailVerification(userId: string, email: string) {
+  private async issueEmailVerification(
+    userId: string,
+    email: string,
+    locale: Locale = 'en',
+  ) {
     await this.prisma.emailVerificationToken.updateMany({
       where: { userId, usedAt: null },
       data: { usedAt: new Date() },
@@ -277,7 +290,7 @@ export class AuthService {
       },
     });
 
-    await this.mail.sendVerificationEmail(email, rawToken);
+    await this.mail.sendVerificationEmail(email, rawToken, locale);
   }
 
   async verifyEmail(token: string): Promise<{ success: true }> {
@@ -307,7 +320,12 @@ export class AuthService {
   async resendVerification(userId: string): Promise<{ success: true }> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (user && !user.emailVerified) {
-      await this.issueEmailVerification(user.id, user.email);
+      // Authenticated → use the user's stored locale.
+      await this.issueEmailVerification(
+        user.id,
+        user.email,
+        parseLocale(user.locale),
+      );
     }
     return { success: true };
   }

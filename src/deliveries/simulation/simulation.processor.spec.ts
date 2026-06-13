@@ -2,6 +2,7 @@ import { DeliveryStatus } from '@prisma/client';
 
 import { SimulationProcessor } from './simulation.processor';
 import { STAGES } from './simulation.constants';
+import { I18nService } from '../../i18n/i18n.service';
 import { createMockPrismaService } from '../../test/prisma-mock';
 
 describe('SimulationProcessor', () => {
@@ -29,6 +30,7 @@ describe('SimulationProcessor', () => {
       publisher as any,
       notifications as any,
       simulationService as any,
+      new I18nService(), // pure; real translations keep assertions meaningful
     );
   });
 
@@ -58,6 +60,25 @@ describe('SimulationProcessor', () => {
     expect(tracking.updateTracking).toHaveBeenCalled();
     expect(notifications.create).toHaveBeenCalled();
     expect(publisher.publishUpdate).toHaveBeenCalled();
+  });
+
+  it('localizes the stage notification + map label to the owner locale (worker, no request)', async () => {
+    prisma.delivery.findUnique.mockResolvedValue({ id: 'd-1', status: 'PENDING' });
+    // Worker resolves User.locale by userId (the only locale signal it has).
+    prisma.user.findUnique.mockResolvedValue({ locale: 'id' });
+
+    await processor.process(stageJob(0)); // CONFIRMED
+
+    // Indonesian title/body reached the notification, and the map label too.
+    expect(notifications.create).toHaveBeenCalledWith(
+      'u-1',
+      'Pengiriman Dikonfirmasi',
+      'Pengiriman Anda telah dikonfirmasi dan sedang diproses.',
+      expect.objectContaining({ status: 'CONFIRMED' }),
+    );
+    expect(publisher.publishUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ droneStatus: 'Pengiriman dikonfirmasi' }),
+    );
   });
 
   it('skips side effects when the CAS matches nothing (canceled / already advanced)', async () => {

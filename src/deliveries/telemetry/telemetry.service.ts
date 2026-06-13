@@ -7,6 +7,7 @@ import {
 import { DeliveryFailureReason, DeliveryStatus, TrackingSource } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { I18nService } from '../../i18n/i18n.service';
 import { DeliveriesService } from '../deliveries.service';
 import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { statusesBefore } from '../simulation/simulation.constants';
@@ -16,11 +17,11 @@ import {
   DRONE_STATUS_MAX_LEN,
   EXCEPTION_PHASE_TO_STATUS,
   ExceptionPhase,
+  HappyPhase,
   LAT_MAX,
   LAT_MIN,
   LNG_MAX,
   LNG_MIN,
-  PHASE_DRONE_STATUS,
   PHASE_TO_STATUS,
   TelemetryMessage,
   isExceptionPhase,
@@ -53,6 +54,7 @@ export class TelemetryService {
     private readonly trackingService: TrackingService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly deliveriesService: DeliveriesService,
+    private readonly i18n: I18nService,
   ) {}
 
   async ingest(msg: TelemetryMessage): Promise<IngestResult> {
@@ -78,10 +80,18 @@ export class TelemetryService {
 
     const delivery = await this.prisma.delivery.findUnique({
       where: { id: deliveryId },
-      select: { id: true, status: true, trackingSource: true, assignedDroneId: true },
+      select: {
+        id: true,
+        status: true,
+        trackingSource: true,
+        assignedDroneId: true,
+        // Owner locale to localize the live-map drone-status label (no extra query).
+        user: { select: { locale: true } },
+      },
     });
     // Unknown delivery → benign no-op (never an upsert that orphans a tracking row).
     if (!delivery) return { applied: false };
+    const locale = delivery.user?.locale ?? null;
 
     // Telemetry must NEVER drive a simulated delivery — that's the guarantee a
     // sim + a live producer can't both mutate one row (the sim is the only
@@ -143,7 +153,7 @@ export class TelemetryService {
           this.trackingService.updateTracking(deliveryId, {
             droneLat: lat,
             droneLng: lng,
-            droneStatus: this.resolveDroneStatus(droneStatus, phase),
+            droneStatus: this.resolveDroneStatus(droneStatus, phase, locale),
             eta: this.parseEta(eta),
           }),
         );
@@ -159,7 +169,7 @@ export class TelemetryService {
     await this.trackingPublisher.publishUpdate({
       deliveryId,
       status: appliedStatus,
-      droneStatus: this.resolveDroneStatus(droneStatus, phase),
+      droneStatus: this.resolveDroneStatus(droneStatus, phase, locale),
       droneLat: positioned ? lat : undefined,
       droneLng: positioned ? lng : undefined,
     });
@@ -210,7 +220,9 @@ export class TelemetryService {
         this.trackingService.updateTracking(deliveryId, {
           droneLat: msg.lat,
           droneLng: msg.lng,
-          droneStatus: this.resolveDroneStatus(msg.droneStatus, undefined),
+          // Exception droneStatus is localized by DeliveriesService.announceException;
+          // here we only persist the gateway's own label if it sent one.
+          droneStatus: this.resolveDroneStatus(msg.droneStatus, undefined, null),
           eta: this.parseEta(msg.eta),
         }),
       );
@@ -236,8 +248,19 @@ export class TelemetryService {
   private resolveDroneStatus(
     droneStatus: string | undefined,
     phase: TelemetryMessage['phase'],
+    locale: string | null,
   ): string | undefined {
-    const value = droneStatus ?? (phase ? PHASE_DRONE_STATUS[phase] : undefined);
+    // A gateway-supplied label wins (the drone's own words). Otherwise, for a
+    // happy phase, render the localized map label from the SAME catalog the sim
+    // uses (notification.stage.<status>.droneStatus) so LIVE and SIMULATED
+    // deliveries show the drone status in the owner's language identically.
+    let value = droneStatus;
+    if (!value && phase && phase in PHASE_TO_STATUS) {
+      value = this.i18n.translate(
+        `notification.stage.${PHASE_TO_STATUS[phase as HappyPhase]}.droneStatus`,
+        locale,
+      );
+    }
     return value ? value.slice(0, DRONE_STATUS_MAX_LEN) : undefined;
   }
 

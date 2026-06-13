@@ -8,6 +8,9 @@ export class UserResponseDto {
   avatarUrl: string | null;
   emailVerified: boolean;
   emailVerifiedAt: Date | null;
+  // Exposed so the client can mirror the server's chosen language (the locale that
+  // drives server-emitted notifications/emails). Defaults to 'en'.
+  locale: string;
   createdAt: Date;
 
   static from(user: {
@@ -20,6 +23,7 @@ export class UserResponseDto {
     avatarUrl: string | null;
     emailVerified?: boolean;
     emailVerifiedAt?: Date | null;
+    locale?: string;
     createdAt: Date;
   }): UserResponseDto {
     const dto = new UserResponseDto();
@@ -32,6 +36,7 @@ export class UserResponseDto {
     dto.avatarUrl = user.avatarUrl;
     dto.emailVerified = user.emailVerified ?? false;
     dto.emailVerifiedAt = user.emailVerifiedAt ?? null;
+    dto.locale = user.locale ?? 'en';
     dto.createdAt = user.createdAt;
     return dto;
   }
