@@ -8,6 +8,8 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingPublisher } from '../tracking/tracking.publisher';
 import {
+  KICKOFF_JOB,
+  KickoffJobData,
   POSITION_JOB,
   PositionJobData,
   SIM_QUEUE,
@@ -18,6 +20,7 @@ import {
   dronePositionForStage,
   statusesBefore,
 } from './simulation.constants';
+import { SimulationService } from './simulation.service';
 
 /**
  * Worker that advances delivery simulations. Runs in-process today; because all
@@ -33,6 +36,7 @@ export class SimulationProcessor extends WorkerHost {
     private readonly trackingService: TrackingService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly notificationsService: NotificationsService,
+    private readonly simulationService: SimulationService,
   ) {
     super();
   }
@@ -42,7 +46,30 @@ export class SimulationProcessor extends WorkerHost {
       await this.handleStage(job.data as StageJobData);
     } else if (job.name === POSITION_JOB) {
       await this.handlePosition(job.data as PositionJobData);
+    } else if (job.name === KICKOFF_JOB) {
+      await this.handleKickoff(job.data as KickoffJobData);
     }
+  }
+
+  /**
+   * Fires at a scheduled delivery's pickup window. Atomically flips
+   * SCHEDULED → PENDING (the single-winner guard makes a retry / a cancel race a
+   * no-op), then enqueues the normal lifecycle. If the delivery was canceled or
+   * already kicked off, the CAS matches 0 rows and we stop.
+   */
+  private async handleKickoff({
+    deliveryId,
+    userId,
+    coords,
+  }: KickoffJobData): Promise<void> {
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: DeliveryStatus.SCHEDULED },
+      data: { status: DeliveryStatus.PENDING },
+    });
+    if (count === 0) return;
+
+    await this.simulationService.startSimulation(deliveryId, userId, coords);
+    this.logger.log(`Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)`);
   }
 
   private async handleStage({

@@ -10,6 +10,7 @@ describe('SimulationProcessor', () => {
   let tracking: { updateTracking: jest.Mock };
   let publisher: { publishUpdate: jest.Mock };
   let notifications: { create: jest.Mock };
+  let simulationService: { startSimulation: jest.Mock };
 
   const coords = { fromLat: -6.9, fromLng: 107.6, toLat: -6.92, toLng: 107.62 };
 
@@ -20,12 +21,14 @@ describe('SimulationProcessor', () => {
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
     publisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
     notifications = { create: jest.fn().mockResolvedValue({}) };
+    simulationService = { startSimulation: jest.fn().mockResolvedValue(undefined) };
 
     processor = new SimulationProcessor(
       prisma as any,
       tracking as any,
       publisher as any,
       notifications as any,
+      simulationService as any,
     );
   });
 
@@ -123,5 +126,29 @@ describe('SimulationProcessor', () => {
       } as any);
 
       expect(tracking.updateTracking).not.toHaveBeenCalled();
+  });
+
+  describe('kickoff', () => {
+    const kickoffJob = () =>
+      ({ name: 'kickoff', data: { deliveryId: 'd-1', userId: 'u-1', coords } }) as any;
+
+    it('flips SCHEDULED → PENDING via the CAS and starts the simulation', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await processor.process(kickoffJob());
+
+      const call = prisma.delivery.updateMany.mock.calls[0][0];
+      expect(call.where).toEqual({ id: 'd-1', status: DeliveryStatus.SCHEDULED });
+      expect(call.data).toEqual({ status: DeliveryStatus.PENDING });
+      expect(simulationService.startSimulation).toHaveBeenCalledWith('d-1', 'u-1', coords);
+    });
+
+    it('is a no-op when the delivery is no longer SCHEDULED (canceled / already kicked off)', async () => {
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+
+      await processor.process(kickoffJob());
+
+      expect(simulationService.startSimulation).not.toHaveBeenCalled();
+    });
   });
 });

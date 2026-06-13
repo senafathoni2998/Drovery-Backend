@@ -10,11 +10,12 @@ import {
 
 describe('SimulationService', () => {
   let service: SimulationService;
-  let queue: { addBulk: jest.Mock; remove: jest.Mock };
+  let queue: { addBulk: jest.Mock; add: jest.Mock; remove: jest.Mock };
 
   beforeEach(async () => {
     queue = {
       addBulk: jest.fn().mockResolvedValue([]),
+      add: jest.fn().mockResolvedValue({}),
       remove: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -58,15 +59,37 @@ describe('SimulationService', () => {
     });
   });
 
+  describe('scheduleKickoff', () => {
+    it('enqueues a single delayed kickoff job at the scheduled instant', async () => {
+      const scheduledFor = new Date(Date.now() + 3_600_000); // +1h
+      await service.scheduleKickoff('d-9', 'u-1', undefined, scheduledFor);
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      const [name, data, opts] = queue.add.mock.calls[0];
+      expect(name).toBe('kickoff');
+      expect(data).toMatchObject({ deliveryId: 'd-9', userId: 'u-1' });
+      expect(opts.jobId).toBe('d-9-kickoff');
+      // delay ~= 1h (allow scheduling jitter)
+      expect(opts.delay).toBeGreaterThan(3_590_000);
+      expect(opts.delay).toBeLessThanOrEqual(3_600_000);
+    });
+
+    it('clamps a past instant to a zero delay (fires immediately)', async () => {
+      await service.scheduleKickoff('d-10', 'u-1', undefined, new Date(Date.now() - 5000));
+      expect(queue.add.mock.calls[0][2].delay).toBe(0);
+    });
+  });
+
   describe('stopSimulation', () => {
-    it("removes the delivery's stage and position jobs", async () => {
+    it("removes the delivery's kickoff, stage and position jobs", async () => {
       await service.stopSimulation('d-1');
 
       const removed = queue.remove.mock.calls.map((c) => c[0]);
+      expect(removed).toContain('d-1-kickoff');
       expect(removed).toContain('d-1:stage:0');
       expect(removed).toContain('d-1:pos:0');
       expect(queue.remove).toHaveBeenCalledTimes(
-        STAGES.length + POSITION_TICK_COUNT,
+        1 + STAGES.length + POSITION_TICK_COUNT,
       );
     });
 

@@ -97,6 +97,15 @@ export const STAGES: SimStage[] = [
 // ── Job payloads ────────────────────────────────────────────
 export const STAGE_JOB = 'stage';
 export const POSITION_JOB = 'position';
+// Deferred lifecycle start for a SCHEDULED delivery — fires at the pickup window,
+// flips SCHEDULED → PENDING, then enqueues the normal stage/position jobs.
+export const KICKOFF_JOB = 'kickoff';
+
+export interface KickoffJobData {
+  deliveryId: string;
+  userId: string;
+  coords: DeliveryCoords;
+}
 
 export interface StageJobData {
   deliveryId: string;

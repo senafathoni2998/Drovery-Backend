@@ -129,6 +129,7 @@ model RefreshToken {
 // ==================== DELIVERY ====================
 
 enum DeliveryStatus {
+  SCHEDULED // future pickup window; the lifecycle is deferred until then
   PENDING
   CONFIRMED
   DRONE_ASSIGNED
@@ -163,6 +164,9 @@ model Delivery {
 
   pickupDate        DateTime
   pickupTime        String
+  // When the deferred lifecycle should kick off (UTC instant derived from
+  // pickupDate + pickupTime in the service tz). Null for immediate deliveries.
+  scheduledFor      DateTime?
   estimatedDelivery DateTime?
   estimatedPrice    Float
 

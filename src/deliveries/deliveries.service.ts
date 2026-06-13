@@ -19,6 +19,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
+import {
+  MAX_SCHEDULE_DAYS,
+  SCHEDULE_THRESHOLD_MS,
+  computeScheduledFor,
+} from './delivery-schedule';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
 
 const HANDOFF_LOCKED = 423; // @nestjs/common has no LockedException / HttpStatus.LOCKED
@@ -42,9 +47,12 @@ const ACTIVE_STATUSES: DeliveryStatus[] = [
 const MAX_HANDOFF_ATTEMPTS = 5;
 
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
+  DeliveryStatus.SCHEDULED,
   DeliveryStatus.PENDING,
   DeliveryStatus.CONFIRMED,
 ];
+
+const MAX_SCHEDULE_MS = MAX_SCHEDULE_DAYS * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class DeliveriesService {
@@ -83,6 +91,19 @@ export class DeliveriesService {
       ...coords,
     });
 
+    // Decide whether to defer the lifecycle to a future pickup window. A pickup
+    // far enough ahead (> threshold, ≤ max horizon) becomes a SCHEDULED delivery
+    // whose lifecycle a kickoff job starts at `scheduledFor`; anything now/past
+    // or unparseable behaves exactly as before (immediate PENDING).
+    const scheduledFor = computeScheduledFor(dto.pickupDate, dto.pickupTime);
+    const leadMs = scheduledFor ? scheduledFor.getTime() - Date.now() : 0;
+    const isScheduled = leadMs > SCHEDULE_THRESHOLD_MS;
+    if (isScheduled && leadMs > MAX_SCHEDULE_MS) {
+      throw new BadRequestException(
+        `Pickup can be scheduled at most ${MAX_SCHEDULE_DAYS} days ahead.`,
+      );
+    }
+
     // Recipient handoff OTP: store only the hash; the plaintext is returned
     // once below (the sender shares it with the recipient, who reads it back at
     // handoff). The drone won't finalize as DELIVERED without it.
@@ -92,7 +113,10 @@ export class DeliveriesService {
       data: {
         trackingId,
         userId,
-        status: DeliveryStatus.PENDING,
+        status: isScheduled
+          ? DeliveryStatus.SCHEDULED
+          : DeliveryStatus.PENDING,
+        scheduledFor: isScheduled ? scheduledFor : null,
         fromAddress: dto.fromAddress,
         toAddress: dto.toAddress,
         fromLat: coords.fromLat,
@@ -124,13 +148,26 @@ export class DeliveriesService {
       );
     }
 
-    // Queue the delivery simulation (auto-progresses PENDING → DELIVERED).
-    // Best-effort: a queue/Redis hiccup must not fail delivery creation.
+    // Either defer the lifecycle to the pickup window (a single kickoff job) or
+    // start it now. Best-effort: a queue/Redis hiccup must not fail creation.
     try {
-      await this.simulationService.startSimulation(delivery.id, userId, coords);
+      if (isScheduled) {
+        await this.simulationService.scheduleKickoff(
+          delivery.id,
+          userId,
+          coords,
+          scheduledFor!,
+        );
+      } else {
+        await this.simulationService.startSimulation(
+          delivery.id,
+          userId,
+          coords,
+        );
+      }
     } catch (error) {
       this.logger.warn(
-        `Failed to queue simulation for delivery ${delivery.id}: ${(error as Error).message}`,
+        `Failed to queue ${isScheduled ? 'kickoff' : 'simulation'} for delivery ${delivery.id}: ${(error as Error).message}`,
       );
     }
 
@@ -227,6 +264,8 @@ export class DeliveriesService {
 
     if (query.status === 'current') {
       where.status = { in: ACTIVE_STATUSES };
+    } else if (query.status === 'scheduled') {
+      where.status = DeliveryStatus.SCHEDULED;
     } else if (query.status === 'completed') {
       where.status = DeliveryStatus.DELIVERED;
     } else if (query.status === 'canceled') {

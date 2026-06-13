@@ -31,7 +31,11 @@ jest.mock('uuid', () => ({ v4: () => 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE' }));
 describe('DeliveriesService', () => {
   let service: DeliveriesService;
   let prisma: ReturnType<typeof createMockPrismaService>;
-  let simulationService: { startSimulation: jest.Mock; stopSimulation: jest.Mock };
+  let simulationService: {
+    startSimulation: jest.Mock;
+    scheduleKickoff: jest.Mock;
+    stopSimulation: jest.Mock;
+  };
   let geoService: { geocode: jest.Mock };
   let pricingService: { estimate: jest.Mock };
   let paymentsService: { createDeliveryPayment: jest.Mock };
@@ -72,6 +76,7 @@ describe('DeliveriesService', () => {
     prisma = createMockPrismaService();
     simulationService = {
       startSimulation: jest.fn(),
+      scheduleKickoff: jest.fn(),
       stopSimulation: jest.fn(),
     };
     geoService = { geocode: jest.fn() };
@@ -186,6 +191,58 @@ describe('DeliveriesService', () => {
         userId,
         { fromLat: 1.1, fromLng: 2.2, toLat: 3.3, toLng: 4.4 },
       );
+    });
+  });
+
+  describe('create — scheduling', () => {
+    // A pickup well in the future → SCHEDULED + a deferred kickoff (no immediate sim).
+    const futureDto = () => {
+      const d = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // +7 days
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      return { ...createDto, pickupDate: `${yyyy}-${mm}-${dd}`, pickupTime: '12:00' };
+    };
+
+    it('defers a future pickup: status SCHEDULED, kickoff scheduled, no immediate sim', async () => {
+      prisma.delivery.create.mockResolvedValue({
+        ...mockDelivery,
+        status: DeliveryStatus.SCHEDULED,
+      });
+
+      await service.create(userId, futureDto());
+
+      const createCall = prisma.delivery.create.mock.calls[0][0];
+      expect(createCall.data.status).toBe(DeliveryStatus.SCHEDULED);
+      expect(createCall.data.scheduledFor).toBeInstanceOf(Date);
+      expect(simulationService.scheduleKickoff).toHaveBeenCalledTimes(1);
+      expect(simulationService.startSimulation).not.toHaveBeenCalled();
+    });
+
+    it('treats a now/past pickup as immediate (status PENDING, sim starts now)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      // createDto.pickupDate is 2026-04-10 (past) → immediate.
+      await service.create(userId, createDto);
+
+      const createCall = prisma.delivery.create.mock.calls[0][0];
+      expect(createCall.data.status).toBe(DeliveryStatus.PENDING);
+      expect(createCall.data.scheduledFor).toBeNull();
+      expect(simulationService.startSimulation).toHaveBeenCalledTimes(1);
+      expect(simulationService.scheduleKickoff).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pickup beyond the max scheduling horizon', async () => {
+      const d = new Date(Date.now() + 200 * 24 * 60 * 60 * 1000); // +200 days
+      const far = {
+        ...createDto,
+        pickupDate: d.toISOString().slice(0, 10),
+        pickupTime: '12:00',
+      };
+      await expect(service.create(userId, far)).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
     });
   });
 
@@ -435,6 +492,23 @@ describe('DeliveriesService', () => {
       const result = await service.cancel(userId, 'delivery-1');
 
       expect(result.status).toBe(DeliveryStatus.CANCELED);
+    });
+
+    it('should cancel a SCHEDULED delivery (removes the pending kickoff job)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        status: DeliveryStatus.SCHEDULED,
+      });
+      prisma.delivery.update.mockResolvedValue({
+        ...mockDelivery,
+        status: DeliveryStatus.CANCELED,
+      });
+
+      const result = await service.cancel(userId, 'delivery-1');
+
+      expect(result.status).toBe(DeliveryStatus.CANCELED);
+      // stopSimulation removes the :kickoff job (and any stage/pos jobs).
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith('delivery-1');
     });
 
     it('should throw NotFoundException if delivery not found', async () => {

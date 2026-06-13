@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 
 import {
   DeliveryCoords,
+  KICKOFF_JOB,
   POSITION_JOB,
   POSITION_TICK_COUNT,
   SIM_QUEUE,
@@ -67,6 +68,38 @@ export class SimulationService {
     );
   }
 
+  /**
+   * Defers a delivery's lifecycle: enqueues a SINGLE delayed kickoff job that
+   * fires at `scheduledFor`. When it runs (SimulationProcessor.handleKickoff) it
+   * atomically flips SCHEDULED → PENDING and then calls startSimulation. Same
+   * fail-open + deterministic-jobId contract as startSimulation.
+   */
+  async scheduleKickoff(
+    deliveryId: string,
+    userId: string,
+    coords: Partial<DeliveryCoords> | undefined,
+    scheduledFor: Date,
+  ): Promise<void> {
+    const c = resolveCoords(coords);
+    const delay = Math.max(0, scheduledFor.getTime() - Date.now());
+
+    await this.withTimeout(
+      this.queue.add(
+        KICKOFF_JOB,
+        { deliveryId, userId, coords: c },
+        // NOTE: queue.add() rejects a custom jobId containing ':' ("Custom Id
+        // cannot contain :"), so the kickoff id uses a '-' separator (the
+        // stage/pos ids use ':' but go through addBulk, which tolerates it).
+        { ...JOB_OPTS, delay, jobId: `${deliveryId}-kickoff` },
+      ),
+      ENQUEUE_TIMEOUT_MS,
+      'enqueue kickoff',
+    );
+    this.logger.log(
+      `Scheduled kickoff for ${deliveryId} in ${Math.round(delay / 1000)}s`,
+    );
+  }
+
   private withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout>;
     const timeout = new Promise<T>((_, reject) => {
@@ -78,9 +111,10 @@ export class SimulationService {
     return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
   }
 
-  /** Best-effort removal of a delivery's pending jobs (e.g. on cancel). */
+  /** Best-effort removal of a delivery's pending jobs (e.g. on cancel) —
+   * including the deferred kickoff job for a still-SCHEDULED delivery. */
   async stopSimulation(deliveryId: string): Promise<void> {
-    const ids: string[] = [];
+    const ids: string[] = [`${deliveryId}-kickoff`];
     for (let i = 0; i < STAGES.length; i++) ids.push(`${deliveryId}:stage:${i}`);
     for (let j = 0; j < POSITION_TICK_COUNT; j++) ids.push(`${deliveryId}:pos:${j}`);
 
