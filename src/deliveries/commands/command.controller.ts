@@ -10,6 +10,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
+import { ApiSecurity, ApiTags } from '@nestjs/swagger';
+
 import { Public } from '../../common/decorators/public.decorator';
 import { DroneAuthGuard } from '../telemetry/drone-auth.guard';
 import { AckCommandDto } from './dto/ack-command.dto';
@@ -22,6 +24,8 @@ import { DroneCommandService } from './drone-command.service';
  * shared key + optional timestamped HMAC). A drone polls its queue and acks; the
  * ack is what actually drives the delivery transition.
  */
+@ApiTags('drone-ingest')
+@ApiSecurity('ingest-key')
 @Controller('ingest')
 export class CommandController {
   constructor(private readonly commands: DroneCommandService) {}

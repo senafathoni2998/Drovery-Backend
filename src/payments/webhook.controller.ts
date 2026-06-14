@@ -11,7 +11,7 @@ import {
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 
-import { Public } from '../common/decorators/public.decorator';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import { StripeService } from '../stripe/stripe.service';
 import { PaymentsService } from './payments.service';
 
@@ -24,7 +24,7 @@ export class WebhookController {
     private readonly payments: PaymentsService,
   ) {}
 
-  @Public()
+  @PublicApi()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(

@@ -11,7 +11,7 @@ import {
 
 import { parseLocale } from '../i18n/accept-language';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Public } from '../common/decorators/public.decorator';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import {
   SupportChatPublisher,
   toSupportChatPayload,
@@ -32,7 +32,7 @@ export class SupportController {
     private readonly publisher: SupportChatPublisher,
   ) {}
 
-  @Public()
+  @PublicApi()
   @Get('faq')
   getFaqs(@Headers('accept-language') acceptLanguage?: string) {
     return this.supportService.getFaqs(parseLocale(acceptLanguage));

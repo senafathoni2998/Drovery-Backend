@@ -16,6 +16,7 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { setupSwagger } from './common/swagger';
 
 async function bootstrap() {
   // rawBody: true preserves the unparsed request body so Stripe webhook
@@ -65,6 +66,9 @@ async function bootstrap() {
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new TransformInterceptor());
 
+  // Interactive OpenAPI docs at /{prefix}/docs (unless SWAGGER_ENABLED=false).
+  const docsPath = setupSwagger(app, prefix);
+
   // Drain in-process BullMQ workers + close the pg pool on SIGTERM/SIGINT so a
   // rolling deploy finishes active jobs instead of orphaning them.
   app.enableShutdownHooks();
@@ -80,6 +84,9 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`Drovery API running on http://localhost:${port}/${prefix}`);
+  if (docsPath) {
+    console.log(`API docs: http://localhost:${port}/${docsPath}`);
+  }
   console.log(
     `Sentry error tracking: ${sentryEnabled ? 'enabled' : 'disabled (no SENTRY_DSN)'}`,
   );

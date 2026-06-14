@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 
-import { Public } from '../common/decorators/public.decorator';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import { MetricsService } from './metrics.service';
 
 /**
@@ -18,7 +18,7 @@ import { MetricsService } from './metrics.service';
  * {success,data} envelope, which Prometheus could not parse). The pre-handler
  * MetricsInterceptor still runs but skips this route.
  */
-@Public()
+@PublicApi()
 @SkipThrottle()
 @Controller('metrics')
 export class MetricsController {

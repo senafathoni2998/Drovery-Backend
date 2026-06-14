@@ -7,6 +7,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
+import { ApiSecurity, ApiTags } from '@nestjs/swagger';
+
 import { Public } from '../../common/decorators/public.decorator';
 import { DroneAuthGuard } from './drone-auth.guard';
 import { TelemetryDto } from './dto/telemetry.dto';
@@ -17,6 +19,8 @@ import { TelemetryService } from './telemetry.service';
  * No broker, trivially testable. @Public() opts out of the global JwtAuthGuard
  * (a drone is not a user); DroneAuthGuard is the actual gate (shared key + HMAC).
  */
+@ApiTags('drone-ingest')
+@ApiSecurity('ingest-key')
 @Controller('ingest')
 export class TelemetryController {
   constructor(private readonly telemetry: TelemetryService) {}

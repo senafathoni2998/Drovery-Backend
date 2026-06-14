@@ -8,9 +8,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
 import { parseLocale } from '../i18n/accept-language';
-import { Public } from '../common/decorators/public.decorator';
+import { AuthTokensDto } from './dto/auth-tokens.dto';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
@@ -30,7 +32,8 @@ import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Public()
+  @PublicApi()
+  @ApiCreatedResponse({ type: AuthTokensDto })
   @Post('signup')
   signup(
     @Body() dto: SignupDto,
@@ -40,14 +43,16 @@ export class AuthController {
     return this.authService.signup(dto, parseLocale(acceptLanguage));
   }
 
-  @Public()
+  @PublicApi()
+  @ApiOkResponse({ type: AuthTokensDto })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
 
-  @Public()
+  @PublicApi()
+  @ApiOkResponse({ type: AuthTokensDto })
   @UseGuards(JwtRefreshGuard)
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
@@ -55,14 +60,14 @@ export class AuthController {
     return this.authService.refreshTokens(user.sub, dto.refreshToken);
   }
 
-  @Public()
+  @PublicApi()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Body() dto: RefreshTokenDto) {
     return this.authService.logout(dto.refreshToken);
   }
 
-  @Public()
+  @PublicApi()
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   forgotPassword(
@@ -76,14 +81,14 @@ export class AuthController {
     );
   }
 
-  @Public()
+  @PublicApi()
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
-  @Public()
+  @PublicApi()
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   verifyEmail(@Body() dto: VerifyEmailDto) {

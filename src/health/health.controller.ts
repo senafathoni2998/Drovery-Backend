@@ -1,12 +1,12 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 
-import { Public } from '../common/decorators/public.decorator';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import { HealthService } from './health.service';
 
 // Public + un-throttled so orchestrator probes (k8s/load balancers) aren't
 // blocked by auth or rate limits.
-@Public()
+@PublicApi()
 @SkipThrottle()
 @Controller('health')
 export class HealthController {
