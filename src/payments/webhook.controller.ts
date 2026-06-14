@@ -32,16 +32,13 @@ export class WebhookController {
     @Headers('stripe-signature') signature?: string,
   ) {
     // Stripe signs the raw bytes; fall back to the parsed body for mock/local.
-    const payload =
-      req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+    const payload = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
 
     let event;
     try {
       event = this.stripe.constructEvent(payload, signature);
     } catch (err) {
-      this.logger.warn(
-        `Rejected webhook: ${(err as Error).message}`,
-      );
+      this.logger.warn(`Rejected webhook: ${(err as Error).message}`);
       throw new BadRequestException('Invalid webhook signature');
     }
 

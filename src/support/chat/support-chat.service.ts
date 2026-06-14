@@ -22,12 +22,7 @@ export class SupportChatService {
   }
 
   /** Paginated, chronological message history for a ticket the user owns. */
-  async getMessages(
-    userId: string,
-    ticketId: string,
-    limit = 50,
-    offset = 0,
-  ) {
+  async getMessages(userId: string, ticketId: string, limit = 50, offset = 0) {
     await this.assertOwnedTicket(userId, ticketId);
     const [messages, total] = await this.prisma.$transaction([
       this.prisma.supportChatMessage.findMany({

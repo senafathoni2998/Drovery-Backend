@@ -57,7 +57,10 @@ describe('NotificationsController', () => {
     it('should delegate to notificationsService.markAsRead', async () => {
       const result = await controller.markAsRead(userId, 'notif-1');
 
-      expect(notificationsService.markAsRead).toHaveBeenCalledWith(userId, 'notif-1');
+      expect(notificationsService.markAsRead).toHaveBeenCalledWith(
+        userId,
+        'notif-1',
+      );
       expect(result.read).toBe(true);
     });
   });
@@ -77,7 +80,10 @@ describe('NotificationsController', () => {
 
       const result = await controller.registerDevice(userId, dto);
 
-      expect(notificationsService.registerDevice).toHaveBeenCalledWith(userId, dto);
+      expect(notificationsService.registerDevice).toHaveBeenCalledWith(
+        userId,
+        dto,
+      );
       expect(result.id).toBe('device-1');
     });
   });

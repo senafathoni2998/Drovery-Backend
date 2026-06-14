@@ -39,9 +39,9 @@ describe('RatingService', () => {
         status: DeliveryStatus.IN_TRANSIT,
       });
 
-      await expect(
-        service.rate(userId, 'd1', { stars: 4 }),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.rate(userId, 'd1', { stars: 4 })).rejects.toThrow(
+        ConflictException,
+      );
       expect(prisma.deliveryRating.upsert).not.toHaveBeenCalled();
     });
 
@@ -52,23 +52,26 @@ describe('RatingService', () => {
         status: DeliveryStatus.DELIVERED,
       });
 
-      await expect(
-        service.rate(userId, 'd1', { stars: 4 }),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.rate(userId, 'd1', { stars: 4 })).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('rejects a missing delivery (404)', async () => {
       prisma.delivery.findUnique.mockResolvedValue(null);
-      await expect(
-        service.rate(userId, 'nope', { stars: 4 }),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.rate(userId, 'nope', { stars: 4 })).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
   describe('getRating', () => {
     it('returns the rating for an owned delivery', async () => {
       prisma.delivery.findUnique.mockResolvedValue({ id: 'd1', userId });
-      prisma.deliveryRating.findUnique.mockResolvedValue({ id: 'r1', stars: 4 });
+      prisma.deliveryRating.findUnique.mockResolvedValue({
+        id: 'r1',
+        stars: 4,
+      });
 
       expect(await service.getRating(userId, 'd1')).toMatchObject({ stars: 4 });
     });

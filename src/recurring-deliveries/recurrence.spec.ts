@@ -17,27 +17,51 @@ const rule = (over: Partial<RecurrenceRule>): RecurrenceRule => ({
 describe('computeNextOccurrence', () => {
   it('DAILY: rolls to tomorrow when today’s time already passed', () => {
     // after = 2026-06-15 10:00 WIB (03:00Z); 08:00 WIB today already passed.
-    const next = computeNextOccurrence(rule({}), new Date('2026-06-15T03:00:00.000Z'), TZ);
+    const next = computeNextOccurrence(
+      rule({}),
+      new Date('2026-06-15T03:00:00.000Z'),
+      TZ,
+    );
     expect(next?.toISOString()).toBe('2026-06-16T01:00:00.000Z'); // 16th 08:00 WIB
   });
 
   it('DAILY: fires later the same day when the time is still ahead', () => {
     // after = 2026-06-15 06:00 WIB (2026-06-14T23:00Z); 08:00 WIB today is ahead.
-    const next = computeNextOccurrence(rule({}), new Date('2026-06-14T23:00:00.000Z'), TZ);
+    const next = computeNextOccurrence(
+      rule({}),
+      new Date('2026-06-14T23:00:00.000Z'),
+      TZ,
+    );
     expect(next?.toISOString()).toBe('2026-06-15T01:00:00.000Z'); // 15th 08:00 WIB
   });
 
   it('WEEKLY: picks the next matching weekday', () => {
     // Mon/Wed/Fri at 09:00 WIB (02:00Z). after = Tue 2026-06-16 12:00 WIB.
-    const r = rule({ freq: 'WEEKLY', daysOfWeek: [1, 3, 5], timeOfDay: '09:00' });
-    const next = computeNextOccurrence(r, new Date('2026-06-16T05:00:00.000Z'), TZ);
+    const r = rule({
+      freq: 'WEEKLY',
+      daysOfWeek: [1, 3, 5],
+      timeOfDay: '09:00',
+    });
+    const next = computeNextOccurrence(
+      r,
+      new Date('2026-06-16T05:00:00.000Z'),
+      TZ,
+    );
     expect(next?.toISOString()).toBe('2026-06-17T02:00:00.000Z'); // Wed 09:00 WIB
   });
 
   it('WEEKLY: wraps to next week when this week’s days are exhausted', () => {
     // after = Fri 2026-06-19 10:00 WIB (after the 09:00 fire) → next is Mon.
-    const r = rule({ freq: 'WEEKLY', daysOfWeek: [1, 3, 5], timeOfDay: '09:00' });
-    const next = computeNextOccurrence(r, new Date('2026-06-19T03:00:00.000Z'), TZ);
+    const r = rule({
+      freq: 'WEEKLY',
+      daysOfWeek: [1, 3, 5],
+      timeOfDay: '09:00',
+    });
+    const next = computeNextOccurrence(
+      r,
+      new Date('2026-06-19T03:00:00.000Z'),
+      TZ,
+    );
     expect(next?.toISOString()).toBe('2026-06-22T02:00:00.000Z'); // Mon 09:00 WIB
   });
 
@@ -46,13 +70,21 @@ describe('computeNextOccurrence', () => {
     // getUTCDay() implementation would read Friday and skip this Saturday-only
     // schedule; noon-anchoring reads Saturday correctly.
     const r = rule({ freq: 'WEEKLY', daysOfWeek: [6], timeOfDay: '02:00' });
-    const next = computeNextOccurrence(r, new Date('2026-06-18T05:00:00.000Z'), TZ);
+    const next = computeNextOccurrence(
+      r,
+      new Date('2026-06-18T05:00:00.000Z'),
+      TZ,
+    );
     expect(next?.toISOString()).toBe('2026-06-19T19:00:00.000Z'); // Sat 2026-06-20 02:00 WIB
   });
 
   it('is strictly after its own occurrence (no same-instant repeat)', () => {
     const r = rule({});
-    const first = computeNextOccurrence(r, new Date('2026-06-15T03:00:00.000Z'), TZ)!;
+    const first = computeNextOccurrence(
+      r,
+      new Date('2026-06-15T03:00:00.000Z'),
+      TZ,
+    )!;
     const second = computeNextOccurrence(r, first, TZ);
     expect(second?.toISOString()).toBe('2026-06-17T01:00:00.000Z');
     expect(second!.getTime()).toBeGreaterThan(first.getTime());
@@ -62,7 +94,11 @@ describe('computeNextOccurrence', () => {
     const r = rule({ endDate: new Date('2026-06-16T01:00:00.000Z') }); // exactly an occurrence
     // An occurrence AT endDate is allowed.
     expect(
-      computeNextOccurrence(r, new Date('2026-06-15T03:00:00.000Z'), TZ)?.toISOString(),
+      computeNextOccurrence(
+        r,
+        new Date('2026-06-15T03:00:00.000Z'),
+        TZ,
+      )?.toISOString(),
     ).toBe('2026-06-16T01:00:00.000Z');
     // The next one (past endDate) is null.
     expect(
@@ -72,15 +108,24 @@ describe('computeNextOccurrence', () => {
 
   it('returns null when the recurrence has already ended', () => {
     const r = rule({ endDate: new Date('2020-01-01T00:00:00.000Z') });
-    expect(computeNextOccurrence(r, new Date('2026-06-15T03:00:00.000Z'), TZ)).toBeNull();
+    expect(
+      computeNextOccurrence(r, new Date('2026-06-15T03:00:00.000Z'), TZ),
+    ).toBeNull();
   });
 
   it('endDate is inclusive through its whole WIB day (keeps a post-07:00 time on the last day)', () => {
     // endDate "2026-06-30" (UTC midnight = 07:00 WIB). A 09:00 WIB occurrence on
     // Jun 30 (02:00Z) must still fire — the recurrence ends AFTER that day.
-    const r = rule({ timeOfDay: '09:00', endDate: new Date('2026-06-30T00:00:00.000Z') });
+    const r = rule({
+      timeOfDay: '09:00',
+      endDate: new Date('2026-06-30T00:00:00.000Z'),
+    });
     expect(
-      computeNextOccurrence(r, new Date('2026-06-29T03:00:00.000Z'), TZ)?.toISOString(),
+      computeNextOccurrence(
+        r,
+        new Date('2026-06-29T03:00:00.000Z'),
+        TZ,
+      )?.toISOString(),
     ).toBe('2026-06-30T02:00:00.000Z'); // Jun 30 09:00 WIB — kept
     // The day after endDate's WIB day yields nothing.
     expect(
@@ -96,12 +141,24 @@ describe('computeNextOccurrence', () => {
       startDate: new Date('2026-12-25T00:00:00.000Z'),
     });
     expect(
-      computeNextOccurrence(r, new Date('2026-06-13T00:00:00.000Z'), TZ)?.toISOString(),
+      computeNextOccurrence(
+        r,
+        new Date('2026-06-13T00:00:00.000Z'),
+        TZ,
+      )?.toISOString(),
     ).toBe('2026-12-24T20:00:00.000Z'); // Dec 25 03:00 WIB — first day kept
   });
 
   it('returns null for an empty WEEKLY day set or a malformed time', () => {
-    expect(computeNextOccurrence(rule({ freq: 'WEEKLY', daysOfWeek: [] }), new Date(), TZ)).toBeNull();
-    expect(computeNextOccurrence(rule({ timeOfDay: '24:00' }), new Date(), TZ)).toBeNull();
+    expect(
+      computeNextOccurrence(
+        rule({ freq: 'WEEKLY', daysOfWeek: [] }),
+        new Date(),
+        TZ,
+      ),
+    ).toBeNull();
+    expect(
+      computeNextOccurrence(rule({ timeOfDay: '24:00' }), new Date(), TZ),
+    ).toBeNull();
   });
 });

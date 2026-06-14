@@ -53,14 +53,20 @@ export class SavedAddressesService {
       );
     }
 
-    const { lat, lng } = await this.resolveCoords(dto.address, dto.lat, dto.lng);
+    const { lat, lng } = await this.resolveCoords(
+      dto.address,
+      dto.lat,
+      dto.lng,
+    );
     // The first saved address is the default; otherwise honor the flag.
     const isDefault = count === 0 ? true : (dto.isDefault ?? false);
 
     const data = { userId, label: dto.label, address: dto.address, lat, lng };
 
     if (!isDefault) {
-      return this.prisma.savedAddress.create({ data: { ...data, isDefault: false } });
+      return this.prisma.savedAddress.create({
+        data: { ...data, isDefault: false },
+      });
     }
     // Atomic: clear any prior default, then create this one as the default.
     const [, created] = await this.prisma.$transaction([

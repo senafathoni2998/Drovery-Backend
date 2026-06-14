@@ -26,7 +26,8 @@ export const en: Record<string, string> = {
   'notification.stage.AWAITING_HANDOFF.title': 'Awaiting Handoff',
   'notification.stage.AWAITING_HANDOFF.body':
     'Your package has arrived. Share your handoff code with the recipient to complete delivery.',
-  'notification.stage.AWAITING_HANDOFF.droneStatus': 'Awaiting recipient handoff',
+  'notification.stage.AWAITING_HANDOFF.droneStatus':
+    'Awaiting recipient handoff',
 
   // ── Delivery exception notifications + live-map labels ──
   'notification.exception.WEATHER_ABORT.title': 'Delivery Aborted — Weather',
@@ -88,7 +89,8 @@ export const en: Record<string, string> = {
   'faq.4.answer':
     'Small (up to 0.5 kg), Medium (up to 1.5 kg), Large (up to 3 kg), and XL (up to 5 kg).',
   'faq.5.question': 'How do I change my default address?',
-  'faq.5.answer': 'Go to Profile → Edit Profile and update the Default Address field.',
+  'faq.5.answer':
+    'Go to Profile → Edit Profile and update the Default Address field.',
   'faq.6.question': 'Is my payment information secure?',
   'faq.6.answer':
     'Yes. All card data is encrypted via Stripe. We never store your full card number.',

@@ -17,7 +17,10 @@ describe('SavedAddressesService', () => {
   describe('create', () => {
     it('geocodes the address and makes the FIRST one the default (atomic)', async () => {
       prisma.savedAddress.count.mockResolvedValue(0);
-      prisma.savedAddress.create.mockResolvedValue({ id: 'a1', isDefault: true });
+      prisma.savedAddress.create.mockResolvedValue({
+        id: 'a1',
+        isDefault: true,
+      });
 
       await service.create('u1', { label: 'Home', address: 'Jl X' });
 
@@ -41,7 +44,12 @@ describe('SavedAddressesService', () => {
       prisma.savedAddress.count.mockResolvedValue(2);
       prisma.savedAddress.create.mockResolvedValue({});
 
-      await service.create('u1', { label: 'W', address: 'Jl Y', lat: 5, lng: 6 });
+      await service.create('u1', {
+        label: 'W',
+        address: 'Jl Y',
+        lat: 5,
+        lng: 6,
+      });
 
       expect(geo.geocode).not.toHaveBeenCalled();
       expect(prisma.savedAddress.updateMany).not.toHaveBeenCalled();

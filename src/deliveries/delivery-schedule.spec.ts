@@ -22,15 +22,19 @@ describe('computeScheduledFor', () => {
   });
 
   it('takes the leading YYYY-MM-DD from a full ISO pickupDate', () => {
-    const instant = computeScheduledFor('2026-06-20T00:00:00.000Z', '09:30', TZ);
+    const instant = computeScheduledFor(
+      '2026-06-20T00:00:00.000Z',
+      '09:30',
+      TZ,
+    );
     expect(instant?.toISOString()).toBe('2026-06-20T02:30:00.000Z');
   });
 
   it('respects a different (fixed-offset) timezone', () => {
     // 14:00 UTC === 14:00 UTC.
-    expect(computeScheduledFor('2026-06-20', '14:00', 'UTC')?.toISOString()).toBe(
-      '2026-06-20T14:00:00.000Z',
-    );
+    expect(
+      computeScheduledFor('2026-06-20', '14:00', 'UTC')?.toISOString(),
+    ).toBe('2026-06-20T14:00:00.000Z');
   });
 
   it.each([

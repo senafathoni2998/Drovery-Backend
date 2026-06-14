@@ -94,7 +94,9 @@ export interface PositionJobData extends TraceCarrier {
   lng: number;
 }
 
-export function resolveCoords(coords?: Partial<DeliveryCoords>): DeliveryCoords {
+export function resolveCoords(
+  coords?: Partial<DeliveryCoords>,
+): DeliveryCoords {
   return {
     fromLat: coords?.fromLat ?? DEFAULT_COORDS.fromLat,
     fromLng: coords?.fromLng ?? DEFAULT_COORDS.fromLng,

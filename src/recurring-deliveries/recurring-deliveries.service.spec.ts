@@ -57,7 +57,9 @@ describe('RecurringDeliveriesService', () => {
         timeOfDay: '08:00',
         ...template,
       } as any);
-      expect(prisma.recurringDelivery.create.mock.calls[0][0].data.daysOfWeek).toEqual([]);
+      expect(
+        prisma.recurringDelivery.create.mock.calls[0][0].data.daysOfWeek,
+      ).toEqual([]);
     });
 
     it('dedups + sorts daysOfWeek for WEEKLY and persists them', async () => {
@@ -68,12 +70,18 @@ describe('RecurringDeliveriesService', () => {
         timeOfDay: '09:00',
         ...template,
       } as any);
-      expect(prisma.recurringDelivery.create.mock.calls[0][0].data.daysOfWeek).toEqual([1, 3, 5]);
+      expect(
+        prisma.recurringDelivery.create.mock.calls[0][0].data.daysOfWeek,
+      ).toEqual([1, 3, 5]);
     });
 
     it('rejects WEEKLY with no days', async () => {
       await expect(
-        service.create(userId, { freq: 'WEEKLY' as any, timeOfDay: '09:00', ...template } as any),
+        service.create(userId, {
+          freq: 'WEEKLY' as any,
+          timeOfDay: '09:00',
+          ...template,
+        } as any),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -136,17 +144,23 @@ describe('RecurringDeliveriesService', () => {
   describe('owner-scoping', () => {
     it('findOne throws NotFound when not owned', async () => {
       prisma.recurringDelivery.findFirst.mockResolvedValue(null);
-      await expect(service.findOne(userId, 'r-x')).rejects.toThrow(NotFoundException);
+      await expect(service.findOne(userId, 'r-x')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('pause throws NotFound when not owned (count 0)', async () => {
       prisma.recurringDelivery.updateMany.mockResolvedValue({ count: 0 });
-      await expect(service.pause(userId, 'r-x')).rejects.toThrow(NotFoundException);
+      await expect(service.pause(userId, 'r-x')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('remove throws NotFound when not owned (count 0)', async () => {
       prisma.recurringDelivery.deleteMany.mockResolvedValue({ count: 0 });
-      await expect(service.remove(userId, 'r-x')).rejects.toThrow(NotFoundException);
+      await expect(service.remove(userId, 'r-x')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -164,7 +178,10 @@ describe('RecurringDeliveriesService', () => {
 
     it('pause sets active=false without touching nextRunAt', async () => {
       prisma.recurringDelivery.updateMany.mockResolvedValue({ count: 1 });
-      prisma.recurringDelivery.findFirst.mockResolvedValue({ ...ownedRow, active: false });
+      prisma.recurringDelivery.findFirst.mockResolvedValue({
+        ...ownedRow,
+        active: false,
+      });
       await service.pause(userId, 'r-1');
       expect(prisma.recurringDelivery.updateMany).toHaveBeenCalledWith({
         where: { id: 'r-1', userId },
@@ -187,7 +204,9 @@ describe('RecurringDeliveriesService', () => {
         ...ownedRow,
         endDate: new Date('2020-01-01T00:00:00.000Z'),
       });
-      await expect(service.resume(userId, 'r-1')).rejects.toThrow(BadRequestException);
+      await expect(service.resume(userId, 'r-1')).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 });

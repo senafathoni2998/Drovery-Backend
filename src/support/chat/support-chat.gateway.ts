@@ -1,4 +1,9 @@
-import { BadRequestException, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Logger,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -17,7 +22,10 @@ import {
   toSupportChatPayload,
 } from './support-chat.publisher';
 import { SupportChatService } from './support-chat.service';
-import { SupportChatFrame, SupportChatSubscriber } from './support-chat.subscriber';
+import {
+  SupportChatFrame,
+  SupportChatSubscriber,
+} from './support-chat.subscriber';
 
 interface AuthedSocket extends WebSocket {
   userId?: string;

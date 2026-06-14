@@ -25,6 +25,9 @@ export class StorageService {
    * @param deliveryId used as the storage key / placeholder seed
    * @param base64 raw base64 or a data: URL; null for an auto-generated proof
    */
+  // async by seam contract (the real S3/Cloudinary provider awaits an upload);
+  // the dev-stub path returns a placeholder synchronously, hence no await yet.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async storePodImage(
     deliveryId: string,
     base64: string | null,

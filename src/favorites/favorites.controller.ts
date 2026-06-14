@@ -17,10 +17,7 @@ export class FavoritesController {
   constructor(private readonly favorites: FavoritesService) {}
 
   @Post()
-  create(
-    @CurrentUser('sub') userId: string,
-    @Body() dto: CreateFavoriteDto,
-  ) {
+  create(@CurrentUser('sub') userId: string, @Body() dto: CreateFavoriteDto) {
     return this.favorites.create(userId, dto);
   }
 

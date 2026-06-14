@@ -1,14 +1,16 @@
 import { SupportChatSubscriber } from './support-chat.subscriber';
 
 describe('SupportChatSubscriber.dispatch', () => {
-  const make = () =>
-    new SupportChatSubscriber({ get: jest.fn() } as any);
+  const make = () => new SupportChatSubscriber({ get: jest.fn() } as any);
 
   it('extracts the ticketId from the channel and forwards the parsed frame', () => {
     const sub = make();
     const handler = jest.fn();
     sub.onUpdate(handler);
-    const frame = { event: 'message:new', data: { id: 'm-1', ticketId: 't-1' } };
+    const frame = {
+      event: 'message:new',
+      data: { id: 'm-1', ticketId: 't-1' },
+    };
 
     sub.dispatch('support:ticket:t-1:messages', JSON.stringify(frame));
 

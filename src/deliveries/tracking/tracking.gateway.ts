@@ -97,7 +97,10 @@ export class TrackingGateway
   }
 
   @SubscribeMessage('subscribe')
-  async handleSubscribe(client: AuthedSocket, payload: { deliveryId?: string }) {
+  async handleSubscribe(
+    client: AuthedSocket,
+    payload: { deliveryId?: string },
+  ) {
     const deliveryId = payload?.deliveryId;
     if (!client.userId || !deliveryId) {
       return { event: 'error', data: { message: 'unauthorized' } };
@@ -125,7 +128,8 @@ export class TrackingGateway
   @SubscribeMessage('unsubscribe')
   handleUnsubscribe(client: AuthedSocket, payload: { deliveryId?: string }) {
     const deliveryId = payload?.deliveryId;
-    if (!deliveryId) return { event: 'error', data: { message: 'bad request' } };
+    if (!deliveryId)
+      return { event: 'error', data: { message: 'bad request' } };
     const clients = this.subscriptions.get(deliveryId);
     if (clients?.delete(client) && clients.size === 0) {
       this.subscriptions.delete(deliveryId);

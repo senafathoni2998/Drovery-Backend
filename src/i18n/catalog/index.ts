@@ -14,5 +14,7 @@ export type MessageCatalog = Record<string, string>;
 export const CATALOGS: Record<Locale, MessageCatalog> = { en, id };
 
 export function isSupportedLocale(value: unknown): value is Locale {
-  return typeof value === 'string' && (SUPPORTED_LOCALES as string[]).includes(value);
+  return (
+    typeof value === 'string' && (SUPPORTED_LOCALES as string[]).includes(value)
+  );
 }

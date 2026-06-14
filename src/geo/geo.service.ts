@@ -36,7 +36,10 @@ export class GeoService {
     if (cached) {
       return 'miss' in cached && cached.miss
         ? null
-        : { lat: (cached as GeocodeResult).lat, lng: (cached as GeocodeResult).lng };
+        : {
+            lat: (cached as GeocodeResult).lat,
+            lng: (cached as GeocodeResult).lng,
+          };
     }
 
     const result = await this.fetchGeocode(query);
@@ -103,10 +106,7 @@ export class GeoService {
     }
   }
 
-  private async fetchReverse(
-    lat: number,
-    lng: number,
-  ): Promise<string | null> {
+  private async fetchReverse(lat: number, lng: number): Promise<string | null> {
     try {
       const params = new URLSearchParams({
         lat: String(lat),

@@ -1,11 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-import {
-  CATALOGS,
-  DEFAULT_LOCALE,
-  Locale,
-  isSupportedLocale,
-} from './catalog';
+import { CATALOGS, DEFAULT_LOCALE, Locale, isSupportedLocale } from './catalog';
 
 /**
  * In-house, NON-request-scoped localization. Deliberately a plain default-scope
@@ -33,7 +28,9 @@ export class I18nService {
     locale?: string | null,
     params?: Record<string, string | number>,
   ): string {
-    const resolved: Locale = isSupportedLocale(locale) ? locale : DEFAULT_LOCALE;
+    const resolved: Locale = isSupportedLocale(locale)
+      ? locale
+      : DEFAULT_LOCALE;
     const template =
       CATALOGS[resolved][key] ?? CATALOGS[DEFAULT_LOCALE][key] ?? key;
     return this.interpolate(template, params);

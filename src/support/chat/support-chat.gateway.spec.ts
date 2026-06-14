@@ -36,7 +36,8 @@ describe('SupportChatGateway', () => {
     );
   });
 
-  const socket = () => ({ close: jest.fn(), send: jest.fn(), readyState: 1 }) as any;
+  const socket = () =>
+    ({ close: jest.fn(), send: jest.fn(), readyState: 1 }) as any;
 
   describe('handleConnection (auth)', () => {
     it('accepts a valid token: sets userId, counts the connection', async () => {
@@ -116,7 +117,10 @@ describe('SupportChatGateway', () => {
       });
       const client = socket();
       client.userId = 'u-1';
-      const res = await gateway.handleSend(client, { ticketId: 't-1', content: '  hi  ' });
+      const res = await gateway.handleSend(client, {
+        ticketId: 't-1',
+        content: '  hi  ',
+      });
       expect(chat.createUserMessage).toHaveBeenCalledWith('u-1', 't-1', 'hi');
       expect(publisher.publishMessage).toHaveBeenCalledWith({
         id: 'm-1',
@@ -133,7 +137,10 @@ describe('SupportChatGateway', () => {
     it('rejects empty content without touching the DB', async () => {
       const client = socket();
       client.userId = 'u-1';
-      const res = await gateway.handleSend(client, { ticketId: 't-1', content: '   ' });
+      const res = await gateway.handleSend(client, {
+        ticketId: 't-1',
+        content: '   ',
+      });
       expect(res).toEqual({ event: 'error', data: { message: 'bad request' } });
       expect(chat.createUserMessage).not.toHaveBeenCalled();
       expect(publisher.publishMessage).not.toHaveBeenCalled();
@@ -143,8 +150,14 @@ describe('SupportChatGateway', () => {
       chat.createUserMessage.mockRejectedValue(new BadRequestException());
       const client = socket();
       client.userId = 'u-1';
-      const res = await gateway.handleSend(client, { ticketId: 't-1', content: 'hi' });
-      expect(res).toEqual({ event: 'error', data: { message: 'ticket closed' } });
+      const res = await gateway.handleSend(client, {
+        ticketId: 't-1',
+        content: 'hi',
+      });
+      expect(res).toEqual({
+        event: 'error',
+        data: { message: 'ticket closed' },
+      });
       expect(publisher.publishMessage).not.toHaveBeenCalled();
     });
 
@@ -152,8 +165,14 @@ describe('SupportChatGateway', () => {
       chat.createUserMessage.mockRejectedValue(new NotFoundException());
       const client = socket();
       client.userId = 'u-9';
-      const res = await gateway.handleSend(client, { ticketId: 't-1', content: 'hi' });
-      expect(res).toEqual({ event: 'error', data: { message: 'not found or no access' } });
+      const res = await gateway.handleSend(client, {
+        ticketId: 't-1',
+        content: 'hi',
+      });
+      expect(res).toEqual({
+        event: 'error',
+        data: { message: 'not found or no access' },
+      });
     });
   });
 
@@ -168,7 +187,10 @@ describe('SupportChatGateway', () => {
       await gateway.handleSubscribe(open, { ticketId: 't-1' });
       await gateway.handleSubscribe(closed, { ticketId: 't-1' });
 
-      const frame = { event: 'message:new', data: { id: 'm-1', ticketId: 't-1' } };
+      const frame = {
+        event: 'message:new',
+        data: { id: 'm-1', ticketId: 't-1' },
+      };
       gateway.deliverToLocalClients('t-1', frame);
 
       expect(open.send).toHaveBeenCalledWith(JSON.stringify(frame));
@@ -177,7 +199,10 @@ describe('SupportChatGateway', () => {
 
     it('is a no-op when nobody is subscribed', () => {
       expect(() =>
-        gateway.deliverToLocalClients('nobody', { event: 'message:new', data: {} }),
+        gateway.deliverToLocalClients('nobody', {
+          event: 'message:new',
+          data: {},
+        }),
       ).not.toThrow();
     });
   });

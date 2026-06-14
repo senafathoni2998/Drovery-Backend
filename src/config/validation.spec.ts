@@ -25,9 +25,9 @@ describe('config validation', () => {
 
   describe('production boot guards', () => {
     it('refuses to boot with a weak/placeholder JWT secret', () => {
-      expect(() =>
-        validate({ ...base(), NODE_ENV: 'production' }),
-      ).toThrow(/weak or a placeholder/);
+      expect(() => validate({ ...base(), NODE_ENV: 'production' })).toThrow(
+        /weak or a placeholder/,
+      );
     });
 
     it('boots with strong secrets in production', () => {

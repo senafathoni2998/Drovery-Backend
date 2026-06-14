@@ -181,7 +181,11 @@ describe('TelemetryService', () => {
     );
 
     await expect(
-      service.ingest({ deliveryId: 'd-1', droneId: 'drone-1', phase: 'ASSIGNED' }),
+      service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'ASSIGNED',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
   });
@@ -190,7 +194,11 @@ describe('TelemetryService', () => {
     prisma.delivery.findUnique.mockResolvedValue(liveDelivery('PENDING'));
 
     await expect(
-      service.ingest({ deliveryId: 'd-1', droneId: 'stranger', phase: 'ASSIGNED' }),
+      service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'stranger',
+        phase: 'ASSIGNED',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
   });
@@ -276,7 +284,9 @@ describe('TelemetryService', () => {
   });
 
   it('does NOT bump liveness for an out-of-bounds frame on a terminal/arrived delivery', async () => {
-    prisma.delivery.findUnique.mockResolvedValue(liveDelivery('AWAITING_HANDOFF'));
+    prisma.delivery.findUnique.mockResolvedValue(
+      liveDelivery('AWAITING_HANDOFF'),
+    );
 
     await service.ingest({
       deliveryId: 'd-1',
@@ -324,7 +334,9 @@ describe('TelemetryService', () => {
   });
 
   it('drops a position-only frame for an AWAITING_HANDOFF delivery (no rewind)', async () => {
-    prisma.delivery.findUnique.mockResolvedValue(liveDelivery('AWAITING_HANDOFF'));
+    prisma.delivery.findUnique.mockResolvedValue(
+      liveDelivery('AWAITING_HANDOFF'),
+    );
 
     const res = await service.ingest({
       deliveryId: 'd-1',
@@ -349,7 +361,10 @@ describe('TelemetryService', () => {
         failureReason: 'WEATHER_ABORT',
       });
 
-      expect(deliveries.failExceptional).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+      expect(deliveries.failExceptional).toHaveBeenCalledWith(
+        'd-1',
+        'WEATHER_ABORT',
+      );
       // The exception branch returns BEFORE the forward CAS / tracking write.
       expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
       expect(tracking.updateTracking).not.toHaveBeenCalled();
@@ -359,9 +374,16 @@ describe('TelemetryService', () => {
     it('defaults a reasonless FAILED frame to MECHANICAL', async () => {
       prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
 
-      await service.ingest({ deliveryId: 'd-1', droneId: 'drone-1', phase: 'FAILED' });
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'FAILED',
+      });
 
-      expect(deliveries.failExceptional).toHaveBeenCalledWith('d-1', 'MECHANICAL');
+      expect(deliveries.failExceptional).toHaveBeenCalledWith(
+        'd-1',
+        'MECHANICAL',
+      );
     });
 
     it('routes RETURNING → beginReturnToBase (default reason WEATHER_ABORT) and RETURNED → completeReturnToBase', async () => {
@@ -371,7 +393,10 @@ describe('TelemetryService', () => {
         droneId: 'drone-1',
         phase: 'RETURNING',
       });
-      expect(deliveries.beginReturnToBase).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+      expect(deliveries.beginReturnToBase).toHaveBeenCalledWith(
+        'd-1',
+        'WEATHER_ABORT',
+      );
       expect(returning).toEqual({ applied: true, status: 'RETURNING' });
 
       prisma.delivery.findUnique.mockResolvedValue(liveDelivery('RETURNING'));
@@ -402,12 +427,20 @@ describe('TelemetryService', () => {
         liveDelivery('IN_TRANSIT', { trackingSource: 'SIMULATED' }),
       );
       await expect(
-        service.ingest({ deliveryId: 'd-1', droneId: 'drone-1', phase: 'FAILED' }),
+        service.ingest({
+          deliveryId: 'd-1',
+          droneId: 'drone-1',
+          phase: 'FAILED',
+        }),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
       prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
       await expect(
-        service.ingest({ deliveryId: 'd-1', droneId: 'stranger', phase: 'FAILED' }),
+        service.ingest({
+          deliveryId: 'd-1',
+          droneId: 'stranger',
+          phase: 'FAILED',
+        }),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
       expect(deliveries.failExceptional).not.toHaveBeenCalled();

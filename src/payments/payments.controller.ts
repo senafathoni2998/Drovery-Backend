@@ -44,18 +44,12 @@ export class PaymentsController {
   }
 
   @Delete(':id')
-  remove(
-    @CurrentUser('sub') userId: string,
-    @Param('id') id: string,
-  ) {
+  remove(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.paymentsService.remove(userId, id);
   }
 
   @Patch(':id/default')
-  setDefault(
-    @CurrentUser('sub') userId: string,
-    @Param('id') id: string,
-  ) {
+  setDefault(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.paymentsService.setDefault(userId, id);
   }
 }

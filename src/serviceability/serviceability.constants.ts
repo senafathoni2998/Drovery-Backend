@@ -12,8 +12,18 @@ export const SERVICE_AREAS: ServiceArea[] = [
 // are ~110 km from the Bandung demo route, so the demo stays serviceable while
 // no-fly is still demonstrable with Jakarta coordinates.
 export const NO_FLY_ZONES: NoFlyZone[] = [
-  { name: 'Soekarno-Hatta International Airport', lat: -6.1256, lng: 106.6558, radiusKm: 5 },
-  { name: 'Halim Perdanakusuma Airport', lat: -6.2647, lng: 106.9308, radiusKm: 3 },
+  {
+    name: 'Soekarno-Hatta International Airport',
+    lat: -6.1256,
+    lng: 106.6558,
+    radiusKm: 5,
+  },
+  {
+    name: 'Halim Perdanakusuma Airport',
+    lat: -6.2647,
+    lng: 106.9308,
+    radiusKm: 3,
+  },
 ];
 
 // Drones are grounded above this wind speed.

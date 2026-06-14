@@ -35,7 +35,10 @@ describe('StorageService (mock mode)', () => {
   });
 
   it('passes an existing data URL through unchanged', async () => {
-    const url = await service.storePodImage('d-1', 'data:image/png;base64,BBBB');
+    const url = await service.storePodImage(
+      'd-1',
+      'data:image/png;base64,BBBB',
+    );
     expect(url).toBe('data:image/png;base64,BBBB');
   });
 });

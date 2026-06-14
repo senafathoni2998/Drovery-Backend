@@ -74,9 +74,9 @@ describe('NotificationsService', () => {
     it('should throw NotFoundException if notification not found', async () => {
       prisma.notification.findUnique.mockResolvedValue(null);
 
-      await expect(
-        service.markAsRead(userId, 'nonexistent'),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.markAsRead(userId, 'nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('should throw ForbiddenException if notification belongs to another user', async () => {
@@ -85,9 +85,9 @@ describe('NotificationsService', () => {
         userId: 'other-user',
       });
 
-      await expect(
-        service.markAsRead(userId, 'notif-1'),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.markAsRead(userId, 'notif-1')).rejects.toThrow(
+        ForbiddenException,
+      );
     });
   });
 
@@ -284,10 +284,18 @@ describe('NotificationsService', () => {
     const gate = (cat: 'delivery' | 'promotion' | 'system') =>
       (service as any).shouldSendPush(userId, cat) as Promise<boolean>;
     const setPrefs = (p: Record<string, unknown>) =>
-      prisma.notificationPreference.findUnique.mockResolvedValue({ userId, ...p });
+      prisma.notificationPreference.findUnique.mockResolvedValue({
+        userId,
+        ...p,
+      });
 
     it('sends when push is enabled and the category is on (no quiet hours)', async () => {
-      setPrefs({ pushEnabled: true, deliveryUpdates: true, quietHoursStart: null, quietHoursEnd: null });
+      setPrefs({
+        pushEnabled: true,
+        deliveryUpdates: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      });
       expect(await gate('delivery')).toBe(true);
     });
 
@@ -297,12 +305,22 @@ describe('NotificationsService', () => {
     });
 
     it('suppresses a delivery push when deliveryUpdates is off', async () => {
-      setPrefs({ pushEnabled: true, deliveryUpdates: false, quietHoursStart: null, quietHoursEnd: null });
+      setPrefs({
+        pushEnabled: true,
+        deliveryUpdates: false,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      });
       expect(await gate('delivery')).toBe(false);
     });
 
     it('suppresses a promotion when promotions is off', async () => {
-      setPrefs({ pushEnabled: true, promotions: false, quietHoursStart: null, quietHoursEnd: null });
+      setPrefs({
+        pushEnabled: true,
+        promotions: false,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      });
       expect(await gate('promotion')).toBe(false);
     });
 

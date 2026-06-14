@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -132,7 +131,9 @@ describe('DeliveriesService', () => {
       refundChargeToWallet: jest.fn().mockResolvedValue(undefined),
     };
     notificationsService = { create: jest.fn().mockResolvedValue({}) };
-    trackingPublisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
+    trackingPublisher = {
+      publishUpdate: jest.fn().mockResolvedValue(undefined),
+    };
     // Default: no pending referral (keeps the no-promo path a plain create).
     prisma.referral.findFirst.mockResolvedValue(null);
 
@@ -282,7 +283,11 @@ describe('DeliveriesService', () => {
       const yyyy = d.getUTCFullYear();
       const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
       const dd = String(d.getUTCDate()).padStart(2, '0');
-      return { ...createDto, pickupDate: `${yyyy}-${mm}-${dd}`, pickupTime: '12:00' };
+      return {
+        ...createDto,
+        pickupDate: `${yyyy}-${mm}-${dd}`,
+        pickupTime: '12:00',
+      };
     };
 
     it('defers a future pickup: status SCHEDULED, kickoff scheduled, no immediate sim', async () => {
@@ -349,7 +354,9 @@ describe('DeliveriesService', () => {
         18, // pricing.total
       );
       // The discounted total is what gets stored AND charged.
-      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(16.2);
+      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(
+        16.2,
+      );
       expect(promoService.redeemWithinTx).toHaveBeenCalledWith(
         expect.anything(), // tx client
         fakeCode,
@@ -395,31 +402,41 @@ describe('DeliveriesService', () => {
   describe('create — wallet credits & referral', () => {
     it('applies wallet credits stacked after promo (debit + reduced charge)', async () => {
       prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
-      prisma.delivery.create.mockResolvedValue({ ...mockDelivery, estimatedPrice: 8 });
+      prisma.delivery.create.mockResolvedValue({
+        ...mockDelivery,
+        estimatedPrice: 8,
+      });
 
       await service.create(userId, { ...createDto, useCredits: true });
 
       // 18 (total) - 10 (credits, clamped to balance) = 8 charged + stored.
-      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(8);
+      expect(prisma.delivery.create.mock.calls[0][0].data.estimatedPrice).toBe(
+        8,
+      );
       expect(walletService.debitWithinTx).toHaveBeenCalledWith(
         expect.anything(),
         userId,
         10,
         expect.objectContaining({ deliveryId: mockDelivery.id }),
       );
-      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(mockDelivery.id, 8);
+      expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
+        mockDelivery.id,
+        8,
+      );
     });
 
     it('grants the referral reward on the first delivery (pending referral present)', async () => {
-      prisma.referral.findFirst.mockResolvedValue({ id: 'ref-1', refereeId: userId });
+      prisma.referral.findFirst.mockResolvedValue({
+        id: 'ref-1',
+        refereeId: userId,
+      });
       prisma.delivery.create.mockResolvedValue(mockDelivery);
 
       await service.create(userId, createDto);
 
-      expect(walletService.maybeGrantReferralRewardWithinTx).toHaveBeenCalledWith(
-        expect.anything(),
-        userId,
-      );
+      expect(
+        walletService.maybeGrantReferralRewardWithinTx,
+      ).toHaveBeenCalledWith(expect.anything(), userId);
     });
 
     it('does not spend credits when useCredits is absent', async () => {
@@ -462,7 +479,10 @@ describe('DeliveriesService', () => {
     });
 
     it('throws NotFound when reordering a delivery the user does not own', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ ...mockDelivery, userId: 'other' });
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        userId: 'other',
+      });
       await expect(service.reorder(userId, 'delivery-1')).rejects.toThrow(
         NotFoundException,
       );
@@ -578,7 +598,10 @@ describe('DeliveriesService', () => {
       prisma.delivery.findMany.mockResolvedValue([mockDelivery]);
       prisma.delivery.count.mockResolvedValue(1);
 
-      const result = await service.findAll(userId, { page: 1, limit: 20 } as any);
+      const result = await service.findAll(userId, {
+        page: 1,
+        limit: 20,
+      } as any);
 
       expect(result).toEqual({
         items: [mockDelivery],
@@ -656,9 +679,9 @@ describe('DeliveriesService', () => {
         userId: 'other-user',
       });
 
-      await expect(service.findByTrackingId(userId, 'AAAAAAAA')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.findByTrackingId(userId, 'AAAAAAAA'),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -701,7 +724,9 @@ describe('DeliveriesService', () => {
       const result = await service.cancel(userId, 'delivery-1');
 
       expect(result.status).toBe(DeliveryStatus.CANCELED);
-      expect(simulationService.stopSimulation).toHaveBeenCalledWith('delivery-1');
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith(
+        'delivery-1',
+      );
     });
 
     it('should cancel a CONFIRMED delivery', async () => {
@@ -731,7 +756,9 @@ describe('DeliveriesService', () => {
 
       await service.cancel(userId, 'delivery-1');
 
-      expect(promoService.releaseForDelivery).toHaveBeenCalledWith('delivery-1');
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith(
+        'delivery-1',
+      );
     });
 
     it('should cancel a SCHEDULED delivery (removes the pending kickoff job)', async () => {
@@ -748,7 +775,9 @@ describe('DeliveriesService', () => {
 
       expect(result.status).toBe(DeliveryStatus.CANCELED);
       // stopSimulation removes the :kickoff job (and any stage/pos jobs).
-      expect(simulationService.stopSimulation).toHaveBeenCalledWith('delivery-1');
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith(
+        'delivery-1',
+      );
     });
 
     it('should throw NotFoundException if delivery not found', async () => {
@@ -812,7 +841,10 @@ describe('DeliveriesService', () => {
     it('confirms with the correct code → DELIVERED (atomic) + records proof', async () => {
       prisma.delivery.findUnique
         .mockResolvedValueOnce(arrived) // confirm read (opts in the hash)
-        .mockResolvedValueOnce({ ...arrived, status: DeliveryStatus.DELIVERED }); // findOne re-fetch
+        .mockResolvedValueOnce({
+          ...arrived,
+          status: DeliveryStatus.DELIVERED,
+        }); // findOne re-fetch
       prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
       await service.confirmHandoff(userId, 'delivery-1', CODE);
@@ -971,11 +1003,19 @@ describe('DeliveriesService', () => {
         status: 'DELIVERY_FAILED',
         failureReason: 'WEATHER_ABORT',
       });
-      expect(simulationService.stopSimulation).toHaveBeenCalledWith('delivery-1');
-      expect(promoService.releaseForDelivery).toHaveBeenCalledWith('delivery-1');
-      expect(walletService.refundForDelivery).toHaveBeenCalledWith('delivery-1');
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith(
+        'delivery-1',
+      );
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith(
+        'delivery-1',
+      );
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith(
+        'delivery-1',
+      );
       // Make the customer whole: the card-charged portion is credited to the wallet.
-      expect(walletService.refundChargeToWallet).toHaveBeenCalledWith('delivery-1');
+      expect(walletService.refundChargeToWallet).toHaveBeenCalledWith(
+        'delivery-1',
+      );
       expect(notificationsService.create).toHaveBeenCalled();
       expect(trackingPublisher.publishUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'DELIVERY_FAILED' }),
@@ -999,7 +1039,10 @@ describe('DeliveriesService', () => {
     it('recipient-fault failure stops the sim but does NOT auto-refund or release the promo', async () => {
       prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.failExceptional('delivery-1', 'RECIPIENT_UNAVAILABLE' as any);
+      await service.failExceptional(
+        'delivery-1',
+        'RECIPIENT_UNAVAILABLE' as any,
+      );
 
       expect(simulationService.stopSimulation).toHaveBeenCalled();
       expect(walletService.refundForDelivery).not.toHaveBeenCalled();

@@ -71,7 +71,9 @@ export class PrismaService
    * the Prisma client is a Proxy that intercepts arbitrary property gets (e.g. a
    * `reader` getter) as model delegates, so a getter would be silently shadowed.
    */
-  async readWithFallback<T>(fn: (client: PrismaClient) => Promise<T>): Promise<T> {
+  async readWithFallback<T>(
+    fn: (client: PrismaClient) => Promise<T>,
+  ): Promise<T> {
     const replica = this.readerClient;
     const primary = this as unknown as PrismaClient;
     if (!replica) return fn(primary);

@@ -26,7 +26,11 @@ export class WalletService {
     userId: string,
     amount: number,
     reason: WalletTxnReason,
-    opts: { deliveryId?: string; referralId?: string; idempotencyKey?: string } = {},
+    opts: {
+      deliveryId?: string;
+      referralId?: string;
+      idempotencyKey?: string;
+    } = {},
   ): Promise<void> {
     const amt = round2(amount);
     const u = await tx.user.update({
@@ -113,10 +117,16 @@ export class WalletService {
     });
     if (count === 0) return; // another concurrent first-delivery won
 
-    await this.creditWithinTx(tx, ref.referrerId, REFERRER_REWARD, 'REFERRAL_REWARD', {
-      referralId: ref.id,
-      idempotencyKey: `referral-referrer:${ref.id}`,
-    });
+    await this.creditWithinTx(
+      tx,
+      ref.referrerId,
+      REFERRER_REWARD,
+      'REFERRAL_REWARD',
+      {
+        referralId: ref.id,
+        idempotencyKey: `referral-referrer:${ref.id}`,
+      },
+    );
     await this.creditWithinTx(tx, refereeId, REFEREE_REWARD, 'REFEREE_REWARD', {
       referralId: ref.id,
       idempotencyKey: `referral-referee:${ref.id}`,
@@ -131,10 +141,16 @@ export class WalletService {
     if (!spend) return;
     try {
       await this.prisma.$transaction(async (tx) => {
-        await this.creditWithinTx(tx, spend.userId, spend.amount, 'CHECKOUT_REFUND', {
-          deliveryId,
-          idempotencyKey: `refund:${deliveryId}`,
-        });
+        await this.creditWithinTx(
+          tx,
+          spend.userId,
+          spend.amount,
+          'CHECKOUT_REFUND',
+          {
+            deliveryId,
+            idempotencyKey: `refund:${deliveryId}`,
+          },
+        );
       });
     } catch (e) {
       if (this.isUniqueViolation(e)) return; // already refunded — no-op

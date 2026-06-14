@@ -231,7 +231,9 @@ export class PaymentsService {
         where: { userId, stripePaymentMethodId: card.id },
       });
       if (!existing) {
-        const count = await this.prisma.paymentMethod.count({ where: { userId } });
+        const count = await this.prisma.paymentMethod.count({
+          where: { userId },
+        });
         await this.prisma.paymentMethod.create({
           data: {
             userId,

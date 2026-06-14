@@ -62,11 +62,19 @@ describe('PaymentsController', () => {
 
   describe('addPaymentMethod', () => {
     it('should delegate to paymentsService.addPaymentMethod', async () => {
-      const dto = { network: 'Visa', last4: '4242', holderName: 'John', expiry: '12/28' };
+      const dto = {
+        network: 'Visa',
+        last4: '4242',
+        holderName: 'John',
+        expiry: '12/28',
+      };
 
       const result = await controller.addPaymentMethod(userId, dto);
 
-      expect(paymentsService.addPaymentMethod).toHaveBeenCalledWith(userId, dto);
+      expect(paymentsService.addPaymentMethod).toHaveBeenCalledWith(
+        userId,
+        dto,
+      );
       expect(result).toEqual(mockPm);
     });
   });

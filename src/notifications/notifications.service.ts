@@ -141,7 +141,9 @@ export class NotificationsService {
         ? dto.quietHoursStart
         : current.quietHoursStart;
     const end =
-      dto.quietHoursEnd !== undefined ? dto.quietHoursEnd : current.quietHoursEnd;
+      dto.quietHoursEnd !== undefined
+        ? dto.quietHoursEnd
+        : current.quietHoursEnd;
     if ((start == null) !== (end == null)) {
       throw new BadRequestException(
         'quietHoursStart and quietHoursEnd must be set together (or both cleared)',
@@ -231,9 +233,10 @@ export class NotificationsService {
     data?: Record<string, unknown>,
   ): Promise<void> {
     try {
-      const devices = (await this.prisma.device.findMany({
-        where: { userId },
-      })) ?? [];
+      const devices =
+        (await this.prisma.device.findMany({
+          where: { userId },
+        })) ?? [];
 
       const messages = devices
         .map((d) => d.pushToken)
@@ -263,9 +266,7 @@ export class NotificationsService {
       });
 
       if (!res.ok) {
-        this.logger.warn(
-          `Expo push request failed with status ${res.status}`,
-        );
+        this.logger.warn(`Expo push request failed with status ${res.status}`);
       }
     } catch (error) {
       this.logger.warn(

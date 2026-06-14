@@ -40,7 +40,9 @@ describe('TrackingSubscriber', () => {
   it('dispatch() swallows malformed JSON without throwing', () => {
     const handler = jest.fn();
     subscriber.onUpdate(handler);
-    expect(() => subscriber.dispatch('delivery:x:update', '{bad')).not.toThrow();
+    expect(() =>
+      subscriber.dispatch('delivery:x:update', '{bad'),
+    ).not.toThrow();
     expect(handler).not.toHaveBeenCalled();
   });
 });

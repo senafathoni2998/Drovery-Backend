@@ -65,9 +65,7 @@ export class SupportService {
       },
     });
 
-    this.logger.log(
-      `Support ticket ${ticket.id} submitted by user ${userId}`,
-    );
+    this.logger.log(`Support ticket ${ticket.id} submitted by user ${userId}`);
 
     return { success: true, ticketId: ticket.id };
   }

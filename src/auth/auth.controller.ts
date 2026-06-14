@@ -51,10 +51,7 @@ export class AuthController {
   @UseGuards(JwtRefreshGuard)
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(
-    @Body() dto: RefreshTokenDto,
-    @CurrentUser() user: JwtPayload,
-  ) {
+  refresh(@Body() dto: RefreshTokenDto, @CurrentUser() user: JwtPayload) {
     return this.authService.refreshTokens(user.sub, dto.refreshToken);
   }
 
@@ -73,7 +70,10 @@ export class AuthController {
     @Headers('accept-language') acceptLanguage?: string,
   ) {
     // Locale from the header ONLY (anonymous flow — never reveals account existence).
-    return this.authService.forgotPassword(dto.email, parseLocale(acceptLanguage));
+    return this.authService.forgotPassword(
+      dto.email,
+      parseLocale(acceptLanguage),
+    );
   }
 
   @Public()

@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,10 +23,16 @@ describe('WalletService', () => {
   describe('creditWithinTx', () => {
     it('increments the balance and writes a ledger row', async () => {
       prisma.user.update.mockResolvedValue({ creditBalance: 15 });
-      await service.creditWithinTx(prisma as any, userId, 5, 'REFERRAL_REWARD', {
-        referralId: 'r-1',
-        idempotencyKey: 'k1',
-      });
+      await service.creditWithinTx(
+        prisma as any,
+        userId,
+        5,
+        'REFERRAL_REWARD',
+        {
+          referralId: 'r-1',
+          idempotencyKey: 'k1',
+        },
+      );
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: userId },
         data: { creditBalance: { increment: 5 } },
@@ -50,12 +55,18 @@ describe('WalletService', () => {
     it('spends via the conditional-decrement CAS and ledgers it', async () => {
       prisma.user.updateMany.mockResolvedValue({ count: 1 });
       prisma.user.findUnique.mockResolvedValue({ creditBalance: 3 });
-      await service.debitWithinTx(prisma as any, userId, 7, { deliveryId: 'd-1' });
+      await service.debitWithinTx(prisma as any, userId, 7, {
+        deliveryId: 'd-1',
+      });
       const cas = prisma.user.updateMany.mock.calls[0][0];
       expect(cas.where).toEqual({ id: userId, creditBalance: { gte: 7 } });
       expect(cas.data).toEqual({ creditBalance: { decrement: 7 } });
       expect(prisma.walletTransaction.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ type: 'DEBIT', reason: 'CHECKOUT_SPEND', amount: 7 }),
+        data: expect.objectContaining({
+          type: 'DEBIT',
+          reason: 'CHECKOUT_SPEND',
+          amount: 7,
+        }),
       });
     });
 
@@ -134,7 +145,10 @@ describe('WalletService', () => {
     });
 
     it('swallows the duplicate-refund unique violation (double cancel)', async () => {
-      prisma.walletTransaction.findFirst.mockResolvedValue({ userId, amount: 4 });
+      prisma.walletTransaction.findFirst.mockResolvedValue({
+        userId,
+        amount: 4,
+      });
       prisma.user.update.mockResolvedValue({ creditBalance: 4 });
       prisma.walletTransaction.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('dup', {
@@ -173,14 +187,20 @@ describe('WalletService', () => {
     });
 
     it('no-ops for a $0 (fully credit-paid / free) charge', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ userId, estimatedPrice: 0 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId,
+        estimatedPrice: 0,
+      });
       await service.refundChargeToWallet('d-1');
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(prisma.walletTransaction.create).not.toHaveBeenCalled();
     });
 
     it('swallows the duplicate-refund unique violation (idempotent)', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ userId, estimatedPrice: 18 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId,
+        estimatedPrice: 18,
+      });
       prisma.user.update.mockResolvedValue({ creditBalance: 18 });
       prisma.walletTransaction.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('dup', {
@@ -189,7 +209,9 @@ describe('WalletService', () => {
           meta: { target: 'wallet_transactions_idempotencyKey_key' },
         }),
       );
-      await expect(service.refundChargeToWallet('d-1')).resolves.toBeUndefined();
+      await expect(
+        service.refundChargeToWallet('d-1'),
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -211,13 +233,28 @@ describe('WalletService', () => {
     it('returns the code, stats, and the list', async () => {
       prisma.user.findUnique.mockResolvedValue({ referralCode: 'MYCODE12' });
       prisma.referral.findMany.mockResolvedValue([
-        { id: 'r1', status: 'REWARDED', rewardedAt: new Date(), createdAt: new Date(), referee: { name: 'Bob' } },
-        { id: 'r2', status: 'PENDING', rewardedAt: null, createdAt: new Date(), referee: { name: 'Cam' } },
+        {
+          id: 'r1',
+          status: 'REWARDED',
+          rewardedAt: new Date(),
+          createdAt: new Date(),
+          referee: { name: 'Bob' },
+        },
+        {
+          id: 'r2',
+          status: 'PENDING',
+          rewardedAt: null,
+          createdAt: new Date(),
+          referee: { name: 'Cam' },
+        },
       ]);
       const result = await service.getReferrals(userId);
       expect(result.referralCode).toBe('MYCODE12');
       expect(result.stats).toEqual({ total: 2, pending: 1, rewarded: 1 });
-      expect(result.referrals[0]).toMatchObject({ refereeName: 'Bob', status: 'REWARDED' });
+      expect(result.referrals[0]).toMatchObject({
+        refereeName: 'Bob',
+        status: 'REWARDED',
+      });
     });
   });
 });

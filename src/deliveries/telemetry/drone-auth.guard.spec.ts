@@ -28,21 +28,27 @@ describe('DroneAuthGuard', () => {
   });
 
   it('allows a request with the correct key (no HMAC configured)', () => {
-    const guard = new DroneAuthGuard(makeConfig({ INGEST_API_KEY: 'secret-key' }));
+    const guard = new DroneAuthGuard(
+      makeConfig({ INGEST_API_KEY: 'secret-key' }),
+    );
     expect(
       guard.canActivate(makeContext({ 'x-ingest-key': 'secret-key' })),
     ).toBe(true);
   });
 
   it('denies a request with a wrong key', () => {
-    const guard = new DroneAuthGuard(makeConfig({ INGEST_API_KEY: 'secret-key' }));
+    const guard = new DroneAuthGuard(
+      makeConfig({ INGEST_API_KEY: 'secret-key' }),
+    );
     expect(() =>
       guard.canActivate(makeContext({ 'x-ingest-key': 'wrong' })),
     ).toThrow(UnauthorizedException);
   });
 
   it('denies a request with a missing key header', () => {
-    const guard = new DroneAuthGuard(makeConfig({ INGEST_API_KEY: 'secret-key' }));
+    const guard = new DroneAuthGuard(
+      makeConfig({ INGEST_API_KEY: 'secret-key' }),
+    );
     expect(() => guard.canActivate(makeContext({}))).toThrow(
       UnauthorizedException,
     );
@@ -57,7 +63,9 @@ describe('DroneAuthGuard', () => {
     const sign = (ts: number, method = METHOD, url = URL) =>
       crypto
         .createHmac('sha256', HMAC_SECRET)
-        .update(Buffer.concat([Buffer.from(`${ts}.${method}.${url}.`), rawBody]))
+        .update(
+          Buffer.concat([Buffer.from(`${ts}.${method}.${url}.`), rawBody]),
+        )
         .digest('hex');
 
     const guard = new DroneAuthGuard(

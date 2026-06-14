@@ -19,7 +19,9 @@ export class CacheService {
       const raw = await this.redis.get(key);
       return raw ? (JSON.parse(raw) as T) : null;
     } catch (error) {
-      this.logger.warn(`cache get failed [${key}]: ${(error as Error).message}`);
+      this.logger.warn(
+        `cache get failed [${key}]: ${(error as Error).message}`,
+      );
       return null;
     }
   }
@@ -28,7 +30,9 @@ export class CacheService {
     try {
       await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
     } catch (error) {
-      this.logger.warn(`cache set failed [${key}]: ${(error as Error).message}`);
+      this.logger.warn(
+        `cache set failed [${key}]: ${(error as Error).message}`,
+      );
     }
   }
 

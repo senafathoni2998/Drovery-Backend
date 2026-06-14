@@ -57,7 +57,9 @@ describe('ProofService', () => {
     });
 
     it('is idempotent — returns the existing proof', async () => {
-      prisma.proofOfDelivery.findUnique.mockResolvedValue({ id: 'pod-existing' });
+      prisma.proofOfDelivery.findUnique.mockResolvedValue({
+        id: 'pod-existing',
+      });
 
       const result = await service.createAutoProof('d-1', {});
 
@@ -88,8 +90,11 @@ describe('ProofService', () => {
       expect(result).toEqual({ id: 'pod-1' });
     });
 
-    it('throws NotFound for another user\'s delivery', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ id: 'd-1', userId: 'other' });
+    it("throws NotFound for another user's delivery", async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd-1',
+        userId: 'other',
+      });
 
       await expect(service.submitProof(userId, 'd-1', {})).rejects.toThrow(
         NotFoundException,

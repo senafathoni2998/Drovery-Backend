@@ -88,9 +88,7 @@ export class ProofService {
       where: { id: deliveryId },
     });
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(
-        `Delivery with id "${deliveryId}" not found`,
-      );
+      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
     }
     return delivery;
   }

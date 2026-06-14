@@ -51,8 +51,17 @@ export class SimulationService {
     // no-op pass-through when tracing is off) so the worker continues this trace.
     const stageJobs = STAGES.map((stage, i) => ({
       name: STAGE_JOB,
-      data: injectTraceCarrier({ deliveryId, userId, coords: c, stageIndex: i }),
-      opts: { ...JOB_OPTS, delay: stage.delayMs, jobId: `${deliveryId}:stage:${i}` },
+      data: injectTraceCarrier({
+        deliveryId,
+        userId,
+        coords: c,
+        stageIndex: i,
+      }),
+      opts: {
+        ...JOB_OPTS,
+        delay: stage.delayMs,
+        jobId: `${deliveryId}:stage:${i}`,
+      },
     }));
 
     const positionJobs = buildPositionTicks(c).map((tick, j) => ({
@@ -107,7 +116,10 @@ export class SimulationService {
     let timer: ReturnType<typeof setTimeout>;
     const timeout = new Promise<T>((_, reject) => {
       timer = setTimeout(
-        () => reject(new Error(`${label} timed out after ${ms}ms (Redis unreachable?)`)),
+        () =>
+          reject(
+            new Error(`${label} timed out after ${ms}ms (Redis unreachable?)`),
+          ),
         ms,
       );
     });
@@ -118,8 +130,10 @@ export class SimulationService {
    * including the deferred kickoff job for a still-SCHEDULED delivery. */
   async stopSimulation(deliveryId: string): Promise<void> {
     const ids: string[] = [`${deliveryId}-kickoff`];
-    for (let i = 0; i < STAGES.length; i++) ids.push(`${deliveryId}:stage:${i}`);
-    for (let j = 0; j < POSITION_TICK_COUNT; j++) ids.push(`${deliveryId}:pos:${j}`);
+    for (let i = 0; i < STAGES.length; i++)
+      ids.push(`${deliveryId}:stage:${i}`);
+    for (let j = 0; j < POSITION_TICK_COUNT; j++)
+      ids.push(`${deliveryId}:pos:${j}`);
 
     await Promise.all(
       ids.map((id) => this.queue.remove(id).catch(() => undefined)),

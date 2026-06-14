@@ -165,7 +165,10 @@ export class PromoService {
     originalTotal: number,
   ): Promise<CheckResult> {
     const normalized = (rawCode ?? '').trim().toUpperCase();
-    const reject = (reason: PromoRejectReason, message: string): CheckResult => ({
+    const reject = (
+      reason: PromoRejectReason,
+      message: string,
+    ): CheckResult => ({
       ok: false,
       reason,
       message,
@@ -191,7 +194,10 @@ export class PromoService {
         `This code requires an order of at least $${code.minOrderTotal.toFixed(2)}.`,
       );
     }
-    if (code.maxRedemptions != null && code.timesRedeemed >= code.maxRedemptions) {
+    if (
+      code.maxRedemptions != null &&
+      code.timesRedeemed >= code.maxRedemptions
+    ) {
       return reject(
         'GLOBALLY_MAXED',
         'This promo code has reached its redemption limit.',
@@ -201,14 +207,20 @@ export class PromoService {
       where: { promoCodeId: code.id, userId, status: 'REDEEMED' },
     });
     if (used >= code.perUserLimit) {
-      return reject('PER_USER_EXCEEDED', 'You have already used this promo code.');
+      return reject(
+        'PER_USER_EXCEEDED',
+        'You have already used this promo code.',
+      );
     }
     return { ok: true, code };
   }
 
   /** Object-form HttpException so the body carries a stable `code` (like the
    * serviceability/handoff errors). Cap conflicts are 409; the rest are 422. */
-  private promoError(reason: PromoRejectReason, message: string): HttpException {
+  private promoError(
+    reason: PromoRejectReason,
+    message: string,
+  ): HttpException {
     const status =
       reason === 'GLOBALLY_MAXED' || reason === 'PER_USER_EXCEEDED' ? 409 : 422;
     return new HttpException(

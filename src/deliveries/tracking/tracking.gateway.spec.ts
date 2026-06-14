@@ -31,7 +31,8 @@ describe('TrackingGateway', () => {
     );
   });
 
-  const socket = () => ({ close: jest.fn(), send: jest.fn(), readyState: 1 }) as any;
+  const socket = () =>
+    ({ close: jest.fn(), send: jest.fn(), readyState: 1 }) as any;
 
   describe('handleConnection (auth)', () => {
     it('accepts a valid token: sets userId, counts the connection', async () => {
@@ -88,7 +89,9 @@ describe('TrackingGateway', () => {
     });
 
     it('rejects an unauthenticated socket', async () => {
-      const res = await gateway.handleSubscribe(socket(), { deliveryId: 'd-1' });
+      const res = await gateway.handleSubscribe(socket(), {
+        deliveryId: 'd-1',
+      });
       expect(res.event).toBe('error');
       expect(deliveries.findOne).not.toHaveBeenCalled();
     });

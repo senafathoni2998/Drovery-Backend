@@ -42,11 +42,12 @@ export const PHASE_TO_STATUS: Record<HappyPhase, DeliveryStatus> = {
 };
 
 /** Exception phase → the (branch) DeliveryStatus it drives. */
-export const EXCEPTION_PHASE_TO_STATUS: Record<ExceptionPhase, DeliveryStatus> = {
-  FAILED: DeliveryStatus.DELIVERY_FAILED,
-  RETURNING: DeliveryStatus.RETURNING,
-  RETURNED: DeliveryStatus.RETURNED_TO_BASE,
-};
+export const EXCEPTION_PHASE_TO_STATUS: Record<ExceptionPhase, DeliveryStatus> =
+  {
+    FAILED: DeliveryStatus.DELIVERY_FAILED,
+    RETURNING: DeliveryStatus.RETURNING,
+    RETURNED: DeliveryStatus.RETURNED_TO_BASE,
+  };
 
 /** The transport-agnostic telemetry message both the HTTP and MQTT paths produce. */
 export interface TelemetryMessage {

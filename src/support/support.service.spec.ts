@@ -38,7 +38,9 @@ describe('SupportService', () => {
       const result = service.getFaqs('id');
 
       expect(result.length).toBe(6);
-      expect(result[0].question).toBe('Bagaimana cara melacak pengiriman saya?');
+      expect(result[0].question).toBe(
+        'Bagaimana cara melacak pengiriman saya?',
+      );
       expect(result[0].question).not.toBe(FAQS[0].question);
     });
   });
@@ -84,8 +86,8 @@ describe('SupportService', () => {
 
       await service.submitTicket('user-1', 'Tolong bantu saya');
 
-      const seeded = prisma.supportTicket.create.mock.calls[0][0].data.messages
-        .create;
+      const seeded =
+        prisma.supportTicket.create.mock.calls[0][0].data.messages.create;
       expect(seeded[1].senderRole).toBe('SYSTEM');
       expect(seeded[1].content).toContain('Terima kasih telah menghubungi');
     });

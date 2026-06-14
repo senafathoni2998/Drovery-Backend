@@ -32,7 +32,13 @@ export class RecurringDeliveriesService {
     // DAILY ignores daysOfWeek (kept empty).
 
     const nextRunAt = computeNextOccurrence(
-      { freq: dto.freq, daysOfWeek, timeOfDay: dto.timeOfDay, startDate, endDate },
+      {
+        freq: dto.freq,
+        daysOfWeek,
+        timeOfDay: dto.timeOfDay,
+        startDate,
+        endDate,
+      },
       new Date(),
     );
     if (!nextRunAt) {

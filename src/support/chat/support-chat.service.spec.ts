@@ -26,8 +26,13 @@ describe('SupportChatService', () => {
 
   describe('assertOwnedTicket', () => {
     it('returns the ticket when the user owns it', async () => {
-      prisma.supportTicket.findFirst.mockResolvedValue({ id: ticketId, userId });
-      await expect(service.assertOwnedTicket(userId, ticketId)).resolves.toMatchObject({
+      prisma.supportTicket.findFirst.mockResolvedValue({
+        id: ticketId,
+        userId,
+      });
+      await expect(
+        service.assertOwnedTicket(userId, ticketId),
+      ).resolves.toMatchObject({
         id: ticketId,
       });
       expect(prisma.supportTicket.findFirst).toHaveBeenCalledWith({
@@ -45,7 +50,10 @@ describe('SupportChatService', () => {
 
   describe('getMessages', () => {
     it('returns ordered, paginated history with a hasMore flag', async () => {
-      prisma.supportTicket.findFirst.mockResolvedValue({ id: ticketId, userId });
+      prisma.supportTicket.findFirst.mockResolvedValue({
+        id: ticketId,
+        userId,
+      });
       const rows = [{ id: 'm-1' }, { id: 'm-2' }];
       prisma.supportChatMessage.findMany.mockResolvedValue(rows);
       prisma.supportChatMessage.count.mockResolvedValue(5);
@@ -62,7 +70,10 @@ describe('SupportChatService', () => {
     });
 
     it('reports hasMore=false on the last page', async () => {
-      prisma.supportTicket.findFirst.mockResolvedValue({ id: ticketId, userId });
+      prisma.supportTicket.findFirst.mockResolvedValue({
+        id: ticketId,
+        userId,
+      });
       prisma.supportChatMessage.findMany.mockResolvedValue([{ id: 'm-5' }]);
       prisma.supportChatMessage.count.mockResolvedValue(5);
       const result = await service.getMessages(userId, ticketId, 2, 4);
@@ -85,7 +96,12 @@ describe('SupportChatService', () => {
         userId,
         status: 'OPEN',
       });
-      const created = { id: 'm-1', ticketId, senderRole: 'USER', content: 'hi' };
+      const created = {
+        id: 'm-1',
+        ticketId,
+        senderRole: 'USER',
+        content: 'hi',
+      };
       prisma.supportChatMessage.create.mockResolvedValue(created);
       prisma.supportTicket.update.mockResolvedValue({});
 
@@ -93,7 +109,12 @@ describe('SupportChatService', () => {
 
       expect(result).toEqual(created);
       expect(prisma.supportChatMessage.create).toHaveBeenCalledWith({
-        data: { ticketId, senderRole: 'USER', senderUserId: userId, content: 'hi' },
+        data: {
+          ticketId,
+          senderRole: 'USER',
+          senderUserId: userId,
+          content: 'hi',
+        },
       });
       expect(prisma.supportTicket.update).toHaveBeenCalledWith({
         where: { id: ticketId },

@@ -73,7 +73,9 @@ describe('FavoritesService', () => {
   describe('remove', () => {
     it('throws NotFound when not owned', async () => {
       prisma.favorite.deleteMany.mockResolvedValue({ count: 0 });
-      await expect(service.remove(userId, 'fav-x')).rejects.toThrow(NotFoundException);
+      await expect(service.remove(userId, 'fav-x')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('deletes an owned favorite', async () => {
@@ -101,7 +103,10 @@ describe('FavoritesService', () => {
     });
 
     it('honors a pickup override (schedule the reorder)', async () => {
-      prisma.favorite.findFirst.mockResolvedValue({ ...srcDelivery, id: 'fav-1' });
+      prisma.favorite.findFirst.mockResolvedValue({
+        ...srcDelivery,
+        id: 'fav-1',
+      });
       await service.order(userId, 'fav-1', {
         pickupDate: '2026-12-25',
         pickupTime: '09:00',
@@ -113,7 +118,9 @@ describe('FavoritesService', () => {
 
     it('throws NotFound for a non-owned/missing favorite', async () => {
       prisma.favorite.findFirst.mockResolvedValue(null);
-      await expect(service.order(userId, 'fav-x')).rejects.toThrow(NotFoundException);
+      await expect(service.order(userId, 'fav-x')).rejects.toThrow(
+        NotFoundException,
+      );
       expect(deliveries.create).not.toHaveBeenCalled();
     });
   });

@@ -62,7 +62,9 @@ async function bootstrap() {
   // Metrics is auxiliary — if the port can't bind (EADDRINUSE), log and keep the
   // worker draining the queue rather than crashing on an unhandled 'error' event.
   server.on('error', (err) =>
-    logger.error(`Worker metrics server failed on :${metricsPort}: ${err.message}`),
+    logger.error(
+      `Worker metrics server failed on :${metricsPort}: ${err.message}`,
+    ),
   );
   server.listen(metricsPort, () =>
     logger.log(`Worker metrics on :${metricsPort}/metrics`),

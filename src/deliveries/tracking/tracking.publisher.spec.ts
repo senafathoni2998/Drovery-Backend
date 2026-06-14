@@ -12,7 +12,11 @@ describe('TrackingPublisher', () => {
   });
 
   it('publishes to the per-delivery channel with a JSON payload', async () => {
-    await publisher.publishUpdate({ deliveryId: 'd-1', droneLat: 1, droneLng: 2 });
+    await publisher.publishUpdate({
+      deliveryId: 'd-1',
+      droneLat: 1,
+      droneLng: 2,
+    });
 
     expect(client.publish).toHaveBeenCalledWith(
       trackingChannel('d-1'),

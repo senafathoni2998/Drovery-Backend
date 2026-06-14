@@ -22,12 +22,16 @@ describe('DeliveriesController', () => {
   beforeEach(async () => {
     deliveriesService = {
       create: jest.fn().mockResolvedValue(mockDelivery),
-      findAll: jest.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
+      findAll: jest
+        .fn()
+        .mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
       findOne: jest.fn().mockResolvedValue(mockDelivery),
       findByTrackingId: jest.fn().mockResolvedValue(mockDelivery),
       getActive: jest.fn().mockResolvedValue([mockDelivery]),
       getRecent: jest.fn().mockResolvedValue([]),
-      cancel: jest.fn().mockResolvedValue({ ...mockDelivery, status: 'CANCELED' }),
+      cancel: jest
+        .fn()
+        .mockResolvedValue({ ...mockDelivery, status: 'CANCELED' }),
       confirmHandoff: jest
         .fn()
         .mockResolvedValue({ ...mockDelivery, status: 'DELIVERED' }),
@@ -97,7 +101,10 @@ describe('DeliveriesController', () => {
     it('should delegate to deliveriesService.findOne', async () => {
       const result = await controller.findOne(userId, 'delivery-1');
 
-      expect(deliveriesService.findOne).toHaveBeenCalledWith(userId, 'delivery-1');
+      expect(deliveriesService.findOne).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+      );
       expect(result).toEqual(mockDelivery);
     });
   });
@@ -106,7 +113,10 @@ describe('DeliveriesController', () => {
     it('should delegate to deliveriesService.cancel', async () => {
       const result = await controller.cancel(userId, 'delivery-1');
 
-      expect(deliveriesService.cancel).toHaveBeenCalledWith(userId, 'delivery-1');
+      expect(deliveriesService.cancel).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+      );
       expect(result.status).toBe('CANCELED');
     });
   });

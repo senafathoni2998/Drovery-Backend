@@ -114,7 +114,10 @@ describe('AuthController', () => {
         newPassword: 'newpass123',
       });
 
-      expect(authService.resetPassword).toHaveBeenCalledWith('tok', 'newpass123');
+      expect(authService.resetPassword).toHaveBeenCalledWith(
+        'tok',
+        'newpass123',
+      );
       expect(result).toEqual({ success: true });
     });
   });

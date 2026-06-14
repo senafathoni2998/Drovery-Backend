@@ -9,10 +9,7 @@ export class WalletController {
   constructor(private readonly wallet: WalletService) {}
 
   @Get('wallet')
-  getWallet(
-    @CurrentUser('sub') userId: string,
-    @Query() query: PaginationDto,
-  ) {
+  getWallet(@CurrentUser('sub') userId: string, @Query() query: PaginationDto) {
     return this.wallet.getWallet(userId, query);
   }
 

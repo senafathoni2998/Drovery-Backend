@@ -19,7 +19,12 @@ describe('ServiceabilityService', () => {
 
   // The seeded demo route (DEFAULT_COORDS) is in Bandung — MUST be serviceable.
   it('passes the Bandung demo route', async () => {
-    const r = await service.checkServiceability(-6.903, 107.615, -6.922, 107.607);
+    const r = await service.checkServiceability(
+      -6.903,
+      107.615,
+      -6.922,
+      107.607,
+    );
     expect(r).toEqual({
       serviceable: true,
       reasons: [],
@@ -70,7 +75,12 @@ describe('ServiceabilityService', () => {
       flyable: false,
       source: 'mock',
     });
-    const r = await service.checkServiceability(-6.903, 107.615, -6.922, 107.607);
+    const r = await service.checkServiceability(
+      -6.903,
+      107.615,
+      -6.922,
+      107.607,
+    );
     expect(r.serviceable).toBe(false);
     expect(r.codes).toEqual(['WEATHER_STORM']);
     expect(r.weatherHold).toBe(true);
@@ -83,14 +93,24 @@ describe('ServiceabilityService', () => {
       flyable: false,
       source: 'mock',
     });
-    const r = await service.checkServiceability(-6.903, 107.615, -6.922, 107.607);
+    const r = await service.checkServiceability(
+      -6.903,
+      107.615,
+      -6.922,
+      107.607,
+    );
     expect(r.codes).toEqual(['WEATHER_HOLD']);
     expect(r.weatherHold).toBe(true);
   });
 
   it('fails open: a weather error never grounds a serviceable route', async () => {
     weather.getConditions.mockRejectedValue(new Error('weather api down'));
-    const r = await service.checkServiceability(-6.903, 107.615, -6.922, 107.607);
+    const r = await service.checkServiceability(
+      -6.903,
+      107.615,
+      -6.922,
+      107.607,
+    );
     expect(r.serviceable).toBe(true);
     expect(r.codes).toEqual([]);
   });

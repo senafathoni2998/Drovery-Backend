@@ -1,8 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { PaymentsService } from './payments.service';
@@ -217,7 +214,10 @@ describe('PaymentsService', () => {
   describe('createDeliveryPayment', () => {
     it('creates a PaymentIntent and a Payment row for the delivery', async () => {
       prisma.payment.findUnique.mockResolvedValue(null);
-      prisma.payment.create.mockResolvedValue({ id: 'pay-1', status: 'COMPLETED' });
+      prisma.payment.create.mockResolvedValue({
+        id: 'pay-1',
+        status: 'COMPLETED',
+      });
 
       const result = await service.createDeliveryPayment('d-1', 18);
 
@@ -342,7 +342,13 @@ describe('PaymentsService', () => {
         stripeCustomerId: 'cus_1',
       });
       stripe.listCards.mockResolvedValue([
-        { id: 'pm_1', brand: 'visa', last4: '4242', expMonth: 12, expYear: 2030 },
+        {
+          id: 'pm_1',
+          brand: 'visa',
+          last4: '4242',
+          expMonth: 12,
+          expYear: 2030,
+        },
       ]);
       prisma.paymentMethod.findFirst.mockResolvedValue(null);
       prisma.paymentMethod.count.mockResolvedValue(0);
@@ -363,7 +369,10 @@ describe('PaymentsService', () => {
     });
 
     it('returns existing cards when the user has no Stripe customer', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'user-1', stripeCustomerId: null });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        stripeCustomerId: null,
+      });
       prisma.paymentMethod.findMany.mockResolvedValue([mockPaymentMethod]);
 
       const result = await service.syncCards('user-1');

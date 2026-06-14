@@ -137,7 +137,10 @@ export class RecurringMaterializer {
     };
   }
 
-  private toCreateDto(s: RecurringDelivery, occurrence: Date): CreateDeliveryDto {
+  private toCreateDto(
+    s: RecurringDelivery,
+    occurrence: Date,
+  ): CreateDeliveryDto {
     return {
       fromAddress: s.fromAddress,
       toAddress: s.toAddress,

@@ -22,7 +22,9 @@ describe('SimulationProcessor', () => {
     tracking = { updateTracking: jest.fn().mockResolvedValue({}) };
     publisher = { publishUpdate: jest.fn().mockResolvedValue(undefined) };
     notifications = { create: jest.fn().mockResolvedValue({}) };
-    simulationService = { startSimulation: jest.fn().mockResolvedValue(undefined) };
+    simulationService = {
+      startSimulation: jest.fn().mockResolvedValue(undefined),
+    };
 
     processor = new SimulationProcessor(
       prisma as any,
@@ -63,7 +65,10 @@ describe('SimulationProcessor', () => {
   });
 
   it('localizes the stage notification + map label to the owner locale (worker, no request)', async () => {
-    prisma.delivery.findUnique.mockResolvedValue({ id: 'd-1', status: 'PENDING' });
+    prisma.delivery.findUnique.mockResolvedValue({
+      id: 'd-1',
+      status: 'PENDING',
+    });
     // Worker resolves User.locale by userId (the only locale signal it has).
     prisma.user.findUnique.mockResolvedValue({ locale: 'id' });
 
@@ -82,7 +87,10 @@ describe('SimulationProcessor', () => {
   });
 
   it('skips side effects when the CAS matches nothing (canceled / already advanced)', async () => {
-    prisma.delivery.findUnique.mockResolvedValue({ id: 'd-1', status: 'CANCELED' });
+    prisma.delivery.findUnique.mockResolvedValue({
+      id: 'd-1',
+      status: 'CANCELED',
+    });
     prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
 
     await processor.process(stageJob(1));
@@ -108,7 +116,9 @@ describe('SimulationProcessor', () => {
     // The last auto stage is AWAITING_HANDOFF; DELIVERED is no longer simulated.
     const lastIndex = STAGES.length - 1;
     expect(STAGES[lastIndex].status).toBe(DeliveryStatus.AWAITING_HANDOFF);
-    expect(STAGES.some((s) => s.status === DeliveryStatus.DELIVERED)).toBe(false);
+    expect(STAGES.some((s) => s.status === DeliveryStatus.DELIVERED)).toBe(
+      false,
+    );
 
     await processor.process(stageJob(lastIndex));
 
@@ -147,27 +157,42 @@ describe('SimulationProcessor', () => {
       } as any);
 
       expect(tracking.updateTracking).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   describe('kickoff', () => {
     const kickoffJob = () =>
-      ({ name: 'kickoff', data: { deliveryId: 'd-1', userId: 'u-1', coords } }) as any;
+      ({
+        name: 'kickoff',
+        data: { deliveryId: 'd-1', userId: 'u-1', coords },
+      }) as any;
 
     it('starts the simulation then flips SCHEDULED → PENDING via the CAS', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ status: DeliveryStatus.SCHEDULED });
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.SCHEDULED,
+      });
       prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
       await processor.process(kickoffJob());
 
       // Enqueue happens BEFORE the status flip (so a retry can recover).
-      expect(simulationService.startSimulation).toHaveBeenCalledWith('d-1', 'u-1', coords);
+      expect(simulationService.startSimulation).toHaveBeenCalledWith(
+        'd-1',
+        'u-1',
+        coords,
+      );
       const call = prisma.delivery.updateMany.mock.calls[0][0];
-      expect(call.where).toEqual({ id: 'd-1', status: DeliveryStatus.SCHEDULED });
+      expect(call.where).toEqual({
+        id: 'd-1',
+        status: DeliveryStatus.SCHEDULED,
+      });
       expect(call.data).toEqual({ status: DeliveryStatus.PENDING });
     });
 
     it('is a no-op when the delivery is no longer SCHEDULED (canceled / already kicked off)', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ status: DeliveryStatus.CANCELED });
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.CANCELED,
+      });
 
       await processor.process(kickoffJob());
 

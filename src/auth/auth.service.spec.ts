@@ -125,14 +125,24 @@ describe('AuthService', () => {
         where: { referralCode: 'ABCD2345' }, // uppercased
       });
       expect(prisma.referral.create).toHaveBeenCalledWith({
-        data: { referrerId: 'referrer-1', refereeId: 'user-1', status: 'PENDING' },
+        data: {
+          referrerId: 'referrer-1',
+          refereeId: 'user-1',
+          status: 'PENDING',
+        },
       });
     });
 
     it('does not link or block signup for an unknown referralCode', async () => {
-      prisma.user.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      prisma.user.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
       (mockedBcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
-      prisma.user.create.mockResolvedValue({ id: 'user-1', email: dto.email, name: dto.name });
+      prisma.user.create.mockResolvedValue({
+        id: 'user-1',
+        email: dto.email,
+        name: dto.name,
+      });
 
       const result = await service.signup({ ...dto, referralCode: 'NOPE9999' });
 
@@ -218,25 +228,25 @@ describe('AuthService', () => {
 
     it('rejects an unknown / revoked / expired / mismatched token', async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(null);
-      await expect(
-        service.refreshTokens('user-1', 'bad'),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.refreshTokens('user-1', 'bad')).rejects.toThrow(
+        UnauthorizedException,
+      );
 
       prisma.refreshToken.findUnique.mockResolvedValue({
         ...validRecord,
         revokedAt: new Date(),
       });
-      await expect(
-        service.refreshTokens('user-1', 'revoked'),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.refreshTokens('user-1', 'revoked')).rejects.toThrow(
+        UnauthorizedException,
+      );
 
       prisma.refreshToken.findUnique.mockResolvedValue({
         ...validRecord,
         userId: 'someone-else',
       });
-      await expect(
-        service.refreshTokens('user-1', 'stolen'),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.refreshTokens('user-1', 'stolen')).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('throws if the user no longer exists', async () => {
@@ -347,9 +357,9 @@ describe('AuthService', () => {
     it('rejects an unknown token', async () => {
       prisma.passwordResetToken.findUnique.mockResolvedValue(null);
 
-      await expect(
-        service.resetPassword('bad', 'newpass123'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.resetPassword('bad', 'newpass123')).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('rejects an expired token', async () => {
@@ -360,9 +370,9 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() - 1_000),
       });
 
-      await expect(
-        service.resetPassword('raw', 'newpass123'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.resetPassword('raw', 'newpass123')).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('rejects an already-used token', async () => {
@@ -373,9 +383,9 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() + 60_000),
       });
 
-      await expect(
-        service.resetPassword('raw', 'newpass123'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.resetPassword('raw', 'newpass123')).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 

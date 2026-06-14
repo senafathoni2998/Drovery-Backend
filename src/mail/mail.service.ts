@@ -32,7 +32,10 @@ export class MailService {
     await this.send(
       to,
       this.i18n.translate('email.passwordReset.subject', locale),
-      this.i18n.translate('email.passwordReset.body', locale, { deepLink, token }),
+      this.i18n.translate('email.passwordReset.body', locale, {
+        deepLink,
+        token,
+      }),
     );
   }
 
@@ -45,18 +48,22 @@ export class MailService {
     await this.send(
       to,
       this.i18n.translate('email.verification.subject', locale),
-      this.i18n.translate('email.verification.body', locale, { deepLink, token }),
+      this.i18n.translate('email.verification.body', locale, {
+        deepLink,
+        token,
+      }),
     );
   }
 
+  // async by seam contract (the real SendGrid/SES provider awaits a network call);
+  // the dev-stub path only logs, hence no await yet.
+  // eslint-disable-next-line @typescript-eslint/require-await
   private async send(to: string, subject: string, body: string): Promise<void> {
     const provider = this.config.get<string>('mail.provider');
 
     if (!provider) {
       // No provider configured (dev): log so the flow is testable locally.
-      this.logger.log(
-        `[MAIL:dev] To: ${to} | Subject: ${subject}\n${body}`,
-      );
+      this.logger.log(`[MAIL:dev] To: ${to} | Subject: ${subject}\n${body}`);
       return;
     }
 

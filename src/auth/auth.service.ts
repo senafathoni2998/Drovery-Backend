@@ -65,9 +65,9 @@ export class AuthService {
         if (
           e instanceof Prisma.PrismaClientKnownRequestError &&
           e.code === 'P2002' &&
-          String((e.meta as { target?: unknown })?.target ?? '').includes(
-            'referralCode',
-          )
+          JSON.stringify(
+            (e.meta as { target?: unknown })?.target ?? '',
+          ).includes('referralCode')
         ) {
           continue; // code collision — regenerate
         }
@@ -75,7 +75,9 @@ export class AuthService {
       }
     }
     if (!user) {
-      throw new ConflictException('Could not complete signup, please try again');
+      throw new ConflictException(
+        'Could not complete signup, please try again',
+      );
     }
 
     // Link an inbound referral (best-effort — an unknown/self code never blocks
@@ -86,7 +88,11 @@ export class AuthService {
         const referrer = await this.prisma.user.findUnique({
           where: { referralCode: code },
         });
-        if (referrer && referrer.id !== user.id && referrer.email !== dto.email) {
+        if (
+          referrer &&
+          referrer.id !== user.id &&
+          referrer.email !== dto.email
+        ) {
           await this.prisma.referral.create({
             data: {
               referrerId: referrer.id,

@@ -26,7 +26,9 @@ describe('UsersController', () => {
     usersService = {
       getProfile: jest.fn().mockResolvedValue(mockUser),
       updateProfile: jest.fn().mockResolvedValue(mockUser),
-      getStats: jest.fn().mockResolvedValue({ total: 10, active: 3, completed: 7 }),
+      getStats: jest
+        .fn()
+        .mockResolvedValue({ total: 10, active: 3, completed: 7 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({

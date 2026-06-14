@@ -104,7 +104,9 @@ export class SimulationProcessor extends WorkerHost {
       data: { status: DeliveryStatus.PENDING },
     });
     if (count > 0) {
-      this.logger.log(`Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)`);
+      this.logger.log(
+        `Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)`,
+      );
     }
   }
 

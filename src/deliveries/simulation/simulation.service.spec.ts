@@ -2,11 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
 
 import { SimulationService } from './simulation.service';
-import {
-  POSITION_TICK_COUNT,
-  SIM_QUEUE,
-  STAGES,
-} from './simulation.constants';
+import { POSITION_TICK_COUNT, SIM_QUEUE, STAGES } from './simulation.constants';
 
 describe('SimulationService', () => {
   let service: SimulationService;
@@ -75,7 +71,12 @@ describe('SimulationService', () => {
     });
 
     it('clamps a past instant to a zero delay (fires immediately)', async () => {
-      await service.scheduleKickoff('d-10', 'u-1', undefined, new Date(Date.now() - 5000));
+      await service.scheduleKickoff(
+        'd-10',
+        'u-1',
+        undefined,
+        new Date(Date.now() - 5000),
+      );
       expect(queue.add.mock.calls[0][2].delay).toBe(0);
     });
   });

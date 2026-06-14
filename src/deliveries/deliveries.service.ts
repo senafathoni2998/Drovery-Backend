@@ -224,8 +224,9 @@ export class DeliveriesService {
     // create. Regenerate + retry on a trackingId collision (≤ MAX_TRACKING_ID_TRIES);
     // because the create is the FIRST op in the $transaction, a collision rolls the
     // whole tx back, so promo/credit/referral re-run cleanly (no double-redeem).
-    let delivery: Awaited<ReturnType<typeof this.prisma.delivery.create>> | null =
-      null;
+    let delivery: Awaited<
+      ReturnType<typeof this.prisma.delivery.create>
+    > | null = null;
     for (let attempt = 0; attempt < MAX_TRACKING_ID_TRIES; attempt++) {
       try {
         delivery = needsTx
@@ -402,7 +403,8 @@ export class DeliveriesService {
         error: result.weatherHold
           ? 'Service Unavailable'
           : 'Unprocessable Entity',
-        message: result.reasons[0] ?? 'This delivery cannot be flown right now.',
+        message:
+          result.reasons[0] ?? 'This delivery cannot be flown right now.',
         reasons: result.reasons,
         code,
         ...(result.weatherHold ? { retryAfter: 1800 } : {}),
@@ -479,9 +481,7 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(
-        `Delivery with id "${deliveryId}" not found`,
-      );
+      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
     }
 
     return delivery;
@@ -544,9 +544,7 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(
-        `Delivery with id "${deliveryId}" not found`,
-      );
+      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
     }
 
     if (!CANCELABLE_STATUSES.includes(delivery.status)) {
@@ -624,9 +622,15 @@ export class DeliveriesService {
     }
 
     // Best-effort cleanup (reuses the same services the owner-cancel uses).
-    await this.simulationService.stopSimulation(deliveryId).catch(() => undefined);
-    await this.promoService.releaseForDelivery(deliveryId).catch(() => undefined);
-    await this.walletService.refundForDelivery(deliveryId).catch(() => undefined);
+    await this.simulationService
+      .stopSimulation(deliveryId)
+      .catch(() => undefined);
+    await this.promoService
+      .releaseForDelivery(deliveryId)
+      .catch(() => undefined);
+    await this.walletService
+      .refundForDelivery(deliveryId)
+      .catch(() => undefined);
 
     return this.prisma.delivery.findUnique({
       where: { id: deliveryId },
@@ -737,25 +741,31 @@ export class DeliveriesService {
       .stopSimulation(deliveryId)
       .catch(() => undefined);
     if (refundCredits) {
-      await this.promoService.releaseForDelivery(deliveryId).catch((e) =>
-        this.logger.warn(
-          `Promo release failed for ${deliveryId}: ${(e as Error).message}`,
-        ),
-      );
+      await this.promoService
+        .releaseForDelivery(deliveryId)
+        .catch((e) =>
+          this.logger.warn(
+            `Promo release failed for ${deliveryId}: ${(e as Error).message}`,
+          ),
+        );
       // Return BOTH portions of the charge so the "refunded to your wallet" comms
       // are truthful for every payer: the wallet-credit portion (refundForDelivery)
       // AND the card-charged portion credited back to the wallet (refundChargeToWallet,
       // since there's no live Stripe money-refund yet). Both idempotent.
-      await this.walletService.refundForDelivery(deliveryId).catch((e) =>
-        this.logger.warn(
-          `Credit refund failed for ${deliveryId}: ${(e as Error).message}`,
-        ),
-      );
-      await this.walletService.refundChargeToWallet(deliveryId).catch((e) =>
-        this.logger.warn(
-          `Charge refund failed for ${deliveryId}: ${(e as Error).message}`,
-        ),
-      );
+      await this.walletService
+        .refundForDelivery(deliveryId)
+        .catch((e) =>
+          this.logger.warn(
+            `Credit refund failed for ${deliveryId}: ${(e as Error).message}`,
+          ),
+        );
+      await this.walletService
+        .refundChargeToWallet(deliveryId)
+        .catch((e) =>
+          this.logger.warn(
+            `Charge refund failed for ${deliveryId}: ${(e as Error).message}`,
+          ),
+        );
     }
   }
 
@@ -848,17 +858,13 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(
-        `Delivery with id "${deliveryId}" not found`,
-      );
+      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
     }
     if (delivery.status === DeliveryStatus.DELIVERED) {
       throw new ConflictException('This delivery has already been completed.');
     }
     if (delivery.status !== DeliveryStatus.AWAITING_HANDOFF) {
-      throw new ConflictException(
-        'This delivery is not awaiting handoff yet.',
-      );
+      throw new ConflictException('This delivery is not awaiting handoff yet.');
     }
     if (delivery.handoffAttempts >= MAX_HANDOFF_ATTEMPTS) {
       // Already locked. Self-heal: if a prior (concurrent) race locked the counter
@@ -955,9 +961,9 @@ export class DeliveriesService {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002' &&
-      String((error.meta as { target?: unknown })?.target ?? '').includes(
-        'trackingId',
-      )
+      JSON.stringify(
+        (error.meta as { target?: unknown })?.target ?? '',
+      ).includes('trackingId')
     );
   }
 

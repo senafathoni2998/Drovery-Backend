@@ -23,10 +23,7 @@ export class DeliveriesController {
   constructor(private readonly deliveriesService: DeliveriesService) {}
 
   @Post()
-  create(
-    @CurrentUser('sub') userId: string,
-    @Body() dto: CreateDeliveryDto,
-  ) {
+  create(@CurrentUser('sub') userId: string, @Body() dto: CreateDeliveryDto) {
     return this.deliveriesService.create(userId, dto);
   }
 
@@ -57,19 +54,13 @@ export class DeliveriesController {
   }
 
   @Get(':id')
-  findOne(
-    @CurrentUser('sub') userId: string,
-    @Param('id') id: string,
-  ) {
+  findOne(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.deliveriesService.findOne(userId, id);
   }
 
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
-  cancel(
-    @CurrentUser('sub') userId: string,
-    @Param('id') id: string,
-  ) {
+  cancel(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.deliveriesService.cancel(userId, id);
   }
 

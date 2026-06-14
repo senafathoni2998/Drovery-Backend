@@ -10,10 +10,7 @@ describe('CacheService', () => {
     redis = { get: jest.fn(), set: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        CacheService,
-        { provide: REDIS_CLIENT, useValue: redis },
-      ],
+      providers: [CacheService, { provide: REDIS_CLIENT, useValue: redis }],
     }).compile();
 
     service = module.get<CacheService>(CacheService);

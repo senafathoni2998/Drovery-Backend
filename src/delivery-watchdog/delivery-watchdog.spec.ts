@@ -195,7 +195,10 @@ describe('DeliveryWatchdog', () => {
     ]);
     await watchdog.scanAndReap();
     // Re-driven with the operator's ORIGINAL type+reason (not a MECHANICAL reap).
-    expect(deliveries.beginReturnToBase).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+    expect(deliveries.beginReturnToBase).toHaveBeenCalledWith(
+      'd-1',
+      'WEATHER_ABORT',
+    );
     const sel = prisma.droneCommand.findMany.mock.calls[0][0];
     expect(sel.where.status).toBe('ACKED');
     expect(sel.where.appliedTransition).toBe(false);

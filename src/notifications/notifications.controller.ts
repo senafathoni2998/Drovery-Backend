@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { RegisterDeviceDto, UpdateNotificationPreferencesDto } from './dto';
@@ -13,9 +6,7 @@ import { NotificationsService } from './notifications.service';
 
 @Controller('notifications')
 export class NotificationsController {
-  constructor(
-    private readonly notificationsService: NotificationsService,
-  ) {}
+  constructor(private readonly notificationsService: NotificationsService) {}
 
   @Get()
   findAll(@CurrentUser('sub') userId: string) {
@@ -41,10 +32,7 @@ export class NotificationsController {
   }
 
   @Patch(':id/read')
-  markAsRead(
-    @CurrentUser('sub') userId: string,
-    @Param('id') id: string,
-  ) {
+  markAsRead(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.notificationsService.markAsRead(userId, id);
   }
 

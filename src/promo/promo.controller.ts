@@ -11,10 +11,7 @@ export class PromoController {
   // Advisory preview (never throws); create() is the authoritative enforcer.
   @Post('validate')
   @HttpCode(200)
-  validate(
-    @CurrentUser('sub') userId: string,
-    @Body() dto: ValidatePromoDto,
-  ) {
+  validate(@CurrentUser('sub') userId: string, @Body() dto: ValidatePromoDto) {
     return this.promo.preview(dto.code, userId, dto.orderTotal);
   }
 }

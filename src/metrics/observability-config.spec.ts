@@ -30,7 +30,9 @@ describe('observability config ↔ emitted metrics', () => {
   });
 
   it('keeps the queue label on the failed-jobs alert (by clause, not bare max)', () => {
-    expect(alerts).toContain('max by (queue) (drovery_queue_jobs{state="failed"})');
+    expect(alerts).toContain(
+      'max by (queue) (drovery_queue_jobs{state="failed"})',
+    );
   });
 
   it('only references metric names the app actually emits', () => {

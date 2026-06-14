@@ -75,9 +75,7 @@ export class PricingService {
     const distanceKm = this.distanceFromCoords(coords);
     const distanceFee = round2(distanceKm * PER_KM_RATE);
 
-    const total = round2(
-      baseFee + sizeFee + weightFee + typeFee + distanceFee,
-    );
+    const total = round2(baseFee + sizeFee + weightFee + typeFee + distanceFee);
 
     const estimate: PriceEstimate = {
       baseFee,

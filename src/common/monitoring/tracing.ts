@@ -1,4 +1,7 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports */
+// Lazy require() (not import) is intentional here: the OTel SDK + instrumentations
+// are loaded ONLY when tracing is enabled, so a deployment that never enables it
+// pays nothing and can't crash on a missing/incompatible OTel dep at boot.
 import { sentryEnabled } from './sentry';
 
 /**
@@ -46,88 +49,92 @@ function start(): void {
   // sentry.ts's never-break-the-app intent — but tracing has a far larger init
   // surface (a user-supplied URL the OTLP exporter parses + 4 instrumentations).
   try {
-  const { NodeSDK } = require('@opentelemetry/sdk-node');
-  const { Resource } = require('@opentelemetry/resources');
-  const {
-    ATTR_SERVICE_NAME,
-    ATTR_SERVICE_VERSION,
-  } = require('@opentelemetry/semantic-conventions');
-  const {
-    ConsoleSpanExporter,
-    SimpleSpanProcessor,
-    BatchSpanProcessor,
-    ParentBasedSampler,
-    TraceIdRatioBasedSampler,
-  } = require('@opentelemetry/sdk-trace-base');
-  const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
-  const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
-  const {
-    ExpressInstrumentation,
-  } = require('@opentelemetry/instrumentation-express');
-  const { PgInstrumentation } = require('@opentelemetry/instrumentation-pg');
-  const {
-    IORedisInstrumentation,
-  } = require('@opentelemetry/instrumentation-ioredis');
+    const { NodeSDK } = require('@opentelemetry/sdk-node');
+    const { Resource } = require('@opentelemetry/resources');
+    const {
+      ATTR_SERVICE_NAME,
+      ATTR_SERVICE_VERSION,
+    } = require('@opentelemetry/semantic-conventions');
+    const {
+      ConsoleSpanExporter,
+      SimpleSpanProcessor,
+      BatchSpanProcessor,
+      ParentBasedSampler,
+      TraceIdRatioBasedSampler,
+    } = require('@opentelemetry/sdk-trace-base');
+    const {
+      OTLPTraceExporter,
+    } = require('@opentelemetry/exporter-trace-otlp-http');
+    const {
+      HttpInstrumentation,
+    } = require('@opentelemetry/instrumentation-http');
+    const {
+      ExpressInstrumentation,
+    } = require('@opentelemetry/instrumentation-express');
+    const { PgInstrumentation } = require('@opentelemetry/instrumentation-pg');
+    const {
+      IORedisInstrumentation,
+    } = require('@opentelemetry/instrumentation-ioredis');
 
-  otelApi = require('@opentelemetry/api');
+    otelApi = require('@opentelemetry/api');
 
-  const serviceName =
-    process.env.PROCESS_ROLE === 'worker' ? 'drovery-worker' : 'drovery-api';
-  const ratio = clampRatio(process.env.OTEL_TRACES_SAMPLER_ARG);
+    const serviceName =
+      process.env.PROCESS_ROLE === 'worker' ? 'drovery-worker' : 'drovery-api';
+    const ratio = clampRatio(process.env.OTEL_TRACES_SAMPLER_ARG);
 
-  // Console exporter for local/hardware-free verification; OTLP-HTTP to a real
-  // collector (Tempo/Jaeger/OTLP) when an endpoint is configured.
-  const useConsole = process.env.OTEL_EXPORTER === 'console' || !otlpEndpoint;
-  // No explicit `url`: the exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself and
-  // appends the `/v1/traces` signal path (per the OTel convention). Passing the
-  // base endpoint as `url` would skip that append → spans POST to the bare root
-  // and the collector rejects them.
-  const spanProcessor = useConsole
-    ? new SimpleSpanProcessor(new ConsoleSpanExporter())
-    : new BatchSpanProcessor(new OTLPTraceExporter());
+    // Console exporter for local/hardware-free verification; OTLP-HTTP to a real
+    // collector (Tempo/Jaeger/OTLP) when an endpoint is configured.
+    const useConsole = process.env.OTEL_EXPORTER === 'console' || !otlpEndpoint;
+    // No explicit `url`: the exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself and
+    // appends the `/v1/traces` signal path (per the OTel convention). Passing the
+    // base endpoint as `url` would skip that append → spans POST to the bare root
+    // and the collector rejects them.
+    const spanProcessor = useConsole
+      ? new SimpleSpanProcessor(new ConsoleSpanExporter())
+      : new BatchSpanProcessor(new OTLPTraceExporter());
 
-  // Don't trace the high-frequency scrape/probe endpoints — pure noise at scale.
-  const ignore = [
-    '/metrics',
-    '/api/v1/metrics',
-    '/health',
-    '/api/v1/health',
-    '/api/v1/health/ready',
-  ];
+    // Don't trace the high-frequency scrape/probe endpoints — pure noise at scale.
+    const ignore = [
+      '/metrics',
+      '/api/v1/metrics',
+      '/health',
+      '/api/v1/health',
+      '/api/v1/health/ready',
+    ];
 
-  const nodeSdk = new NodeSDK({
-    resource: new Resource({
-      [ATTR_SERVICE_NAME]: serviceName,
-      [ATTR_SERVICE_VERSION]: process.env.SENTRY_RELEASE ?? 'dev',
-    }),
-    spanProcessors: [spanProcessor],
-    // ParentBased so the worker honors the producer's sampled flag; ratio samples roots.
-    sampler: new ParentBasedSampler({
-      root: new TraceIdRatioBasedSampler(ratio),
-    }),
-    instrumentations: [
-      new HttpInstrumentation({
-        ignoreIncomingRequestHook: (req: { url?: string }) =>
-          ignore.some((p) => (req.url ?? '').split('?')[0] === p),
+    const nodeSdk = new NodeSDK({
+      resource: new Resource({
+        [ATTR_SERVICE_NAME]: serviceName,
+        [ATTR_SERVICE_VERSION]: process.env.SENTRY_RELEASE ?? 'dev',
       }),
-      new ExpressInstrumentation(),
-      new PgInstrumentation(),
-      new IORedisInstrumentation(),
-    ],
-  });
-  nodeSdk.start();
-  sdk = nodeSdk;
-  traceReady = true;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[tracing] OpenTelemetry enabled (service=${serviceName}, exporter=${useConsole ? 'console' : 'otlp'}, sampleRatio=${ratio}).`,
-  );
-  if (!useConsole && ratio >= 1 && process.env.NODE_ENV === 'production') {
+      spanProcessors: [spanProcessor],
+      // ParentBased so the worker honors the producer's sampled flag; ratio samples roots.
+      sampler: new ParentBasedSampler({
+        root: new TraceIdRatioBasedSampler(ratio),
+      }),
+      instrumentations: [
+        new HttpInstrumentation({
+          ignoreIncomingRequestHook: (req: { url?: string }) =>
+            ignore.some((p) => (req.url ?? '').split('?')[0] === p),
+        }),
+        new ExpressInstrumentation(),
+        new PgInstrumentation(),
+        new IORedisInstrumentation(),
+      ],
+    });
+    nodeSdk.start();
+    sdk = nodeSdk;
+    traceReady = true;
     // eslint-disable-next-line no-console
-    console.warn(
-      '[tracing] sampling 100% of traces in production — set OTEL_TRACES_SAMPLER_ARG (e.g. 0.05) to reduce cost.',
+    console.log(
+      `[tracing] OpenTelemetry enabled (service=${serviceName}, exporter=${useConsole ? 'console' : 'otlp'}, sampleRatio=${ratio}).`,
     );
-  }
+    if (!useConsole && ratio >= 1 && process.env.NODE_ENV === 'production') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[tracing] sampling 100% of traces in production — set OTEL_TRACES_SAMPLER_ARG (e.g. 0.05) to reduce cost.',
+      );
+    }
   } catch (error) {
     // Degrade to untraced. Clear otelApi + leave sdk undefined so every export
     // stays a no-op; keep `started` true so a broken config is not retried.
@@ -155,7 +162,9 @@ function clampRatio(arg?: string): number {
  * `_carrier`, so the worker can continue the producer's trace. Pure pass-through
  * (same reference) when tracing is disabled → job data stays byte-identical.
  */
-export function injectTraceCarrier<T extends Record<string, unknown>>(data: T): T {
+export function injectTraceCarrier<T extends Record<string, unknown>>(
+  data: T,
+): T {
   if (!traceReady || !otelApi) return data;
   const carrier: Record<string, string> = {};
   otelApi.propagation.inject(otelApi.context.active(), carrier);

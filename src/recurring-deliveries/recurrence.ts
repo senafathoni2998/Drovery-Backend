@@ -1,4 +1,7 @@
-import { serviceTz, zonedWallClockToUtc } from '../deliveries/delivery-schedule';
+import {
+  serviceTz,
+  zonedWallClockToUtc,
+} from '../deliveries/delivery-schedule';
 
 export type RecurrenceFreq = 'DAILY' | 'WEEKLY';
 
@@ -86,7 +89,9 @@ export function computeNextOccurrence(
 
   for (let offset = 0; offset < MAX_DAY_PROBE; offset++) {
     // Noon-anchored UTC date `offset` days after base → safe weekday + y/m/d.
-    const noon = new Date(Date.UTC(base.y, base.mo - 1, base.d + offset, 12, 0, 0));
+    const noon = new Date(
+      Date.UTC(base.y, base.mo - 1, base.d + offset, 12, 0, 0),
+    );
     const weekday = noon.getUTCDay();
     if (!days.includes(weekday)) continue;
 

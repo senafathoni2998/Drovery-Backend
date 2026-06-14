@@ -72,7 +72,12 @@ export class WeatherService {
   private mockConditions(lat: number, lng: number): WeatherConditions {
     const seed = Math.abs(lat) * 73856093 + Math.abs(lng) * 19349663;
     if (!Number.isFinite(seed)) {
-      return { windKph: 0, condition: 'unknown', flyable: true, source: 'mock' };
+      return {
+        windKph: 0,
+        condition: 'unknown',
+        flyable: true,
+        source: 'mock',
+      };
     }
     const rand = Math.abs(Math.sin(seed) * 10000) % 1;
 

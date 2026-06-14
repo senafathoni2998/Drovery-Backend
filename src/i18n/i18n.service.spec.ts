@@ -22,9 +22,9 @@ describe('I18nService', () => {
     expect(i18n.translate('notification.stage.CONFIRMED.title', null)).toBe(
       'Delivery Confirmed',
     );
-    expect(i18n.translate('notification.stage.CONFIRMED.title', undefined)).toBe(
-      'Delivery Confirmed',
-    );
+    expect(
+      i18n.translate('notification.stage.CONFIRMED.title', undefined),
+    ).toBe('Delivery Confirmed');
   });
 
   it('returns the key itself for a genuinely unknown key (never throws/empty)', () => {
