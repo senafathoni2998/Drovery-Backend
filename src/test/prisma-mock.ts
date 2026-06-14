@@ -25,6 +25,7 @@ type MockPrismaService = {
     | 'walletTransaction'
     | 'referral'
     | 'favorite'
+    | 'droneCommand'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -88,6 +89,7 @@ export function createMockPrismaService(): MockPrismaService {
     walletTransaction: createModelMock(),
     referral: createModelMock(),
     favorite: createModelMock(),
+    droneCommand: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
   };

@@ -27,6 +27,8 @@ import { DroneAuthGuard } from './telemetry/drone-auth.guard';
 import { MqttTelemetrySubscriber } from './telemetry/mqtt-telemetry.subscriber';
 import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryService } from './telemetry/telemetry.service';
+import { CommandController } from './commands/command.controller';
+import { DroneCommandService } from './commands/drone-command.service';
 
 // The queue consumer runs everywhere except API-only instances (PROCESS_ROLE=api).
 const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
@@ -53,6 +55,7 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     ProofController,
     RatingController,
     TelemetryController,
+    CommandController,
   ],
   providers: [
     DeliveriesService,
@@ -65,6 +68,9 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     // Live drone telemetry ingest core (transport-agnostic) + its gateway auth.
     TelemetryService,
     DroneAuthGuard,
+    // Backend → drone command outbox (issue/poll/ack). Provided on every tier so
+    // AdminService (api) and the controller can reuse it.
+    DroneCommandService,
     // The queue consumer (worker / dev), and the WS gateway + subscriber (api / dev).
     ...(RUN_PROCESSOR ? [SimulationProcessor] : []),
     // The WS gateway + Redis subscriber + the (deferred) MQTT telemetry listener
@@ -73,6 +79,11 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
       ? [TrackingGateway, TrackingSubscriber, MqttTelemetrySubscriber]
       : []),
   ],
-  exports: [DeliveriesService, TrackingService, TrackingPublisher],
+  exports: [
+    DeliveriesService,
+    TrackingService,
+    TrackingPublisher,
+    DroneCommandService,
+  ],
 })
 export class DeliveriesModule {}

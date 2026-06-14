@@ -1,6 +1,7 @@
 import {
   DeliveryFailureReason,
   DeliveryStatus,
+  DroneCommandType,
   PromoDiscountType,
   Role,
   SupportTicketStatus,
@@ -14,7 +15,6 @@ import {
   IsOptional,
   IsPositive,
   IsString,
-  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -62,6 +62,20 @@ export class RefundDto {
 export class FailDeliveryDto {
   // Why the delivery is being failed; defaults to ADMIN_ABORT (a drone-fault
   // reason → refunds the customer) when omitted.
+  @IsOptional()
+  @IsEnum(DeliveryFailureReason)
+  reason?: DeliveryFailureReason;
+}
+
+// ── Drone commands (backend → drone) ──
+export class IssueCommandDto {
+  // RETURN_TO_BASE (→ RETURNING) or ABORT (→ DELIVERY_FAILED).
+  @IsEnum(DroneCommandType)
+  type: DroneCommandType;
+
+  // Override the fault reason stamped on the delivery; defaults per type
+  // (RETURN_TO_BASE → WEATHER_ABORT, ABORT → ADMIN_ABORT, both drone-fault →
+  // refund). Pass RECIPIENT_UNAVAILABLE for a non-refunding operator outcome.
   @IsOptional()
   @IsEnum(DeliveryFailureReason)
   reason?: DeliveryFailureReason;

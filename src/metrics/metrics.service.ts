@@ -48,6 +48,9 @@ export class MetricsService {
   readonly watchdogReapedTotal: Counter<string>;
   readonly watchdogLastScan: Gauge<string>;
   readonly watchdogSchedulerRegistered: Gauge<string>;
+  // Backend→drone command channel (money-touching control path on LIVE deliveries).
+  readonly droneCommandsTotal: Counter<string>;
+  readonly droneCommandTimeToAck: Histogram<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -101,6 +104,25 @@ export class MetricsService {
     this.watchdogSchedulerRegistered = new Gauge({
       name: 'drovery_watchdog_scheduler_registered',
       help: '1 when this replica registered the watchdog repeatable scheduler',
+      registers: [this.registry],
+    });
+
+    this.droneCommandsTotal = new Counter({
+      name: 'drovery_drone_commands_total',
+      help: 'Backend→drone commands by type and result',
+      // result ∈ issued | fetched | acked | superseded | rejected | expired.
+      // `type` is always a real DroneCommandType (RETURN_TO_BASE | ABORT) — the
+      // watchdog expiry sweep increments per-type, never a synthetic aggregate.
+      labelNames: ['type', 'result'],
+      registers: [this.registry],
+    });
+
+    this.droneCommandTimeToAck = new Histogram({
+      name: 'drovery_drone_command_time_to_ack_seconds',
+      help: 'Seconds from a drone command being issued to the drone responding (by result)',
+      // result-labelled so refusal/superseded latency does not skew true-ack p95.
+      labelNames: ['type', 'result'],
+      buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300],
       registers: [this.registry],
     });
 

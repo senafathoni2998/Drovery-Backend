@@ -64,6 +64,7 @@ model User {
   referralsMade           Referral[] @relation("ReferralReferrer")
   referralReceived        Referral?  @relation("ReferralReferee")
   favorites               Favorite[]
+  droneCommandsIssued     DroneCommand[] @relation("droneCommandsIssued")
 
   @@map("users")
 }
@@ -251,11 +252,70 @@ model Delivery {
   payment         Payment?
   proofOfDelivery ProofOfDelivery?
   rating          DeliveryRating?
+  commands        DroneCommand[]
 
   @@index([userId])
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
+}
+
+// Backend -> drone command OUTBOX. An ADMIN issues a PENDING command; the (mock)
+// drone polls + acks it over the same /ingest transport telemetry uses. The ack
+// is the SOLE trigger that drives the delivery transition (via the existing
+// beginReturnToBase / failExceptional single-winner CAS) — issuing/fetching never
+// mutate the delivery. A thin audit/outbox, NOT a second source of truth: the
+// Delivery row stays authoritative. At most ONE open (PENDING|FETCHED) command per
+// delivery is enforced by a partial unique index (added in the migration; Prisma
+// can't express the WHERE) so two admins racing collapse to a DB-level 409.
+model DroneCommand {
+  id         String @id @default(uuid())
+  deliveryId String
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  // Denormalized from delivery.assignedDroneId at issue; the poll/ack ownership
+  // second-factor (mirrors telemetry's assignedDroneId === droneId check).
+  droneId String
+
+  type   DroneCommandType
+  // Resolved at issue (defaulted by type), carried into the transition on ack so
+  // the audit row records exactly what reason the delivery will be stamped with.
+  reason DeliveryFailureReason
+  status DroneCommandStatus @default(PENDING)
+
+  // Audit: the admin who issued it. Nullable + SetNull so deleting that admin
+  // never cascades away the audit row.
+  issuedByUserId String?
+  issuedBy       User?   @relation("droneCommandsIssued", fields: [issuedByUserId], references: [id], onDelete: SetNull)
+
+  // Did THIS ack win the delivery CAS (count > 0)? false when telemetry/watchdog
+  // already moved the row to the same/terminal state.
+  appliedTransition Boolean @default(false)
+  resultNote        String? @db.VarChar(200)
+
+  expiresAt DateTime // issuedAt + COMMAND_TTL_MS; a command unacked past this never executes
+  fetchedAt DateTime? // first poll that handed it to the drone
+  ackedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([droneId, status]) // hot poll predicate: one drone's open queue
+  @@index([deliveryId])
+  @@map("drone_commands")
+}
+
+enum DroneCommandType {
+  RETURN_TO_BASE
+  ABORT
+}
+
+enum DroneCommandStatus {
+  PENDING
+  FETCHED
+  ACKED
+  REJECTED
+  EXPIRED
 }
 
 enum RecurrenceFreq {

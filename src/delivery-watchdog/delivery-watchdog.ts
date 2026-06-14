@@ -1,9 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DeliveryFailureReason, TrackingSource } from '@prisma/client';
+import {
+  DeliveryFailureReason,
+  DroneCommandStatus,
+  DroneCommandType,
+  TrackingSource,
+} from '@prisma/client';
 
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { COMMAND_RECONCILE_GRACE_MS } from '../deliveries/commands/command.constants';
 import {
   WATCHDOG_BATCH,
   WATCHDOG_MIN_AGE_MS,
@@ -101,10 +107,111 @@ export class DeliveryWatchdog {
       }
     }
 
+    // Housekeeping: expire stale drone commands so the partial-unique "one open
+    // command per delivery" slot frees up for a fresh issue. Correctness does NOT
+    // depend on this sweep — poll/ack lazily reject an expired command (expiresAt
+    // guard) — so this only clears the slot. Isolated so a failure never blocks the
+    // heartbeat.
+    await this.expireStaleCommands();
+
+    // Self-heal a command that was ACKED (claim won) but whose delivery transition
+    // never landed (a crash between the claim and the transition). Re-drives the
+    // operator's chosen type+reason via the idempotent CAS, so the operator's intent
+    // isn't silently lost or later misattributed as a MECHANICAL telemetry-reap.
+    await this.reconcileStrandedAcks();
+
     // Heartbeat: stamp last-completed-scan AFTER the loop (not in a finally), so a
     // persistently-failing candidate read leaves the gauge stale and an alert
     // (`time() - drovery_watchdog_last_scan_timestamp_seconds > N`) fires. A partial
     // tick (isolated per-row failures) still completes the scan and advances it.
     this.metrics.watchdogLastScan.set(Date.now() / 1000);
+  }
+
+  /** Flip open (PENDING|FETCHED) drone commands past their TTL to EXPIRED. */
+  private async expireStaleCommands(): Promise<void> {
+    try {
+      const now = new Date();
+      const where = {
+        status: {
+          in: [DroneCommandStatus.PENDING, DroneCommandStatus.FETCHED],
+        },
+        expiresAt: { lt: now },
+      };
+      // Count per type BEFORE flipping so the metric keeps a real DroneCommandType
+      // label (never a synthetic aggregate) — keeps `type` a clean partition.
+      const groups = await this.prisma.droneCommand.groupBy({
+        by: ['type'],
+        where,
+        _count: { _all: true },
+      });
+      if (groups.length === 0) return;
+      await this.prisma.droneCommand.updateMany({
+        where,
+        data: { status: DroneCommandStatus.EXPIRED },
+      });
+      let total = 0;
+      for (const g of groups) {
+        this.metrics.droneCommandsTotal.inc(
+          { type: g.type, result: 'expired' },
+          g._count._all,
+        );
+        total += g._count._all;
+      }
+      this.logger.log(`watchdog: expired ${total} stale drone commands`);
+    } catch (e) {
+      this.logger.warn(
+        `watchdog: command expiry sweep failed: ${(e as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Re-drive commands stranded ACKED-but-untransitioned past the grace window (a
+   * crash between the ack claim and the delivery transition). The mapped transition
+   * is an idempotent single-winner CAS, so re-running is safe; on success the row is
+   * marked appliedTransition, otherwise it's resolved to REJECTED (the delivery
+   * already left the commandable set) so it leaves the reconcile set.
+   */
+  private async reconcileStrandedAcks(): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - COMMAND_RECONCILE_GRACE_MS);
+      const stranded = await this.prisma.droneCommand.findMany({
+        where: {
+          status: DroneCommandStatus.ACKED,
+          appliedTransition: false,
+          ackedAt: { lt: cutoff },
+        },
+        select: { id: true, deliveryId: true, type: true, reason: true },
+        take: WATCHDOG_BATCH,
+      });
+      for (const c of stranded) {
+        try {
+          const applied =
+            c.type === DroneCommandType.RETURN_TO_BASE
+              ? await this.deliveries.beginReturnToBase(c.deliveryId, c.reason)
+              : await this.deliveries.failExceptional(c.deliveryId, c.reason);
+          await this.prisma.droneCommand.update({
+            where: { id: c.id },
+            data: applied
+              ? { appliedTransition: true }
+              : {
+                  status: DroneCommandStatus.REJECTED,
+                  resultNote: 'reconciled: delivery already settled',
+                },
+          });
+          this.logger.log(
+            `watchdog: reconciled stranded ${c.type} command ${c.id} for delivery ${c.deliveryId} (applied=${applied})`,
+          );
+        } catch (e) {
+          this.logger.warn(
+            `watchdog: reconcile of command ${c.id} failed: ${(e as Error).message}`,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.warn(
+        `watchdog: stranded-ack reconcile failed: ${(e as Error).message}`,
+      );
+    }
   }
 }

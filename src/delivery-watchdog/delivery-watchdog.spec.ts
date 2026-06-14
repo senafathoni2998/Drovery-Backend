@@ -10,10 +10,11 @@ import {
 
 describe('DeliveryWatchdog', () => {
   let prisma: ReturnType<typeof createMockPrismaService>;
-  let deliveries: { failExceptional: jest.Mock };
+  let deliveries: { failExceptional: jest.Mock; beginReturnToBase: jest.Mock };
   let metrics: {
     watchdogReapedTotal: { inc: jest.Mock };
     watchdogLastScan: { set: jest.Mock };
+    droneCommandsTotal: { inc: jest.Mock };
   };
   let watchdog: DeliveryWatchdog;
 
@@ -33,11 +34,19 @@ describe('DeliveryWatchdog', () => {
 
   beforeEach(() => {
     prisma = createMockPrismaService();
-    deliveries = { failExceptional: jest.fn().mockResolvedValue(true) };
+    deliveries = {
+      failExceptional: jest.fn().mockResolvedValue(true),
+      beginReturnToBase: jest.fn().mockResolvedValue(true),
+    };
     metrics = {
       watchdogReapedTotal: { inc: jest.fn() },
       watchdogLastScan: { set: jest.fn() },
+      droneCommandsTotal: { inc: jest.fn() },
     };
+    // Command housekeeping runs each tick; default to "nothing stale / nothing stranded".
+    prisma.droneCommand.groupBy.mockResolvedValue([]); // expiry sweep: nothing
+    prisma.droneCommand.updateMany.mockResolvedValue({ count: 0 });
+    prisma.droneCommand.findMany.mockResolvedValue([]); // reconcile: nothing stranded
     watchdog = new DeliveryWatchdog(
       prisma as any,
       deliveries as any,
@@ -140,6 +149,81 @@ describe('DeliveryWatchdog', () => {
     prisma.delivery.findMany.mockResolvedValue([]);
     await expect(watchdog.scanAndReap()).resolves.toBeUndefined();
     expect(deliveries.failExceptional).not.toHaveBeenCalled();
+    expect(metrics.watchdogLastScan.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires stale drone commands (open + past TTL) each tick, counted PER TYPE', async () => {
+    prisma.delivery.findMany.mockResolvedValue([]);
+    prisma.droneCommand.groupBy.mockResolvedValue([
+      { type: 'RETURN_TO_BASE', _count: { _all: 2 } },
+      { type: 'ABORT', _count: { _all: 1 } },
+    ]);
+    prisma.droneCommand.updateMany.mockResolvedValue({ count: 3 });
+    await watchdog.scanAndReap();
+    const upd = prisma.droneCommand.updateMany.mock.calls[0][0];
+    expect(upd.where.status.in).toEqual(['PENDING', 'FETCHED']);
+    expect(upd.where.expiresAt.lt).toBeInstanceOf(Date);
+    expect(upd.data.status).toBe('EXPIRED');
+    // Real DroneCommandType labels — never a synthetic "all" aggregate.
+    expect(metrics.droneCommandsTotal.inc).toHaveBeenCalledWith(
+      { type: 'RETURN_TO_BASE', result: 'expired' },
+      2,
+    );
+    expect(metrics.droneCommandsTotal.inc).toHaveBeenCalledWith(
+      { type: 'ABORT', result: 'expired' },
+      1,
+    );
+    expect(metrics.watchdogLastScan.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the expiry UPDATE entirely when nothing is stale', async () => {
+    prisma.delivery.findMany.mockResolvedValue([]);
+    prisma.droneCommand.groupBy.mockResolvedValue([]);
+    await watchdog.scanAndReap();
+    expect(prisma.droneCommand.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a stranded ACKED command by re-driving its transition (#1)', async () => {
+    prisma.delivery.findMany.mockResolvedValue([]);
+    prisma.droneCommand.findMany.mockResolvedValue([
+      {
+        id: 'c-1',
+        deliveryId: 'd-1',
+        type: 'RETURN_TO_BASE',
+        reason: 'WEATHER_ABORT',
+      },
+    ]);
+    await watchdog.scanAndReap();
+    // Re-driven with the operator's ORIGINAL type+reason (not a MECHANICAL reap).
+    expect(deliveries.beginReturnToBase).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+    const sel = prisma.droneCommand.findMany.mock.calls[0][0];
+    expect(sel.where.status).toBe('ACKED');
+    expect(sel.where.appliedTransition).toBe(false);
+    expect(sel.where.ackedAt.lt).toBeInstanceOf(Date);
+    expect(prisma.droneCommand.update).toHaveBeenCalledWith({
+      where: { id: 'c-1' },
+      data: { appliedTransition: true },
+    });
+  });
+
+  it('resolves a stranded ACKED command to REJECTED when the delivery already settled', async () => {
+    prisma.delivery.findMany.mockResolvedValue([]);
+    prisma.droneCommand.findMany.mockResolvedValue([
+      { id: 'c-2', deliveryId: 'd-2', type: 'ABORT', reason: 'ADMIN_ABORT' },
+    ]);
+    deliveries.failExceptional.mockResolvedValue(false); // delivery already terminal
+    await watchdog.scanAndReap();
+    expect(prisma.droneCommand.update).toHaveBeenCalledWith({
+      where: { id: 'c-2' },
+      data: expect.objectContaining({ status: 'REJECTED' }),
+    });
+  });
+
+  it('a failing command-housekeeping step never blocks the heartbeat', async () => {
+    prisma.delivery.findMany.mockResolvedValue([]);
+    prisma.droneCommand.groupBy.mockRejectedValue(new Error('db blip'));
+    prisma.droneCommand.findMany.mockRejectedValue(new Error('db blip'));
+    await expect(watchdog.scanAndReap()).resolves.toBeUndefined();
     expect(metrics.watchdogLastScan.set).toHaveBeenCalledTimes(1);
   });
 

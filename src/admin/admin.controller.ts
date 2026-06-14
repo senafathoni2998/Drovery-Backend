@@ -18,6 +18,7 @@ import {
   AdminUserQueryDto,
   CreatePromoDto,
   FailDeliveryDto,
+  IssueCommandDto,
   RefundDto,
   SetRoleDto,
   UpdatePromoDto,
@@ -58,6 +59,21 @@ export class AdminController {
   @Post('deliveries/:id/refund')
   refund(@Param('id') id: string, @Body() dto: RefundDto) {
     return this.admin.refund(id, dto.amount);
+  }
+
+  // ── Drone commands (backend → drone) ──
+  @Post('deliveries/:id/commands')
+  issueCommand(
+    @CurrentUser('sub') adminId: string,
+    @Param('id') id: string,
+    @Body() dto: IssueCommandDto,
+  ) {
+    return this.admin.issueDroneCommand(adminId, id, dto);
+  }
+
+  @Get('deliveries/:id/commands')
+  listCommands(@Param('id') id: string) {
+    return this.admin.listDroneCommands(id);
   }
 
   // ── Promo codes ──

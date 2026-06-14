@@ -74,11 +74,19 @@ export class DroneAuthGuard implements CanActivate {
       }
 
       const signature = this.headerValue(req, INGEST_SIGNATURE_HEADER);
-      const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
-      // Bind the signature to the timestamp so a captured frame can't be replayed
-      // with a fresh timestamp. rawBody stays exact bytes (no re-serialization).
+      const rawBody =
+        req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+      // Bind the signature to the timestamp AND the request line (method + full
+      // path incl. query). The timestamp blocks replay with a fresh time; binding
+      // method+URL blocks RETARGETING a captured signature onto a different route —
+      // critical for the command channel where the selector lives OUTSIDE the body
+      // (the poll's ?droneId= in the query, the ack's :id in the path). rawBody
+      // stays exact bytes (no re-serialization). Strictly strengthens the telemetry
+      // POST too (whose selector is already in the body).
+      const method = req.method ?? '';
+      const url = req.originalUrl ?? req.url ?? '';
       const signedPayload = Buffer.concat([
-        Buffer.from(`${timestamp}.`),
+        Buffer.from(`${timestamp}.${method}.${url}.`),
         rawBody,
       ]);
       const expectedSig = crypto

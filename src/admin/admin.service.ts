@@ -14,6 +14,7 @@ import {
 } from '@prisma/client';
 
 import { DeliveriesService } from '../deliveries/deliveries.service';
+import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SupportChatPublisher,
@@ -25,6 +26,7 @@ import {
   AdminTicketQueryDto,
   AdminUserQueryDto,
   CreatePromoDto,
+  IssueCommandDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
 
@@ -39,6 +41,7 @@ export class AdminService {
     private readonly deliveries: DeliveriesService,
     private readonly walletService: WalletService,
     private readonly chatPublisher: SupportChatPublisher,
+    private readonly droneCommands: DroneCommandService,
   ) {}
 
   // ── Support inbox (AGENT + ADMIN) ──
@@ -115,7 +118,8 @@ export class AdminService {
       where: { id: ticketId },
       data: { status },
     });
-    if (count === 0) throw new NotFoundException(`Ticket "${ticketId}" not found`);
+    if (count === 0)
+      throw new NotFoundException(`Ticket "${ticketId}" not found`);
     this.logger.log(`ticket ${ticketId} status → ${status}`);
     return this.prisma.supportTicket.findUnique({ where: { id: ticketId } });
   }
@@ -177,7 +181,8 @@ export class AdminService {
       where: { id: deliveryId },
       select: { userId: true, estimatedPrice: true },
     });
-    if (!delivery) throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+    if (!delivery)
+      throw new NotFoundException(`Delivery "${deliveryId}" not found`);
 
     const refundAmount = amount ?? delivery.estimatedPrice;
     if (refundAmount <= 0 || refundAmount > delivery.estimatedPrice) {
@@ -201,13 +206,31 @@ export class AdminService {
         });
       });
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
         throw new ConflictException('This delivery has already been refunded.');
       }
       throw e;
     }
-    this.logger.log(`admin refunded ${refundAmount} for delivery ${deliveryId}`);
+    this.logger.log(
+      `admin refunded ${refundAmount} for delivery ${deliveryId}`,
+    );
     return { deliveryId, refunded: refundAmount };
+  }
+
+  // ── Drone commands (backend → drone) ──
+
+  /** Issue a backend→drone command (RETURN_TO_BASE / ABORT) on a LIVE delivery.
+   * The delivery transitions only when the drone acks. 404/422/409 from the service. */
+  issueDroneCommand(adminId: string, deliveryId: string, dto: IssueCommandDto) {
+    return this.droneCommands.issue(adminId, deliveryId, dto);
+  }
+
+  /** Command audit history for a delivery (newest first). 404 if the delivery is missing. */
+  listDroneCommands(deliveryId: string) {
+    return this.droneCommands.listForDelivery(deliveryId);
   }
 
   // ── Promo CRUD (ADMIN) ──
@@ -229,8 +252,13 @@ export class AdminService {
         },
       });
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        throw new ConflictException('A promo code with that code already exists.');
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'A promo code with that code already exists.',
+        );
       }
       throw e;
     }
@@ -261,14 +289,18 @@ export class AdminService {
     const { count } = await this.prisma.promoCode.updateMany({
       where: { id },
       data: {
-        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.description !== undefined
+          ? { description: dto.description }
+          : {}),
         ...(dto.discountValue !== undefined
           ? { discountValue: dto.discountValue }
           : {}),
         ...(dto.minOrderTotal !== undefined
           ? { minOrderTotal: dto.minOrderTotal }
           : {}),
-        ...(dto.maxDiscount !== undefined ? { maxDiscount: dto.maxDiscount } : {}),
+        ...(dto.maxDiscount !== undefined
+          ? { maxDiscount: dto.maxDiscount }
+          : {}),
         ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
         ...(dto.maxRedemptions !== undefined
           ? { maxRedemptions: dto.maxRedemptions }
@@ -314,7 +346,10 @@ export class AdminService {
     // Backfill every status to 0 so the dashboard shape is stable.
     const deliveriesByStatus: Record<string, number> = {};
     for (const s of Object.values(DeliveryStatus)) deliveriesByStatus[s] = 0;
-    for (const row of byStatus as Array<{ status: string; _count: { _all: number } }>) {
+    for (const row of byStatus as Array<{
+      status: string;
+      _count: { _all: number };
+    }>) {
       deliveriesByStatus[row.status] = row._count._all;
     }
 

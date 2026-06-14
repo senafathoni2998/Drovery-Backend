@@ -7,6 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 
 import { DeliveriesService } from '../deliveries/deliveries.service';
+import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupportChatPublisher } from '../support/chat/support-chat.publisher';
 import { WalletService } from '../wallet/wallet.service';
@@ -19,6 +20,7 @@ describe('AdminService', () => {
   let deliveries: { adminForceCancel: jest.Mock; adminFail: jest.Mock };
   let wallet: { creditWithinTx: jest.Mock };
   let publisher: { publishMessage: jest.Mock };
+  let droneCommands: { issue: jest.Mock; listForDelivery: jest.Mock };
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
@@ -28,6 +30,10 @@ describe('AdminService', () => {
     };
     wallet = { creditWithinTx: jest.fn().mockResolvedValue(undefined) };
     publisher = { publishMessage: jest.fn().mockResolvedValue(undefined) };
+    droneCommands = {
+      issue: jest.fn().mockResolvedValue({ id: 'c-1' }),
+      listForDelivery: jest.fn().mockResolvedValue([]),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
@@ -35,6 +41,7 @@ describe('AdminService', () => {
         { provide: DeliveriesService, useValue: deliveries },
         { provide: WalletService, useValue: wallet },
         { provide: SupportChatPublisher, useValue: publisher },
+        { provide: DroneCommandService, useValue: droneCommands },
       ],
     }).compile();
     service = module.get(AdminService);
@@ -46,7 +53,12 @@ describe('AdminService', () => {
     it('lists ALL tickets (cross-user, no userId filter)', async () => {
       prisma.supportTicket.findMany.mockResolvedValue([]);
       prisma.supportTicket.count.mockResolvedValue(0);
-      await service.listTickets({ status: 'OPEN', skip: 0, limit: 20, page: 1 } as any);
+      await service.listTickets({
+        status: 'OPEN',
+        skip: 0,
+        limit: 20,
+        page: 1,
+      } as any);
       expect(prisma.supportTicket.findMany.mock.calls[0][0].where).toEqual({
         status: 'OPEN',
       });
@@ -68,9 +80,16 @@ describe('AdminService', () => {
       await service.replyAsAgent('agent-1', 't-1', 'hi');
 
       expect(prisma.supportChatMessage.create).toHaveBeenCalledWith({
-        data: { ticketId: 't-1', senderRole: 'AGENT', senderUserId: 'agent-1', content: 'hi' },
+        data: {
+          ticketId: 't-1',
+          senderRole: 'AGENT',
+          senderUserId: 'agent-1',
+          content: 'hi',
+        },
       });
-      expect(prisma.supportTicket.update.mock.calls[0][0].data.status).toBe('IN_PROGRESS');
+      expect(prisma.supportTicket.update.mock.calls[0][0].data.status).toBe(
+        'IN_PROGRESS',
+      );
       expect(publisher.publishMessage).toHaveBeenCalled();
     });
 
@@ -98,8 +117,22 @@ describe('AdminService', () => {
       expect(deliveries.adminForceCancel).toHaveBeenCalledWith('d-1');
     });
 
+    it('issueDroneCommand delegates to DroneCommandService.issue with the admin id', async () => {
+      const dto = { type: 'RETURN_TO_BASE' as any };
+      await service.issueDroneCommand('admin-1', 'd-1', dto);
+      expect(droneCommands.issue).toHaveBeenCalledWith('admin-1', 'd-1', dto);
+    });
+
+    it('listDroneCommands delegates to DroneCommandService.listForDelivery', async () => {
+      await service.listDroneCommands('d-1');
+      expect(droneCommands.listForDelivery).toHaveBeenCalledWith('d-1');
+    });
+
     it('refunds as a wallet credit + marks the payment REFUNDED', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ userId: 'u-1', estimatedPrice: 18 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 18,
+      });
       await service.refund('d-1');
       expect(wallet.creditWithinTx).toHaveBeenCalledWith(
         expect.anything(),
@@ -115,14 +148,25 @@ describe('AdminService', () => {
     });
 
     it('rejects a refund larger than the charged total', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ userId: 'u-1', estimatedPrice: 18 });
-      await expect(service.refund('d-1', 50)).rejects.toThrow(BadRequestException);
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 18,
+      });
+      await expect(service.refund('d-1', 50)).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('maps a duplicate refund (P2002) to 409', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({ userId: 'u-1', estimatedPrice: 18 });
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 18,
+      });
       wallet.creditWithinTx.mockRejectedValue(
-        new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'x',
+        }),
       );
       await expect(service.refund('d-1')).rejects.toThrow(ConflictException);
     });
@@ -141,16 +185,27 @@ describe('AdminService', () => {
 
     it('rejects a PERCENT discount over 100', async () => {
       await expect(
-        service.createPromo({ code: 'X', discountType: 'PERCENT', discountValue: 150 } as any),
+        service.createPromo({
+          code: 'X',
+          discountType: 'PERCENT',
+          discountValue: 150,
+        } as any),
       ).rejects.toThrow(BadRequestException);
     });
 
     it('maps a duplicate code (P2002) to 409', async () => {
       prisma.promoCode.create.mockRejectedValue(
-        new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'x',
+        }),
       );
       await expect(
-        service.createPromo({ code: 'DUP', discountType: 'FIXED', discountValue: 5 } as any),
+        service.createPromo({
+          code: 'DUP',
+          discountType: 'FIXED',
+          discountValue: 5,
+        } as any),
       ).rejects.toThrow(ConflictException);
     });
   });
@@ -179,7 +234,11 @@ describe('AdminService', () => {
   describe('setRole', () => {
     it('promotes a user', async () => {
       prisma.user.findUnique.mockResolvedValue({ role: 'USER' });
-      prisma.user.update.mockResolvedValue({ id: 'u-2', email: 'x', role: 'AGENT' });
+      prisma.user.update.mockResolvedValue({
+        id: 'u-2',
+        email: 'x',
+        role: 'AGENT',
+      });
       await service.setRole('admin-1', 'u-2', 'AGENT' as any);
       expect(prisma.user.update).toHaveBeenCalled();
     });
@@ -187,9 +246,9 @@ describe('AdminService', () => {
     it('refuses to demote the last admin', async () => {
       prisma.user.findUnique.mockResolvedValue({ role: 'ADMIN' });
       prisma.user.count.mockResolvedValue(1);
-      await expect(service.setRole('admin-1', 'u-2', 'USER' as any)).rejects.toThrow(
-        ConflictException,
-      );
+      await expect(
+        service.setRole('admin-1', 'u-2', 'USER' as any),
+      ).rejects.toThrow(ConflictException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
