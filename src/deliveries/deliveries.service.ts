@@ -421,7 +421,17 @@ export class DeliveriesService {
     } else if (query.status === 'scheduled') {
       where.status = DeliveryStatus.SCHEDULED;
     } else if (query.status === 'completed') {
-      where.status = DeliveryStatus.DELIVERED;
+      // "Completed" = settled outcomes the client groups as history: a successful
+      // delivery AND the terminal exceptions (failed / returned-to-base). Without
+      // the latter, a failed/returned delivery would match NO list filter and
+      // disappear from the user's orders entirely.
+      where.status = {
+        in: [
+          DeliveryStatus.DELIVERED,
+          DeliveryStatus.DELIVERY_FAILED,
+          DeliveryStatus.RETURNED_TO_BASE,
+        ],
+      };
     } else if (query.status === 'canceled') {
       where.status = DeliveryStatus.CANCELED;
     }

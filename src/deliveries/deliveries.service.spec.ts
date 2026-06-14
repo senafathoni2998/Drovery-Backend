@@ -554,14 +554,19 @@ describe('DeliveriesService', () => {
       ]);
     });
 
-    it('should filter by completed status', async () => {
+    it('should filter "completed" by all settled outcomes incl. terminal exceptions', async () => {
       prisma.delivery.findMany.mockResolvedValue([]);
       prisma.delivery.count.mockResolvedValue(0);
 
       await service.findAll(userId, { status: 'completed' } as any);
 
       const where = prisma.delivery.findMany.mock.calls[0][0].where;
-      expect(where.status).toBe(DeliveryStatus.DELIVERED);
+      // Failed / returned-to-base must be discoverable (not orphaned from every list).
+      expect(where.status.in).toEqual([
+        DeliveryStatus.DELIVERED,
+        DeliveryStatus.DELIVERY_FAILED,
+        DeliveryStatus.RETURNED_TO_BASE,
+      ]);
     });
 
     it('should filter by canceled status', async () => {
