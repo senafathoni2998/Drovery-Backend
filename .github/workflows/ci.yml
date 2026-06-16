@@ -60,6 +60,14 @@ jobs:
       - name: Apply migrations (validates migration history)
         run: npx prisma migrate deploy
 
+      # Partitioning durability gate: the partitioned tables (notifications) diverge
+      # from Prisma's model view only via the deliberate composite-PK change, which
+      # diffs CLEAN. A non-empty diff means a schema/migration change is trying to
+      # un-partition a table (or a `db push`/`db pull` mangled the schema) — fail the
+      # build. Runs AFTER migrate deploy so it compares the live DB to schema.prisma.
+      - name: Prisma drift check (schema ⇔ DB must match)
+        run: npm run prisma:drift-check
+
       - name: Lint (non-blocking until the no-unsafe-any cleanup lands)
         run: npx eslint "src/**/*.ts"
         continue-on-error: true

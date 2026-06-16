@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -44,24 +43,36 @@ export class NotificationsService {
   }
 
   async markAsRead(userId: string, notificationId: string) {
-    const notification = await this.prisma.notification.findUnique({
-      where: { id: notificationId },
+    // `notifications` is composite-PK (id, createdAt) for partitioning, so there is
+    // no single-column `id` unique — findUnique/update({ where: { id } }) is gone.
+    // Mark read with an ownership-scoped updateMany: ownership lives IN the write
+    // (no read-then-write TOCTOU), and a cross-user / missing id yields count 0 →
+    // 404 (no 403 existence oracle). id is a uuid so this matches at most one row.
+    const { count } = await this.prisma.notification.updateMany({
+      where: { id: notificationId, userId },
+      data: { read: true },
     });
 
-    if (!notification) {
+    if (count === 0) {
       throw new NotFoundException(
         `Notification with id "${notificationId}" not found`,
       );
     }
 
-    if (notification.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
-    return this.prisma.notification.update({
-      where: { id: notificationId },
-      data: { read: true },
+    // Return the full updated row (keeps the NotificationResponseDto contract);
+    // findFirst — not findUnique — since id alone is no longer a unique where. Null-
+    // check it: if the row vanished between the update and this read (a future
+    // delete/dismiss path or aggressive retention), surface a 404 rather than a
+    // 200 with data:null against a non-null DTO.
+    const updated = await this.prisma.notification.findFirst({
+      where: { id: notificationId, userId },
     });
+    if (!updated) {
+      throw new NotFoundException(
+        `Notification with id "${notificationId}" not found`,
+      );
+    }
+    return updated;
   }
 
   async markAllAsRead(userId: string) {

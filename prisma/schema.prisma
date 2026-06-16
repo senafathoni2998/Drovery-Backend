@@ -710,8 +710,18 @@ model Device {
   @@map("devices")
 }
 
+// PARTITIONED TABLE — `notifications` is PostgreSQL RANGE(createdAt)-partitioned by
+// month (raw-SQL migration 20260616120000_partition_notifications; child DDL is owned
+// by the `notifications_*` plpgsql routines + the partition-maintenance scheduler, NOT
+// Prisma). A range-partitioned table requires the partition key in every key, so the
+// PK is composite `@@id([id, createdAt])` (id-first so a bare-id lookup still uses each
+// child's PK index). `prisma db push` AND `prisma db pull` are FORBIDDEN here (migrations
+// only — push recreates it as a plain table, pull can't represent PARTITION BY); see
+// prisma/PARTITIONING.md. id is still a unique uuid in practice, but is no longer a
+// single-column unique — so `findUnique/update/delete({ where: { id } })` is gone;
+// scope writes by (id, userId) via updateMany instead (see NotificationsService).
 model Notification {
-  id     String @id @default(uuid())
+  id     String @default(uuid())
   userId String
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -723,6 +733,7 @@ model Notification {
 
   createdAt DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([userId, read])
   @@map("notifications")
 }

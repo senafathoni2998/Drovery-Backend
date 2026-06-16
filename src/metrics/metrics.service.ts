@@ -10,6 +10,7 @@ import {
 } from 'prom-client';
 
 import { WATCHDOG_QUEUE } from '../delivery-watchdog/watchdog.constants';
+import { PARTITION_QUEUE } from '../partition-maintenance/partition.constants';
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
 import { RECUR_QUEUE } from '../recurring-deliveries/recurring.constants';
 
@@ -51,11 +52,20 @@ export class MetricsService {
   // Backend→drone command channel (money-touching control path on LIVE deliveries).
   readonly droneCommandsTotal: Counter<string>;
   readonly droneCommandTimeToAck: Histogram<string>;
+  // Partition maintenance (worker tier): heartbeat + scheduler gauges (mirroring the
+  // watchdog), per-table created/dropped counters, and a default-rows gauge that
+  // alerts when rows pile in the DEFAULT partition (maintenance lag / short window).
+  readonly partitionLastScan: Gauge<string>;
+  readonly partitionSchedulerRegistered: Gauge<string>;
+  readonly partitionDefaultRows: Gauge<string>;
+  readonly partitionsCreatedTotal: Counter<string>;
+  readonly partitionsDroppedTotal: Counter<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
     @InjectQueue(RECUR_QUEUE) recurQueue: Queue,
     @InjectQueue(WATCHDOG_QUEUE) watchdogQueue: Queue,
+    @InjectQueue(PARTITION_QUEUE) partitionQueue: Queue,
   ) {
     collectDefaultMetrics({ register: this.registry, prefix: 'drovery_' });
 
@@ -126,6 +136,39 @@ export class MetricsService {
       registers: [this.registry],
     });
 
+    this.partitionLastScan = new Gauge({
+      name: 'drovery_partition_last_scan_timestamp_seconds',
+      help: 'Unix time partition maintenance last COMPLETED a sweep (heartbeat)',
+      registers: [this.registry],
+    });
+
+    this.partitionSchedulerRegistered = new Gauge({
+      name: 'drovery_partition_scheduler_registered',
+      help: '1 when this replica registered the partition-maintenance scheduler',
+      registers: [this.registry],
+    });
+
+    this.partitionDefaultRows = new Gauge({
+      name: 'drovery_partition_default_rows',
+      help: 'Rows currently parked in a table DEFAULT partition (should be ~0; alert if >0)',
+      labelNames: ['table'],
+      registers: [this.registry],
+    });
+
+    this.partitionsCreatedTotal = new Counter({
+      name: 'drovery_partitions_created_total',
+      help: 'Child partitions created (ensured + drained) per table',
+      labelNames: ['table'],
+      registers: [this.registry],
+    });
+
+    this.partitionsDroppedTotal = new Counter({
+      name: 'drovery_partitions_dropped_total',
+      help: 'Child partitions dropped by retention per table',
+      labelNames: ['table'],
+      registers: [this.registry],
+    });
+
     // Every BullMQ queue we want backlog/failed visibility on. getJobCounts is
     // queue-global, so every replica exports the SAME value (KEDA queries with
     // max(), not sum()). Each queue is collected independently so one slow/offline
@@ -134,6 +177,7 @@ export class MetricsService {
       { name: SIM_QUEUE, queue: simQueue },
       { name: RECUR_QUEUE, queue: recurQueue },
       { name: WATCHDOG_QUEUE, queue: watchdogQueue },
+      { name: PARTITION_QUEUE, queue: partitionQueue },
     ];
     new Gauge({
       name: 'drovery_queue_jobs',

@@ -5,12 +5,14 @@ import { MetricsService } from './metrics.service';
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
 import { RECUR_QUEUE } from '../recurring-deliveries/recurring.constants';
 import { WATCHDOG_QUEUE } from '../delivery-watchdog/watchdog.constants';
+import { PARTITION_QUEUE } from '../partition-maintenance/partition.constants';
 
 describe('MetricsService', () => {
   let service: MetricsService;
   let queue: { getJobCounts: jest.Mock };
   let recurQueue: { getJobCounts: jest.Mock };
   let watchdogQueue: { getJobCounts: jest.Mock };
+  let partitionQueue: { getJobCounts: jest.Mock };
 
   beforeEach(async () => {
     queue = {
@@ -24,6 +26,9 @@ describe('MetricsService', () => {
     watchdogQueue = {
       getJobCounts: jest.fn().mockResolvedValue({ waiting: 0, failed: 2 }),
     };
+    partitionQueue = {
+      getJobCounts: jest.fn().mockResolvedValue({ waiting: 0, completed: 4 }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -31,6 +36,7 @@ describe('MetricsService', () => {
         { provide: getQueueToken(SIM_QUEUE), useValue: queue },
         { provide: getQueueToken(RECUR_QUEUE), useValue: recurQueue },
         { provide: getQueueToken(WATCHDOG_QUEUE), useValue: watchdogQueue },
+        { provide: getQueueToken(PARTITION_QUEUE), useValue: partitionQueue },
       ],
     }).compile();
 

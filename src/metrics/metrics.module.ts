@@ -5,6 +5,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { SIM_QUEUE } from '../deliveries/simulation/simulation.constants';
 import { RECUR_QUEUE } from '../recurring-deliveries/recurring.constants';
 import { WATCHDOG_QUEUE } from '../delivery-watchdog/watchdog.constants';
+import { PARTITION_QUEUE } from '../partition-maintenance/partition.constants';
 import { MetricsController } from './metrics.controller';
 import { MetricsInterceptor } from './metrics.interceptor';
 import { MetricsService } from './metrics.service';
@@ -22,6 +23,7 @@ import { MetricsService } from './metrics.service';
       { name: SIM_QUEUE },
       { name: RECUR_QUEUE },
       { name: WATCHDOG_QUEUE },
+      { name: PARTITION_QUEUE },
     ),
   ],
   controllers: [MetricsController],

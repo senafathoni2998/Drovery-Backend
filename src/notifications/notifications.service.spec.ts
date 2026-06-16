@@ -1,9 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  BadRequestException,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 import { ConfigService } from '@nestjs/config';
 
@@ -59,34 +55,48 @@ describe('NotificationsService', () => {
   });
 
   describe('markAsRead', () => {
-    it('should mark notification as read', async () => {
-      prisma.notification.findUnique.mockResolvedValue(mockNotification);
-      prisma.notification.update.mockResolvedValue({
+    it('should mark notification as read (ownership-scoped updateMany + return row)', async () => {
+      prisma.notification.updateMany.mockResolvedValue({ count: 1 });
+      prisma.notification.findFirst.mockResolvedValue({
         ...mockNotification,
         read: true,
       });
 
       const result = await service.markAsRead(userId, 'notif-1');
 
-      expect(result.read).toBe(true);
+      expect(result?.read).toBe(true);
+      expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+        where: { id: 'notif-1', userId },
+        data: { read: true },
+      });
     });
 
-    it('should throw NotFoundException if notification not found', async () => {
-      prisma.notification.findUnique.mockResolvedValue(null);
+    it('should throw NotFoundException when no row matches (missing id)', async () => {
+      prisma.notification.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(service.markAsRead(userId, 'nonexistent')).rejects.toThrow(
         NotFoundException,
       );
     });
 
-    it('should throw ForbiddenException if notification belongs to another user', async () => {
-      prisma.notification.findUnique.mockResolvedValue({
-        ...mockNotification,
-        userId: 'other-user',
-      });
+    it('should throw NotFoundException for another user (ownership folded into the scoped write)', async () => {
+      // The updateMany is scoped by userId, so a notification owned by someone
+      // else matches 0 rows → 404 (not a 403 existence oracle).
+      prisma.notification.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(service.markAsRead(userId, 'notif-1')).rejects.toThrow(
-        ForbiddenException,
+        NotFoundException,
+      );
+    });
+
+    it('should throw NotFoundException if the row vanishes between the update and the re-read', async () => {
+      // Update matched (count 1) but the row is gone by the re-read (TOCTOU) → 404,
+      // never a 200 with data:null against the non-null NotificationResponseDto.
+      prisma.notification.updateMany.mockResolvedValue({ count: 1 });
+      prisma.notification.findFirst.mockResolvedValue(null);
+
+      await expect(service.markAsRead(userId, 'notif-1')).rejects.toThrow(
+        NotFoundException,
       );
     });
   });

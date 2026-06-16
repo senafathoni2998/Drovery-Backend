@@ -61,7 +61,7 @@ describe('NotificationsController', () => {
         userId,
         'notif-1',
       );
-      expect(result.read).toBe(true);
+      expect(result?.read).toBe(true);
     });
   });
 
