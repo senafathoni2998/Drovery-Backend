@@ -1,7 +1,9 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { ApiOkResponse } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 
 import { PublicApi } from '../common/decorators/public-api.decorator';
+import { LiveResponseDto, ReadyResponseDto } from './dto/health-response.dto';
 import { HealthService } from './health.service';
 
 // Public + un-throttled so orchestrator probes (k8s/load balancers) aren't
@@ -14,6 +16,7 @@ export class HealthController {
 
   /** Liveness: the process is up and serving. */
   @Get()
+  @ApiOkResponse({ type: LiveResponseDto })
   live() {
     return {
       status: 'ok',
@@ -24,6 +27,7 @@ export class HealthController {
 
   /** Readiness: critical dependencies (DB, Redis) are reachable. 503 if not. */
   @Get('ready')
+  @ApiOkResponse({ type: ReadyResponseDto })
   async ready() {
     const checks = await this.healthService.check();
     const ok = Object.values(checks).every(Boolean);

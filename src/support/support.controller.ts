@@ -8,6 +8,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
 import { parseLocale } from '../i18n/accept-language';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -22,6 +23,13 @@ import {
   GetMessagesQueryDto,
   SendChatMessageDto,
 } from './dto';
+import {
+  FaqResponseDto,
+  PaginatedSupportChatMessagesDto,
+  SubmitTicketResponseDto,
+  SupportChatMessagePayloadDto,
+  SupportTicketResponseDto,
+} from './dto/support-response.dto';
 import { SupportService } from './support.service';
 
 @Controller('support')
@@ -34,16 +42,19 @@ export class SupportController {
 
   @PublicApi()
   @Get('faq')
+  @ApiOkResponse({ type: [FaqResponseDto] })
   getFaqs(@Headers('accept-language') acceptLanguage?: string) {
     return this.supportService.getFaqs(parseLocale(acceptLanguage));
   }
 
   @Get('tickets')
+  @ApiOkResponse({ type: [SupportTicketResponseDto] })
   getTickets(@CurrentUser('sub') userId: string) {
     return this.supportService.getTickets(userId);
   }
 
   @Post('tickets')
+  @ApiCreatedResponse({ type: SubmitTicketResponseDto })
   submitTicket(
     @CurrentUser('sub') userId: string,
     @Body() body: CreateTicketDto,
@@ -57,6 +68,7 @@ export class SupportController {
 
   // Chat history for a ticket (also the polling backstop when the WS drops).
   @Get('tickets/:ticketId/messages')
+  @ApiOkResponse({ type: PaginatedSupportChatMessagesDto })
   getMessages(
     @CurrentUser('sub') userId: string,
     @Param('ticketId') ticketId: string,
@@ -73,6 +85,7 @@ export class SupportController {
   // REST send — identical effect to the WS 'send' frame (persist + realtime
   // fanout), so a client without a live socket still works.
   @Post('tickets/:ticketId/messages')
+  @ApiCreatedResponse({ type: SupportChatMessagePayloadDto })
   async sendMessage(
     @CurrentUser('sub') userId: string,
     @Param('ticketId') ticketId: string,

@@ -12,6 +12,7 @@ import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
 import { parseLocale } from '../i18n/accept-language';
 import { AuthTokensDto } from './dto/auth-tokens.dto';
+import { AuthSuccessResponseDto } from './dto/auth-success-response.dto';
 import { PublicApi } from '../common/decorators/public-api.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
@@ -61,6 +62,7 @@ export class AuthController {
   }
 
   @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Body() dto: RefreshTokenDto) {
@@ -68,6 +70,7 @@ export class AuthController {
   }
 
   @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   forgotPassword(
@@ -82,6 +85,7 @@ export class AuthController {
   }
 
   @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() dto: ResetPasswordDto) {
@@ -89,12 +93,14 @@ export class AuthController {
   }
 
   @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto.token);
   }
 
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
   resendVerification(@CurrentUser('sub') userId: string) {

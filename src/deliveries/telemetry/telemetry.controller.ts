@@ -7,10 +7,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
-import { ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOkResponse, ApiSecurity, ApiTags } from '@nestjs/swagger';
 
 import { Public } from '../../common/decorators/public.decorator';
 import { DroneAuthGuard } from './drone-auth.guard';
+import { TelemetryIngestResponseDto } from './dto/telemetry-response.dto';
 import { TelemetryDto } from './dto/telemetry.dto';
 import { TelemetryService } from './telemetry.service';
 
@@ -29,6 +30,7 @@ export class TelemetryController {
   @UseGuards(DroneAuthGuard)
   @Post('telemetry')
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: TelemetryIngestResponseDto })
   async ingest(@Body() dto: TelemetryDto) {
     return this.telemetry.ingest(dto);
   }

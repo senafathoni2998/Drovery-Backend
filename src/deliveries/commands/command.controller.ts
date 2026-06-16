@@ -10,11 +10,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
-import { ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOkResponse, ApiSecurity, ApiTags } from '@nestjs/swagger';
 
 import { Public } from '../../common/decorators/public.decorator';
 import { DroneAuthGuard } from '../telemetry/drone-auth.guard';
 import { AckCommandDto } from './dto/ack-command.dto';
+import {
+  AckCommandResponseDto,
+  PollCommandResponseDto,
+} from './dto/command-response.dto';
 import { PollCommandDto } from './dto/poll-command.dto';
 import { DroneCommandService } from './drone-command.service';
 
@@ -33,6 +37,7 @@ export class CommandController {
   @Public()
   @UseGuards(DroneAuthGuard)
   @Get('commands')
+  @ApiOkResponse({ type: PollCommandResponseDto })
   async poll(@Query() query: PollCommandDto) {
     return this.commands.fetchPending(query.droneId);
   }
@@ -41,6 +46,7 @@ export class CommandController {
   @UseGuards(DroneAuthGuard)
   @Post('commands/:id/ack')
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: AckCommandResponseDto })
   async ack(@Param('id') id: string, @Body() dto: AckCommandDto) {
     return this.commands.ack(id, dto.droneId, dto.accepted ?? true, dto.note);
   }

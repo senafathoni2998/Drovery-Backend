@@ -1,6 +1,8 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ProofOfDeliveryDto } from '../dto/delivery-response.dto';
 import { SubmitProofDto } from './dto/submit-proof.dto';
 import { ProofService } from './proof.service';
 
@@ -9,6 +11,7 @@ export class ProofController {
   constructor(private readonly proofService: ProofService) {}
 
   @Post(':id/proof')
+  @ApiCreatedResponse({ type: ProofOfDeliveryDto })
   submit(
     @CurrentUser('sub') userId: string,
     @Param('id') id: string,
@@ -18,6 +21,7 @@ export class ProofController {
   }
 
   @Get(':id/proof')
+  @ApiOkResponse({ type: ProofOfDeliveryDto })
   get(@CurrentUser('sub') userId: string, @Param('id') id: string) {
     return this.proofService.getProof(userId, id);
   }
