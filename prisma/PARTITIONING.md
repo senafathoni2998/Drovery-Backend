@@ -61,7 +61,14 @@ the stuck-delivery watchdog). Each tick, per table in `PARTITIONED_TABLES`:
 2. `partition_ensure(table, PARTITION_MONTHS_AHEAD)` — create the current month + N future
    children so a new-month insert never falls to the `DEFAULT`.
 3. `partition_drop_old(table, PARTITION_RETAIN_MONTHS)` — drop children entirely older than
-   the retention window (no-op when `PARTITION_RETAIN_MONTHS=0`).
+   the retention window (no-op when `PARTITION_RETAIN_MONTHS=0`). For a **FK-referenced**
+   parent like `deliveries` (6 children + `tracking_id_registry` all composite-FK `ON DELETE
+   CASCADE`) a bare `DROP TABLE` of a leaf is **refused** by Postgres — each leaf carries the
+   inbound-FK schema dependency. So the routine `DELETE`s the month's rows *through the parent*
+   (firing the composite cascade into every child), then `DETACH PARTITION` + `DROP` the now
+   unreferenced leaf. Equivalent (just a row-purge) for a childless parent like `notifications`.
+   **At real scale that `DELETE` should be batched under a maintenance window** — dropping a
+   month of `deliveries` also discards that month's payments/proofs/ratings/tracking + registry.
 
 The permanent `DEFAULT` partition is the safety net: an insert can **never** fail with
 "no partition found" even if maintenance lags.

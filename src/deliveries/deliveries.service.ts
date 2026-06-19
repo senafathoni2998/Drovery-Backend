@@ -985,15 +985,27 @@ export class DeliveriesService {
     );
   }
 
-  /** A P2002 unique violation specifically on the trackingId column (vs e.g. the
-   * in-tx debit idempotencyKey, which must NOT trigger a trackingId regenerate). */
+  /** A P2002 unique violation from the trackingId registry (vs e.g. the in-tx debit
+   * idempotencyKey or a promo redemption, which must NOT trigger a trackingId regenerate).
+   * The collision now surfaces on tracking_id_registry's PK; match BOTH shapes the pg
+   * driver adapter can emit — the parsed column list (`trackingId`) and, when present, the
+   * constraint/index name (`tracking_id_registry_pkey`). Neither substring appears in the
+   * debit/promo constraints, so this stays scoped to a real trackingId collision. */
   private isTrackingIdCollision(error: unknown): boolean {
+    if (
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      error.code !== 'P2002'
+    ) {
+      return false;
+    }
+    const meta = error.meta as { target?: unknown; constraint?: unknown };
+    const fingerprint = JSON.stringify([
+      meta?.target ?? '',
+      meta?.constraint ?? '',
+    ]);
     return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002' &&
-      JSON.stringify(
-        (error.meta as { target?: unknown })?.target ?? '',
-      ).includes('trackingId')
+      fingerprint.includes('trackingId') ||
+      fingerprint.includes('tracking_id_registry')
     );
   }
 

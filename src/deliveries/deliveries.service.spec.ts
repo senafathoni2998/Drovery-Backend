@@ -199,6 +199,37 @@ describe('DeliveriesService', () => {
       );
       expect(prisma.delivery.create).toHaveBeenCalledTimes(5); // MAX_TRACKING_ID_TRIES
     });
+
+    // Since `deliveries` is partitioned, trackingId is only a plain index there — global
+    // uniqueness now lives on tracking_id_registry's PK, so a real collision surfaces on
+    // the REGISTRY insert (delivery.create can no longer raise a trackingId P2002). The
+    // whole tx rolls back and re-runs on a regenerated trackingId.
+    it('retries when the REGISTRY insert collides on trackingId, then succeeds', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      prisma.trackingIdRegistry.create
+        .mockRejectedValueOnce(trackingCollision())
+        .mockResolvedValueOnce({});
+
+      const result = await service.create(userId, createDto);
+
+      expect(prisma.trackingIdRegistry.create).toHaveBeenCalledTimes(2);
+      expect(prisma.delivery.create).toHaveBeenCalledTimes(2); // whole tx re-ran
+      expect((result as any).id).toBe(mockDelivery.id);
+    });
+
+    it('inserts the registry row inside the create tx (enforces global trackingId uniqueness)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.create(userId, createDto);
+
+      expect(prisma.trackingIdRegistry.create).toHaveBeenCalledWith({
+        data: {
+          trackingId: mockDelivery.trackingId,
+          deliveryId: mockDelivery.id,
+          deliveryCreatedAt: mockDelivery.createdAt,
+        },
+      });
+    });
   });
 
   describe('create', () => {

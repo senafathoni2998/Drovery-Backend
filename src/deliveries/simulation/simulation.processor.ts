@@ -94,13 +94,13 @@ export class SimulationProcessor extends WorkerHost {
   }: KickoffJobData): Promise<void> {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
-      select: { status: true },
+      select: { status: true, createdAt: true },
     });
     if (!delivery || delivery.status !== DeliveryStatus.SCHEDULED) return;
 
     await this.simulationService.startSimulation(
       deliveryId,
-      new Date(deliveryCreatedAt),
+      this.resolveCreatedAt(deliveryCreatedAt, delivery.createdAt),
       userId,
       coords,
     );
@@ -166,7 +166,7 @@ export class SimulationProcessor extends WorkerHost {
     await this.safe(() =>
       this.trackingService.updateTracking(
         deliveryId,
-        new Date(deliveryCreatedAt),
+        this.resolveCreatedAt(deliveryCreatedAt, delivery.createdAt),
         {
           droneLat: dronePos?.lat,
           droneLng: dronePos?.lng,
@@ -199,6 +199,26 @@ export class SimulationProcessor extends WorkerHost {
     // (DeliveriesService.confirmHandoff), not here — the sim stops at AWAITING_HANDOFF.
   }
 
+  /**
+   * The parent delivery's createdAt (the partition key) used to write composite-FK
+   * children. Normally it rides on the job payload, but a job enqueued BEFORE the
+   * delivery-graph partitioning deploy has no `deliveryCreatedAt` → `new Date(undefined)`
+   * is an Invalid Date. Left unguarded that throws a RangeError in startSimulation (which
+   * stranded a kickoff's delivery in SCHEDULED) and an FK violation in updateTracking. We
+   * already read the delivery row in each handler, so fall back to its real createdAt when
+   * the payload value is missing or unparseable. (Steady-state jobs always carry it.)
+   */
+  private resolveCreatedAt(
+    payloadIso: string | undefined,
+    fallback: Date,
+  ): Date {
+    if (payloadIso) {
+      const d = new Date(payloadIso);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return fallback;
+  }
+
   private async safe(fn: () => Promise<unknown>): Promise<void> {
     try {
       await fn();
@@ -222,7 +242,7 @@ export class SimulationProcessor extends WorkerHost {
   }: PositionJobData): Promise<void> {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
-      select: { status: true },
+      select: { status: true, createdAt: true },
     });
     if (!delivery || POSITION_FROZEN_STATUSES.includes(delivery.status)) {
       return;
@@ -230,7 +250,7 @@ export class SimulationProcessor extends WorkerHost {
 
     await this.trackingService.updateTracking(
       deliveryId,
-      new Date(deliveryCreatedAt),
+      this.resolveCreatedAt(deliveryCreatedAt, delivery.createdAt),
       {
         droneLat: lat,
         droneLng: lng,

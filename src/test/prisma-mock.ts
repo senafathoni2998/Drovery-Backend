@@ -96,13 +96,16 @@ export function createMockPrismaService(): MockPrismaService {
     $disconnect: jest.fn(),
   };
   // `deliveries` is partitioned (composite PK), so the service reads it via findFirst
-  // (id alone is no longer a unique-where). Point delivery.findFirst at the SAME jest.fn
-  // as delivery.findUnique so existing specs that stub `delivery.findUnique` keep working
-  // (nothing stubs delivery.findFirst separately). The composite-PK findByTrackingId fetch
-  // still calls delivery.findUnique → same fn.
-  (mock.delivery as ReturnType<typeof createModelMock>).findFirst = (
-    mock.delivery as ReturnType<typeof createModelMock>
-  ).findUnique;
+  // (id alone is no longer a unique-where). Make delivery.findFirst DELEGATE to
+  // delivery.findUnique rather than BE the same fn: existing specs that stub
+  // `delivery.findUnique` (.mockResolvedValue / Once) still flow through unchanged, but
+  // the two now have distinct call records — so a future read wrongly reverted to
+  // findUnique on the partitioned table stays observable (it wouldn't hit findFirst).
+  // The composite-PK findByTrackingId fetch calls delivery.findUnique directly.
+  const deliveryMock = mock.delivery as ReturnType<typeof createModelMock>;
+  deliveryMock.findFirst = jest.fn((...args: unknown[]) =>
+    (deliveryMock.findUnique as (...a: unknown[]) => unknown)(...args),
+  );
   // Supports both forms: array (Promise.all) AND the interactive callback form,
   // to which we pass the same mock as the transaction client (so tx.model.* works).
   mock.$transaction = jest.fn((args) =>

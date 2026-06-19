@@ -137,6 +137,45 @@ BEGIN
   IF v_default <> 0 THEN RAISE EXCEPTION 'FAIL 7c: registry row not cascaded'; END IF;
   RAISE NOTICE 'OK 7: delivery routed to %, trackingId dup rejected, composite-FK cascade clean', v_expected;
 
+  -- 8. Retention on a FK-REFERENCED parent: partition_drop_old must cascade-drop an aged
+  --    `deliveries` partition AND its composite-FK children/registry. The pre-cascade routine
+  --    (bare DROP TABLE) failed here because every leaf carries the inbound-FK schema
+  --    dependency — so retention silently reclaimed nothing. Build an aged (2020-01) leaf,
+  --    populate it + a payment + a registry row, prune with retain=1, and assert the leaf
+  --    AND its children are gone while the DEFAULT survives.
+  CREATE TABLE IF NOT EXISTS deliveries_y2020m01 PARTITION OF deliveries
+    FOR VALUES FROM ('2020-01-01') TO ('2020-02-01');
+  v_id := gen_random_uuid()::text;
+  INSERT INTO deliveries ("id","trackingId","userId","fromAddress","toAddress","receiver",
+    "packages","packageSize","packageWeight","packageTypes","pickupDate","pickupTime",
+    "estimatedPrice","createdAt","updatedAt")
+    VALUES (v_id,'VERIFYOLD',v_user,'A','B','R','box','S',1,'{}','2020-01-15'::timestamp,
+            '10:00 AM',10,'2020-01-15'::timestamp,'2020-01-15'::timestamp);
+  INSERT INTO tracking_id_registry ("trackingId","deliveryId","deliveryCreatedAt")
+    VALUES ('VERIFYOLD', v_id, '2020-01-15'::timestamp);
+  INSERT INTO payments ("id","deliveryId","deliveryCreatedAt","amount")
+    VALUES (gen_random_uuid()::text, v_id, '2020-01-15'::timestamp, 10);
+  SELECT tableoid::regclass INTO v_loc FROM deliveries WHERE id = v_id;
+  IF v_loc::text <> 'deliveries_y2020m01' THEN
+    RAISE EXCEPTION 'FAIL 8a: aged delivery in % (expected deliveries_y2020m01)', v_loc;
+  END IF;
+  v_dropped := partition_drop_old('deliveries', 1);
+  IF to_regclass('public.deliveries_y2020m01') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL 8b: aged deliveries partition was NOT dropped (retention broken)';
+  END IF;
+  IF to_regclass('public.deliveries_default') IS NULL THEN
+    RAISE EXCEPTION 'FAIL 8b: deliveries DEFAULT was wrongly dropped';
+  END IF;
+  SELECT count(*) INTO v_default FROM payments WHERE "deliveryId" = v_id;
+  IF v_default <> 0 THEN
+    RAISE EXCEPTION 'FAIL 8c: payment child not cascaded on partition drop (% left)', v_default;
+  END IF;
+  SELECT count(*) INTO v_default FROM tracking_id_registry WHERE "deliveryId" = v_id;
+  IF v_default <> 0 THEN
+    RAISE EXCEPTION 'FAIL 8c: registry row not cascaded on partition drop';
+  END IF;
+  RAISE NOTICE 'OK 8: drop_old cascade-dropped the aged deliveries partition (% incl. children+registry), DEFAULT preserved', v_dropped;
+
   RAISE NOTICE 'ALL PARTITION CHECKS PASSED';
 END $$;
 

@@ -214,4 +214,54 @@ describe('SimulationProcessor', () => {
       expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
     });
   });
+
+  // A job enqueued BEFORE the delivery-graph partitioning deploy has no deliveryCreatedAt
+  // in its payload. `new Date(undefined)` is an Invalid Date — left unguarded it threw a
+  // RangeError in startSimulation (stranding the delivery in SCHEDULED forever) and an FK
+  // violation in updateTracking. The handler must fall back to the delivery row's real
+  // createdAt (which it already reads) so the lifecycle still progresses.
+  describe('stale pre-deploy job (no deliveryCreatedAt in payload)', () => {
+    const fallback = new Date('2026-05-15T12:00:00.000Z');
+
+    it('kickoff falls back to the delivery createdAt instead of stranding (no RangeError)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.SCHEDULED,
+        createdAt: fallback,
+      });
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await processor.process({
+        name: 'kickoff',
+        data: { deliveryId: 'd-1', userId: 'u-1', coords }, // no deliveryCreatedAt
+      } as any);
+
+      expect(simulationService.startSimulation).toHaveBeenCalledWith(
+        'd-1',
+        fallback,
+        'u-1',
+        coords,
+      );
+      // The SCHEDULED → PENDING flip still happens — the delivery is not stranded.
+      expect(prisma.delivery.updateMany.mock.calls[0][0].data).toEqual({
+        status: DeliveryStatus.PENDING,
+      });
+    });
+
+    it('position falls back to the delivery createdAt (writes the tracking snapshot)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: 'IN_TRANSIT',
+        createdAt: fallback,
+      });
+
+      await processor.process({
+        name: 'position',
+        data: { deliveryId: 'd-1', lat: 1, lng: 2 }, // no deliveryCreatedAt
+      } as any);
+
+      expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', fallback, {
+        droneLat: 1,
+        droneLng: 2,
+      });
+    });
+  });
 });
