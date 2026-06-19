@@ -96,16 +96,93 @@ copy under a brief dual-write / maintenance window** — the same `partition_*` 
 provision the children; copy oldest→newest in batches, then cut over. Production drops
 should use `DETACH PARTITION CONCURRENTLY` + archive before `DROP`.
 
-## Next: the delivery graph
+## Next: the delivery graph — build-ready plan (Phase 1)
 
 `deliveries` + 6 children (`delivery_tracking`, `payments`, `proof_of_delivery`,
-`delivery_ratings`, `workflow_step_completions`, `drone_commands`). Two extra problems the
-leaf `notifications` didn't have:
+`delivery_ratings`, `workflow_step_completions`, `drone_commands`). This is the most
+invasive DB change in the project (composite PK on the CENTRAL table), so it ships in
+**one well-budgeted session** — do not start it piecemeal (a half-applied central-table
+migration breaks the whole backend). The design below is decided and build-ready.
 
-- **Global `trackingId` uniqueness** — a partitioned table can't enforce a unique that
-  omits the partition key. Keep the existing collision-safe `trackingId` generator and add
-  a small non-partitioned `trackingId` ledger for the global guarantee (or accept
-  `UNIQUE(trackingId, "createdAt")` = per-window scope).
-- **Composite-FK fan-out** — each child FK to `deliveries(id)` must become
-  `(id, "createdAt")`, so every child needs a `deliveryCreatedAt` column backfilled from
-  its parent and folded into the FK.
+### Scope decision (Phase 1 vs deferred)
+
+- **Phase 1 (this change):** partition **only `deliveries`** by `RANGE("createdAt")`
+  (composite PK `(id, "createdAt")`). All 6 children stay **plain (non-partitioned)** but
+  are FORCED to gain a `deliveryCreatedAt` column + a **composite FK** to
+  `deliveries(id, "createdAt")` — because a Prisma relation must reference the parent's
+  PK/unique, and the parent PK is now composite. Add a `tracking_id_registry` for global
+  `trackingId` uniqueness.
+- **Phase 2 (deferred):** co-partition the high-volume children
+  (`workflow_step_completions`, `drone_commands`) by `deliveryCreatedAt`. The 1:1 children
+  (tracking/payment/proof/rating) are bounded by delivery count → leave plain. This needs
+  the `partition_*` routines generalized to a per-table partition column (they hardcode
+  `"createdAt"`); trivial once Phase 1 lands.
+
+Rationale: partitioning `deliveries` is the scaling win and the headline; the child FK
+fan-out is unavoidable once the parent PK is composite, but actually *partitioning* the
+children is gold-plating that multiplies migration risk 7×. Phase 1 delivers the win with
+the smallest blast radius.
+
+### The two hard problems
+
+1. **Global `trackingId` uniqueness.** A partitioned table can't enforce a unique that
+   omits the partition key. Drop `trackingId @unique` from `deliveries` (→ plain index) and
+   add a NON-partitioned `tracking_id_registry (trackingId TEXT PRIMARY KEY, deliveryId
+   TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL)`. In `create()`'s transaction, insert
+   the registry row — a dup `trackingId` throws **P2002 on the registry PK**, so the
+   existing collision-retry (`deliveries.service.ts` ~222-270, `MAX_TRACKING_ID_TRIES`)
+   works unchanged (just point `isTrackingIdCollision` at the registry constraint).
+   `findByTrackingId` (~500) resolves registry → `(deliveryId, "createdAt")` → fetch by the
+   composite PK (or `findFirst({ where: { trackingId } })`).
+2. **Composite-FK fan-out.** Each child gets `deliveryCreatedAt DateTime` +
+   `@relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)`.
+   The 1:1 children keep `deliveryId @unique` (still globally unique → enforces 1:1);
+   verify Prisma accepts the 1:1 with a composite relation (may need `@@unique([deliveryId, deliveryCreatedAt])`).
+
+### Migration step order (single raw-SQL migration; FK drops gate the parent swap)
+
+1. `CREATE TABLE tracking_id_registry …`; backfill `INSERT … SELECT "trackingId", id, "createdAt" FROM deliveries`.
+2. For each child: `ADD COLUMN "deliveryCreatedAt" TIMESTAMP(3)`; backfill
+   `UPDATE child c SET "deliveryCreatedAt" = d."createdAt" FROM deliveries d WHERE d.id = c."deliveryId"`; `SET NOT NULL`.
+3. **Drop every child FK** to `deliveries(id)` (can't swap the parent while referenced).
+4. **Copy-swap `deliveries`** exactly like `notifications` (rename → `LIKE … INCLUDING
+   DEFAULTS` partitioned parent with composite PK → recreate the userId/status/trackingId
+   indexes, `trackingId` now NON-unique → DEFAULT partition → backfill-through-DEFAULT +
+   `partition_drain_default` → `partition_ensure(3)` → drop old). Recreate the `users` FK.
+5. **Re-add each child's composite FK** `(deliveryId, deliveryCreatedAt) → deliveries(id, "createdAt") ON DELETE CASCADE`.
+6. Add `'deliveries'` to `PARTITIONED_TABLES` (its partition col IS `"createdAt"`, so the
+   existing `partition_*` routines work as-is for Phase 1).
+
+### Code changes
+
+- **schema.prisma:** `Delivery` → `@@id([id, "createdAt"])`, drop `trackingId @unique` (→
+  `@@index([trackingId])`); add the 6 child `deliveryCreatedAt` + composite relations; add
+  the `TrackingIdRegistry` model. `db push`/`db pull` stay forbidden (see top of this doc).
+- **~22 by-id call sites** (`prisma.delivery.findUnique({ where: { id } })` no longer
+  compiles): reads → `findFirst({ where: { id } })` (uuid ⇒ ≤1 row; correct, no pruning);
+  the `update` at `deliveries.service.ts:590` → ownership/CAS `updateMany` or the
+  `id_createdAt` composite. Files: admin.service(150,180), deliveries.service(482,503,552,
+  590,622,645,727,738,789,865,908), drone-command.service(65,135), rating.service(49),
+  simulation.processor(94,122,211), proof.service(87), telemetry.service(84), wallet.service(171).
+- **Child writes must supply `deliveryCreatedAt`** (payments.service:143, workflows.service:52,
+  drone-command.service:104, rating.service:27, tracking.service:44, proof.service:31,65):
+  most already load the delivery (pass `delivery.createdAt`); the worker/telemetry/tracking
+  paths carry only `deliveryId` in the BullMQ job data → **add `deliveryCreatedAt` to those
+  job payloads** at enqueue (the create path has it), or a single cached lookup helper.
+
+### Verification (no scale)
+
+Extend `scripts/verify-partitions.sql`: a delivery routes to its month child (tableoid);
+`DELETE` of a delivery cascades across the composite FK to all children; a duplicate
+`trackingId` insert is rejected by the registry; `findByTrackingId` still resolves. Then
+`npm run prisma:drift-check` (clean), the 580 jest suite (after the call-site rewrites), and
+a live Prisma CRUD pass over the full graph (create → children → confirm-handoff → cancel).
+
+### Top risks
+
+- **Half-applied migration breaks the central table** → the migration is one transaction;
+  never run it without budget to finish + verify in the same session.
+- **A missed by-id call site** → the regenerated client makes it a COMPILE error (id is no
+  longer a unique-where), so `npm run build` is the backstop — fix every one before commit.
+- **Child write missing `deliveryCreatedAt`** → a NOT NULL / FK violation at runtime; the
+  job-payload threading + a compile check on the child `create` inputs catch it.
