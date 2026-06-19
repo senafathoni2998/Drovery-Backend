@@ -26,7 +26,13 @@ export class RatingService {
 
     return this.prisma.deliveryRating.upsert({
       where: { deliveryId },
-      create: { deliveryId, userId, stars: dto.stars, comment: dto.comment },
+      create: {
+        deliveryId,
+        deliveryCreatedAt: delivery.createdAt,
+        userId,
+        stars: dto.stars,
+        comment: dto.comment,
+      },
       update: { stars: dto.stars, comment: dto.comment },
     });
   }
@@ -46,7 +52,7 @@ export class RatingService {
   }
 
   private async ownDelivery(userId: string, deliveryId: string) {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
     });
     if (!delivery || delivery.userId !== userId) {

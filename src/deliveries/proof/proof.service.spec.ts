@@ -37,7 +37,8 @@ describe('ProofService', () => {
       prisma.proofOfDelivery.findUnique.mockResolvedValue(null);
       prisma.proofOfDelivery.create.mockResolvedValue({ id: 'pod-1' });
 
-      const result = await service.createAutoProof('d-1', {
+      const dca = new Date('2026-06-01T00:00:00.000Z');
+      const result = await service.createAutoProof('d-1', dca, {
         lat: -6.9,
         lng: 107.6,
         recipientName: 'Budi',
@@ -47,6 +48,7 @@ describe('ProofService', () => {
       expect(prisma.proofOfDelivery.create).toHaveBeenCalledWith({
         data: {
           deliveryId: 'd-1',
+          deliveryCreatedAt: dca,
           photoUrl: 'https://img/pod.jpg',
           lat: -6.9,
           lng: 107.6,
@@ -61,7 +63,7 @@ describe('ProofService', () => {
         id: 'pod-existing',
       });
 
-      const result = await service.createAutoProof('d-1', {});
+      const result = await service.createAutoProof('d-1', new Date(), {});
 
       expect(prisma.proofOfDelivery.create).not.toHaveBeenCalled();
       expect(result).toEqual({ id: 'pod-existing' });

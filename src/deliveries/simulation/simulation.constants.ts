@@ -77,12 +77,16 @@ type TraceCarrier = { _carrier?: Record<string, string> };
 
 export interface KickoffJobData extends TraceCarrier {
   deliveryId: string;
+  // Parent delivery's createdAt (ISO) — the partition key for composite-FK child
+  // writes (deliveries is RANGE(createdAt)-partitioned). Stamped at enqueue.
+  deliveryCreatedAt: string;
   userId: string;
   coords: DeliveryCoords;
 }
 
 export interface StageJobData extends TraceCarrier {
   deliveryId: string;
+  deliveryCreatedAt: string;
   userId: string;
   coords: DeliveryCoords;
   stageIndex: number;
@@ -90,6 +94,7 @@ export interface StageJobData extends TraceCarrier {
 
 export interface PositionJobData extends TraceCarrier {
   deliveryId: string;
+  deliveryCreatedAt: string;
   lat: number;
   lng: number;
 }

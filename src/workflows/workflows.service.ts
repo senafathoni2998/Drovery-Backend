@@ -49,6 +49,17 @@ export class WorkflowsService {
       );
     }
 
+    // `deliveries` is partitioned (composite PK), so a child write needs the parent's
+    // createdAt for the composite FK. Resolve it (and 404 a bad id) — id alone is no
+    // longer a unique-where, hence findFirst.
+    const delivery = await this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
+      select: { createdAt: true },
+    });
+    if (!delivery) {
+      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+    }
+
     return this.prisma.workflowStepCompletion.upsert({
       where: {
         deliveryId_workflowId_stepId: {
@@ -62,6 +73,7 @@ export class WorkflowsService {
       },
       create: {
         deliveryId,
+        deliveryCreatedAt: delivery.createdAt,
         workflowId: dto.workflowId,
         stepId: dto.stepId,
       },

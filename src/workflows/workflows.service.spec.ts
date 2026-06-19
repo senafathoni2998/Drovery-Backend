@@ -53,6 +53,8 @@ describe('WorkflowsService', () => {
     it('should upsert a workflow step completion', async () => {
       const workflowId = Object.keys(WORKFLOWS)[0];
       const stepId = WORKFLOWS[workflowId].steps[0].id;
+      // completeStep now resolves the parent createdAt (composite-FK child write).
+      prisma.delivery.findFirst.mockResolvedValue({ createdAt: new Date() });
       prisma.workflowStepCompletion.upsert.mockResolvedValue({
         id: 'completion-1',
         deliveryId: 'delivery-1',

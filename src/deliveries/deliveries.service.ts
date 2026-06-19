@@ -213,55 +213,55 @@ export class DeliveriesService {
       handoffCodeHash: this.hashHandoffCode(handoffCode),
     };
 
-    // When a promo, a credit-spend, or a pending referral reward is in play, the
-    // delivery row + those balance mutations commit in ONE transaction — each
-    // helper throws to roll the whole thing back on a race (cap loss / insufficient
-    // credits), so there's never an orphan delivery or an over-counted code. With
-    // none of them, the plain create is unchanged.
-    const needsTx = !!promoCode || creditsToApply > 0 || !!pendingReferral;
-    // trackingId is an 8-char slice of a uuid (@unique). At volume a collision is
-    // rare but non-zero, and an unhandled P2002 would fail an otherwise-valid
-    // create. Regenerate + retry on a trackingId collision (≤ MAX_TRACKING_ID_TRIES);
-    // because the create is the FIRST op in the $transaction, a collision rolls the
-    // whole tx back, so promo/credit/referral re-run cleanly (no double-redeem).
+    // The delivery row + the trackingId-registry row (+ any promo/credit/referral
+    // balance mutations) commit in ONE transaction. The registry insert is what
+    // enforces global trackingId uniqueness now that `deliveries` is partitioned
+    // (a partitioned table can't carry UNIQUE(trackingId)); the balance helpers each
+    // throw to roll the whole thing back on a race (cap loss / insufficient credits),
+    // so there's never an orphan delivery, an over-counted code, or an unregistered id.
+    // trackingId is an 8-char slice of a uuid; at volume a collision is rare but
+    // non-zero, and an unhandled P2002 would fail an otherwise-valid create. Regenerate
+    // + retry on a registry collision (≤ MAX_TRACKING_ID_TRIES); because the create is
+    // the FIRST op in the $transaction, a collision rolls the whole tx back, so
+    // promo/credit/referral re-run cleanly (no double-redeem).
     let delivery: Awaited<
       ReturnType<typeof this.prisma.delivery.create>
     > | null = null;
     for (let attempt = 0; attempt < MAX_TRACKING_ID_TRIES; attempt++) {
       try {
-        delivery = needsTx
-          ? await this.prisma.$transaction(async (tx) => {
-              const created = await tx.delivery.create({ data: deliveryData });
-              if (promoCode) {
-                await this.promoService.redeemWithinTx(
-                  tx,
-                  promoCode,
-                  userId,
-                  created.id,
-                  originalTotal,
-                  discount,
-                );
-              }
-              if (creditsToApply > 0) {
-                await this.walletService.debitWithinTx(
-                  tx,
-                  userId,
-                  creditsToApply,
-                  {
-                    deliveryId: created.id,
-                    idempotencyKey: `debit:${created.id}`,
-                  },
-                );
-              }
-              if (pendingReferral) {
-                await this.walletService.maybeGrantReferralRewardWithinTx(
-                  tx,
-                  userId,
-                );
-              }
-              return created;
-            })
-          : await this.prisma.delivery.create({ data: deliveryData });
+        delivery = await this.prisma.$transaction(async (tx) => {
+          const created = await tx.delivery.create({ data: deliveryData });
+          await tx.trackingIdRegistry.create({
+            data: {
+              trackingId: created.trackingId,
+              deliveryId: created.id,
+              deliveryCreatedAt: created.createdAt,
+            },
+          });
+          if (promoCode) {
+            await this.promoService.redeemWithinTx(
+              tx,
+              promoCode,
+              userId,
+              created.id,
+              originalTotal,
+              discount,
+            );
+          }
+          if (creditsToApply > 0) {
+            await this.walletService.debitWithinTx(tx, userId, creditsToApply, {
+              deliveryId: created.id,
+              idempotencyKey: `debit:${created.id}`,
+            });
+          }
+          if (pendingReferral) {
+            await this.walletService.maybeGrantReferralRewardWithinTx(
+              tx,
+              userId,
+            );
+          }
+          return created;
+        });
         break;
       } catch (error) {
         // Only a trackingId collision is retryable; anything else (incl. the in-tx
@@ -283,6 +283,7 @@ export class DeliveriesService {
       try {
         await this.paymentsService.createDeliveryPayment(
           delivery.id,
+          delivery.createdAt,
           finalTotal,
         );
       } catch (error) {
@@ -306,6 +307,7 @@ export class DeliveriesService {
         if (isScheduled) {
           await this.simulationService.scheduleKickoff(
             delivery.id,
+            delivery.createdAt,
             userId,
             coords,
             scheduledFor!,
@@ -313,6 +315,7 @@ export class DeliveriesService {
         } else {
           await this.simulationService.startSimulation(
             delivery.id,
+            delivery.createdAt,
             userId,
             coords,
           );
@@ -479,7 +482,9 @@ export class DeliveriesService {
   }
 
   async findOne(userId: string, deliveryId: string) {
-    const delivery = await this.prisma.delivery.findUnique({
+    // `deliveries` is partitioned (composite PK), so id alone is no longer a
+    // unique-where → findFirst (the uuid id matches at most one row).
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       include: {
         tracking: true,
@@ -499,9 +504,22 @@ export class DeliveriesService {
 
   async findByTrackingId(userId: string, trackingId: string) {
     // A tracking poll — lag-tolerant → read replica (falls back to primary).
-    const delivery = await this.prisma.readWithFallback((c) =>
-      c.delivery.findUnique({
+    // trackingId is no longer a column-unique on the partitioned `deliveries`; resolve
+    // it via the non-partitioned registry → (deliveryId, deliveryCreatedAt) → a
+    // composite-PK fetch (which prunes to the one partition).
+    const delivery = await this.prisma.readWithFallback(async (c) => {
+      const reg = await c.trackingIdRegistry.findUnique({
         where: { trackingId },
+        select: { deliveryId: true, deliveryCreatedAt: true },
+      });
+      if (!reg) return null;
+      return c.delivery.findUnique({
+        where: {
+          id_createdAt: {
+            id: reg.deliveryId,
+            createdAt: reg.deliveryCreatedAt,
+          },
+        },
         include: {
           tracking: true,
           workflowSteps: true,
@@ -509,8 +527,8 @@ export class DeliveriesService {
           proofOfDelivery: true,
           rating: true,
         },
-      }),
-    );
+      });
+    });
 
     // Ownership-scoped: don't leak other users' deliveries by tracking id.
     if (!delivery || delivery.userId !== userId) {
@@ -549,7 +567,7 @@ export class DeliveriesService {
   }
 
   async cancel(userId: string, deliveryId: string) {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
     });
 
@@ -588,7 +606,9 @@ export class DeliveriesService {
     }
 
     return this.prisma.delivery.update({
-      where: { id: deliveryId },
+      where: {
+        id_createdAt: { id: deliveryId, createdAt: delivery.createdAt },
+      },
       data: { status: DeliveryStatus.CANCELED },
       include: {
         tracking: true,
@@ -619,7 +639,7 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.CANCELED },
     });
     if (count === 0) {
-      const existing = await this.prisma.delivery.findUnique({
+      const existing = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },
         select: { status: true },
       });
@@ -642,7 +662,7 @@ export class DeliveriesService {
       .refundForDelivery(deliveryId)
       .catch(() => undefined);
 
-    return this.prisma.delivery.findUnique({
+    return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       include: { tracking: true, payment: true },
     });
@@ -724,7 +744,7 @@ export class DeliveriesService {
   async adminFail(deliveryId: string, reason: DeliveryFailureReason) {
     const applied = await this.failExceptional(deliveryId, reason);
     if (!applied) {
-      const existing = await this.prisma.delivery.findUnique({
+      const existing = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },
         select: { status: true },
       });
@@ -735,7 +755,7 @@ export class DeliveriesService {
         `Delivery cannot be failed in "${existing.status}" status.`,
       );
     }
-    return this.prisma.delivery.findUnique({
+    return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       include: { tracking: true, payment: true },
     });
@@ -786,7 +806,7 @@ export class DeliveriesService {
     status: DeliveryStatus,
     reason?: DeliveryFailureReason,
   ): Promise<void> {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { userId: true, user: { select: { locale: true } } },
     });
@@ -862,7 +882,7 @@ export class DeliveriesService {
   async confirmHandoff(userId: string, deliveryId: string, code: string) {
     // handoffCodeHash + handoffAttempts are globally omitted from reads
     // (PrismaService) — opt them back in here for verification.
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       omit: { handoffCodeHash: false, handoffAttempts: false },
     });
@@ -905,7 +925,7 @@ export class DeliveriesService {
       // re-read is race-safe. count === 0 means a concurrent attempt already hit
       // the cap. Either way auto-fail (recipient-fault → no auto-refund), then
       // report locked. failExceptional is idempotent → fails exactly once.
-      const after = await this.prisma.delivery.findUnique({
+      const after = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },
         select: { handoffAttempts: true },
       });
@@ -938,7 +958,7 @@ export class DeliveriesService {
     // Record proof of delivery now that the recipient has confirmed receipt
     // (best-effort — idempotent and non-fatal).
     try {
-      await this.proofService.createAutoProof(deliveryId, {
+      await this.proofService.createAutoProof(deliveryId, delivery.createdAt, {
         lat: delivery.toLat ?? undefined,
         lng: delivery.toLng ?? undefined,
         recipientName: delivery.receiver,

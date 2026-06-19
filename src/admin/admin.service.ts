@@ -147,7 +147,7 @@ export class AdminService {
   }
 
   async getDelivery(id: string) {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id },
       include: {
         user: { select: USER_SELECT },
@@ -177,7 +177,7 @@ export class AdminService {
   /** Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent
    * via the `admin-refund:<id>` key; marks the Payment REFUNDED for bookkeeping. */
   async refund(deliveryId: string, amount?: number) {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { userId: true, estimatedPrice: true },
     });

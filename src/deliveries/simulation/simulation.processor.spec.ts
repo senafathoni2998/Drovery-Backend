@@ -14,6 +14,8 @@ describe('SimulationProcessor', () => {
   let simulationService: { startSimulation: jest.Mock };
 
   const coords = { fromLat: -6.9, fromLng: 107.6, toLat: -6.92, toLng: 107.62 };
+  // Parent createdAt stamped on every job (deliveries is partitioned).
+  const DCA = '2026-06-01T00:00:00.000Z';
 
   beforeEach(() => {
     prisma = createMockPrismaService();
@@ -41,7 +43,13 @@ describe('SimulationProcessor', () => {
   const stageJob = (stageIndex: number) =>
     ({
       name: 'stage',
-      data: { deliveryId: 'd-1', userId: 'u-1', coords, stageIndex },
+      data: {
+        deliveryId: 'd-1',
+        deliveryCreatedAt: DCA,
+        userId: 'u-1',
+        coords,
+        stageIndex,
+      },
     }) as any;
 
   it('advances status (atomic monotonic CAS), tracks, notifies and broadcasts', async () => {
@@ -137,10 +145,10 @@ describe('SimulationProcessor', () => {
 
     await processor.process({
       name: 'position',
-      data: { deliveryId: 'd-1', lat: 1, lng: 2 },
+      data: { deliveryId: 'd-1', deliveryCreatedAt: DCA, lat: 1, lng: 2 },
     } as any);
 
-    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', {
+    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', new Date(DCA), {
       droneLat: 1,
       droneLng: 2,
     });
@@ -164,7 +172,12 @@ describe('SimulationProcessor', () => {
     const kickoffJob = () =>
       ({
         name: 'kickoff',
-        data: { deliveryId: 'd-1', userId: 'u-1', coords },
+        data: {
+          deliveryId: 'd-1',
+          deliveryCreatedAt: DCA,
+          userId: 'u-1',
+          coords,
+        },
       }) as any;
 
     it('starts the simulation then flips SCHEDULED → PENDING via the CAS', async () => {
@@ -178,6 +191,7 @@ describe('SimulationProcessor', () => {
       // Enqueue happens BEFORE the status flip (so a retry can recover).
       expect(simulationService.startSimulation).toHaveBeenCalledWith(
         'd-1',
+        new Date(DCA),
         'u-1',
         coords,
       );

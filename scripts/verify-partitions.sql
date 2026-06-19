@@ -95,6 +95,48 @@ BEGIN
   END IF;
   RAISE NOTICE 'OK 5: drop_old removed % old child(ren) incl. %, DEFAULT preserved', v_dropped, v_expected;
 
+  -- ── deliveries (delivery-graph Phase 1) ───────────────────────────────────────
+  -- 6. deliveries is partitioned + has a DEFAULT; tracking_id_registry is plain.
+  IF (SELECT relkind FROM pg_class WHERE relname = 'deliveries') <> 'p' THEN
+    RAISE EXCEPTION 'FAIL 6: deliveries is not partitioned';
+  END IF;
+  IF to_regclass('public.deliveries_default') IS NULL THEN
+    RAISE EXCEPTION 'FAIL 6: no deliveries DEFAULT partition';
+  END IF;
+  IF (SELECT relkind FROM pg_class WHERE relname = 'tracking_id_registry') <> 'r' THEN
+    RAISE EXCEPTION 'FAIL 6: tracking_id_registry should be a plain table';
+  END IF;
+  RAISE NOTICE 'OK 6: deliveries RANGE-partitioned + DEFAULT; registry is plain';
+
+  -- 7. A delivery routes to its month child; a child + registry row use the composite
+  --    FK; deleting the delivery cascades them; and a duplicate trackingId is rejected.
+  v_id := gen_random_uuid()::text; -- now() is the txn timestamp (stable across statements)
+  INSERT INTO deliveries ("id","trackingId","userId","fromAddress","toAddress","receiver",
+    "packages","packageSize","packageWeight","packageTypes","pickupDate","pickupTime",
+    "estimatedPrice","createdAt","updatedAt")
+    VALUES (v_id,'VERIFYAA',v_user,'A','B','R','box','S',1,'{}',now(),'10:00 AM',10,now(),now());
+  INSERT INTO tracking_id_registry ("trackingId","deliveryId","deliveryCreatedAt") VALUES ('VERIFYAA', v_id, now());
+  INSERT INTO payments ("id","deliveryId","deliveryCreatedAt","amount") VALUES (gen_random_uuid()::text, v_id, now(), 10);
+  SELECT tableoid::regclass INTO v_loc FROM deliveries WHERE id = v_id;
+  v_expected := 'deliveries_y' || to_char(now(), 'YYYY') || 'm' || to_char(now(), 'MM');
+  IF v_loc::text <> v_expected THEN
+    RAISE EXCEPTION 'FAIL 7a: delivery in % (expected %)', v_loc, v_expected;
+  END IF;
+  -- duplicate trackingId (valid deliveryId so only the registry PK conflicts) → rejected.
+  BEGIN
+    INSERT INTO tracking_id_registry ("trackingId","deliveryId","deliveryCreatedAt") VALUES ('VERIFYAA', v_id, now());
+    RAISE EXCEPTION 'FAIL 7b: duplicate trackingId was NOT rejected';
+  EXCEPTION WHEN unique_violation THEN NULL; -- expected
+  END;
+  -- composite-FK ON DELETE CASCADE (delete by id alone — scans partitions, but the
+  -- stored timestamp(3) createdAt won't equal full-precision now(), so don't gate on it).
+  DELETE FROM deliveries WHERE "id" = v_id;
+  SELECT count(*) INTO v_default FROM payments WHERE "deliveryId" = v_id;
+  IF v_default <> 0 THEN RAISE EXCEPTION 'FAIL 7c: payment child not cascaded (% left)', v_default; END IF;
+  SELECT count(*) INTO v_default FROM tracking_id_registry WHERE "deliveryId" = v_id;
+  IF v_default <> 0 THEN RAISE EXCEPTION 'FAIL 7c: registry row not cascaded'; END IF;
+  RAISE NOTICE 'OK 7: delivery routed to %, trackingId dup rejected, composite-FK cascade clean', v_expected;
+
   RAISE NOTICE 'ALL PARTITION CHECKS PASSED';
 END $$;
 

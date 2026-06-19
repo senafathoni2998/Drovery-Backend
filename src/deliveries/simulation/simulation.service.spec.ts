@@ -29,7 +29,7 @@ describe('SimulationService', () => {
 
   describe('startSimulation', () => {
     it('enqueues a delayed job per stage plus the position ticks', async () => {
-      await service.startSimulation('d-1', 'u-1', {
+      await service.startSimulation('d-1', new Date(), 'u-1', {
         fromLat: -6.9,
         fromLng: 107.6,
         toLat: -6.92,
@@ -50,7 +50,7 @@ describe('SimulationService', () => {
     });
 
     it('falls back to default coords when none are provided', async () => {
-      await service.startSimulation('d-2', 'u-1');
+      await service.startSimulation('d-2', new Date(), 'u-1');
       expect(queue.addBulk).toHaveBeenCalledTimes(1);
     });
   });
@@ -58,7 +58,13 @@ describe('SimulationService', () => {
   describe('scheduleKickoff', () => {
     it('enqueues a single delayed kickoff job at the scheduled instant', async () => {
       const scheduledFor = new Date(Date.now() + 3_600_000); // +1h
-      await service.scheduleKickoff('d-9', 'u-1', undefined, scheduledFor);
+      await service.scheduleKickoff(
+        'd-9',
+        new Date(),
+        'u-1',
+        undefined,
+        scheduledFor,
+      );
 
       expect(queue.add).toHaveBeenCalledTimes(1);
       const [name, data, opts] = queue.add.mock.calls[0];
@@ -73,6 +79,7 @@ describe('SimulationService', () => {
     it('clamps a past instant to a zero delay (fires immediately)', async () => {
       await service.scheduleKickoff(
         'd-10',
+        new Date(),
         'u-1',
         undefined,
         new Date(Date.now() - 5000),

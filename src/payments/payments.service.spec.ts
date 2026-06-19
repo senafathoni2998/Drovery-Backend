@@ -219,7 +219,11 @@ describe('PaymentsService', () => {
         status: 'COMPLETED',
       });
 
-      const result = await service.createDeliveryPayment('d-1', 18);
+      const result = await service.createDeliveryPayment(
+        'd-1',
+        new Date('2026-06-01T00:00:00.000Z'),
+        18,
+      );
 
       expect(stripe.createPaymentIntent).toHaveBeenCalledWith({
         amount: 1800, // dollars → cents
@@ -242,7 +246,11 @@ describe('PaymentsService', () => {
     it('is idempotent — returns the existing payment without re-charging', async () => {
       prisma.payment.findUnique.mockResolvedValue({ id: 'pay-existing' });
 
-      const result = await service.createDeliveryPayment('d-1', 18);
+      const result = await service.createDeliveryPayment(
+        'd-1',
+        new Date('2026-06-01T00:00:00.000Z'),
+        18,
+      );
 
       expect(stripe.createPaymentIntent).not.toHaveBeenCalled();
       expect(prisma.payment.create).not.toHaveBeenCalled();

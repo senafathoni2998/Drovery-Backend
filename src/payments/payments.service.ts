@@ -128,7 +128,11 @@ export class PaymentsService {
    * Idempotent per delivery (the Payment.deliveryId is unique), so retries and
    * re-creates don't double-charge.
    */
-  async createDeliveryPayment(deliveryId: string, amount: number) {
+  async createDeliveryPayment(
+    deliveryId: string,
+    deliveryCreatedAt: Date,
+    amount: number,
+  ) {
     const existing = await this.prisma.payment.findUnique({
       where: { deliveryId },
     });
@@ -143,6 +147,7 @@ export class PaymentsService {
     const payment = await this.prisma.payment.create({
       data: {
         deliveryId,
+        deliveryCreatedAt,
         stripePaymentIntentId: intent.id,
         amount,
         currency: intent.currency,

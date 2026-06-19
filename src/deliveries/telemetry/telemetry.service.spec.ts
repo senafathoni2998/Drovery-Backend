@@ -19,6 +19,7 @@ describe('TelemetryService', () => {
 
   const liveDelivery = (status: DeliveryStatus, overrides = {}) => ({
     id: 'd-1',
+    createdAt: new Date('2026-06-01T00:00:00.000Z'),
     status,
     trackingSource: 'LIVE',
     assignedDroneId: 'drone-1',
@@ -65,6 +66,7 @@ describe('TelemetryService', () => {
     expect(cas.data).toEqual({ status: 'DRONE_ASSIGNED' });
     expect(tracking.updateTracking).toHaveBeenCalledWith(
       'd-1',
+      expect.any(Date),
       expect.objectContaining({ droneLat: -6.9, droneLng: 107.6 }),
     );
     expect(publisher.publishUpdate).toHaveBeenCalledWith(
@@ -89,6 +91,7 @@ describe('TelemetryService', () => {
     // Same catalog the sim uses → identical Indonesian label across LIVE/SIMULATED.
     expect(tracking.updateTracking).toHaveBeenCalledWith(
       'd-1',
+      expect.any(Date),
       expect.objectContaining({ droneStatus: 'Drone ditugaskan' }),
     );
     expect(publisher.publishUpdate).toHaveBeenCalledWith(
@@ -112,6 +115,7 @@ describe('TelemetryService', () => {
 
     expect(tracking.updateTracking).toHaveBeenCalledWith(
       'd-1',
+      expect.any(Date),
       expect.objectContaining({ droneStatus: 'Custom gateway status' }),
     );
   });
@@ -237,6 +241,7 @@ describe('TelemetryService', () => {
     expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
     expect(tracking.updateTracking).toHaveBeenCalledWith(
       'd-1',
+      expect.any(Date),
       expect.objectContaining({ droneLat: -6.91, droneLng: 107.61 }),
     );
     const published = publisher.publishUpdate.mock.calls[0][0];
@@ -260,7 +265,11 @@ describe('TelemetryService', () => {
     // but liveness IS bumped (empty update → @updatedAt advances, no marker move)
     // because the drone is still transmitting — so the watchdog won't false-reap it.
     expect(res.status).toBe('DRONE_ASSIGNED');
-    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', {});
+    expect(tracking.updateTracking).toHaveBeenCalledWith(
+      'd-1',
+      expect.any(Date),
+      {},
+    );
     const published = publisher.publishUpdate.mock.calls[0][0];
     expect(published.status).toBe('DRONE_ASSIGNED');
     expect(published.droneLat).toBeUndefined();
@@ -278,7 +287,11 @@ describe('TelemetryService', () => {
 
     // Liveness touch only: empty update bumps tracking.updatedAt, no coords written,
     // nothing published (no usable position, no status change).
-    expect(tracking.updateTracking).toHaveBeenCalledWith('d-1', {});
+    expect(tracking.updateTracking).toHaveBeenCalledWith(
+      'd-1',
+      expect.any(Date),
+      {},
+    );
     expect(publisher.publishUpdate).not.toHaveBeenCalled();
     expect(res.applied).toBe(false);
   });
@@ -314,6 +327,7 @@ describe('TelemetryService', () => {
 
     expect(tracking.updateTracking).toHaveBeenCalledWith(
       'd-1',
+      expect.any(Date),
       expect.objectContaining({ eta: undefined }),
     );
   });
@@ -329,7 +343,7 @@ describe('TelemetryService', () => {
       droneStatus: 'x'.repeat(500),
     });
 
-    const written = tracking.updateTracking.mock.calls[0][1];
+    const written = tracking.updateTracking.mock.calls[0][2];
     expect(written.droneStatus.length).toBe(120);
   });
 
@@ -477,6 +491,7 @@ describe('TelemetryService', () => {
       // frozen and the marker would never reach base).
       expect(tracking.updateTracking).toHaveBeenCalledWith(
         'd-1',
+        expect.any(Date),
         expect.objectContaining({ droneLat: -6.903, droneLng: 107.615 }),
       );
     });

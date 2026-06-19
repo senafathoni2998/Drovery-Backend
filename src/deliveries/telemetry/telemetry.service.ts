@@ -81,10 +81,11 @@ export class TelemetryService {
       );
     }
 
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: {
         id: true,
+        createdAt: true,
         status: true,
         trackingSource: true,
         assignedDroneId: true,
@@ -115,7 +116,13 @@ export class TelemetryService {
     // conditional CAS + refund/cleanup + comms), NOT the monotonic forward CAS.
     // The LIVE-only + ownership guards above already applied to this frame.
     if (phase && isExceptionPhase(phase)) {
-      return this.ingestException(deliveryId, phase, msg, positionValid);
+      return this.ingestException(
+        deliveryId,
+        delivery.createdAt,
+        phase,
+        msg,
+        positionValid,
+      );
     }
 
     // ── Status: monotonic, forward-only CAS (identical to handleStage). A late/
@@ -153,7 +160,7 @@ export class TelemetryService {
         (!phaseWasStale && !this.isTerminalForPosition(delivery.status));
       if (positionAllowed) {
         await this.safe(() =>
-          this.trackingService.updateTracking(deliveryId, {
+          this.trackingService.updateTracking(deliveryId, delivery.createdAt, {
             droneLat: lat,
             droneLng: lng,
             droneStatus: this.resolveDroneStatus(droneStatus, phase, locale),
@@ -173,7 +180,7 @@ export class TelemetryService {
       // undefined → @updatedAt advances, last good position preserved) so the
       // stuck-delivery watchdog reaps on genuine comms-loss, not a faulting GPS.
       await this.safe(() =>
-        this.trackingService.updateTracking(deliveryId, {}),
+        this.trackingService.updateTracking(deliveryId, delivery.createdAt, {}),
       );
     }
 
@@ -207,6 +214,7 @@ export class TelemetryService {
    */
   private async ingestException(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     phase: ExceptionPhase,
     msg: TelemetryMessage,
     positionValid: boolean,
@@ -235,7 +243,7 @@ export class TelemetryService {
     // so no later frame can correct it), and the RETURNING un-freeze leg.
     if (applied && positionValid) {
       await this.safe(() =>
-        this.trackingService.updateTracking(deliveryId, {
+        this.trackingService.updateTracking(deliveryId, deliveryCreatedAt, {
           droneLat: msg.lat,
           droneLng: msg.lng,
           // Exception droneStatus is localized by DeliveriesService.announceException;

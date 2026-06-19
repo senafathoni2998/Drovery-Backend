@@ -88,16 +88,22 @@ export class SimulationProcessor extends WorkerHost {
    */
   private async handleKickoff({
     deliveryId,
+    deliveryCreatedAt,
     userId,
     coords,
   }: KickoffJobData): Promise<void> {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { status: true },
     });
     if (!delivery || delivery.status !== DeliveryStatus.SCHEDULED) return;
 
-    await this.simulationService.startSimulation(deliveryId, userId, coords);
+    await this.simulationService.startSimulation(
+      deliveryId,
+      new Date(deliveryCreatedAt),
+      userId,
+      coords,
+    );
 
     const { count } = await this.prisma.delivery.updateMany({
       where: { id: deliveryId, status: DeliveryStatus.SCHEDULED },
@@ -112,6 +118,7 @@ export class SimulationProcessor extends WorkerHost {
 
   private async handleStage({
     deliveryId,
+    deliveryCreatedAt,
     userId,
     coords,
     stageIndex,
@@ -119,7 +126,7 @@ export class SimulationProcessor extends WorkerHost {
     const stage = STAGES[stageIndex];
     if (!stage) return;
 
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
     });
     if (!delivery) return;
@@ -157,15 +164,19 @@ export class SimulationProcessor extends WorkerHost {
     // Side effects are best-effort: a transient failure must not fail the
     // already-applied transition (which would skip on retry via the CAS above).
     await this.safe(() =>
-      this.trackingService.updateTracking(deliveryId, {
-        droneLat: dronePos?.lat,
-        droneLng: dronePos?.lng,
-        droneStatus,
-        eta:
-          stage.status === DeliveryStatus.AWAITING_HANDOFF
-            ? undefined
-            : new Date(Date.now() + 60_000),
-      }),
+      this.trackingService.updateTracking(
+        deliveryId,
+        new Date(deliveryCreatedAt),
+        {
+          droneLat: dronePos?.lat,
+          droneLng: dronePos?.lng,
+          droneStatus,
+          eta:
+            stage.status === DeliveryStatus.AWAITING_HANDOFF
+              ? undefined
+              : new Date(Date.now() + 60_000),
+        },
+      ),
     );
 
     await this.safe(() =>
@@ -205,10 +216,11 @@ export class SimulationProcessor extends WorkerHost {
 
   private async handlePosition({
     deliveryId,
+    deliveryCreatedAt,
     lat,
     lng,
   }: PositionJobData): Promise<void> {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { status: true },
     });
@@ -216,10 +228,14 @@ export class SimulationProcessor extends WorkerHost {
       return;
     }
 
-    await this.trackingService.updateTracking(deliveryId, {
-      droneLat: lat,
-      droneLng: lng,
-    });
+    await this.trackingService.updateTracking(
+      deliveryId,
+      new Date(deliveryCreatedAt),
+      {
+        droneLat: lat,
+        droneLng: lng,
+      },
+    );
     await this.trackingPublisher.publishUpdate({
       deliveryId,
       droneLat: lat,

@@ -34,6 +34,7 @@ export class TrackingService {
    */
   async updateTracking(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     data: {
       droneLat?: number;
       droneLng?: number;
@@ -45,6 +46,7 @@ export class TrackingService {
       where: { deliveryId },
       create: {
         deliveryId,
+        deliveryCreatedAt,
         droneLat: data.droneLat,
         droneLng: data.droneLng,
         droneStatus: data.droneStatus,

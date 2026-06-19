@@ -42,10 +42,14 @@ export class SimulationService {
 
   async startSimulation(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     userId: string,
     coords?: Partial<DeliveryCoords>,
   ): Promise<void> {
     const c = resolveCoords(coords);
+    // Stamp the parent's createdAt onto every job so the worker can write the
+    // composite-FK child rows (deliveries is partitioned) without an extra lookup.
+    const dca = deliveryCreatedAt.toISOString();
 
     // injectTraceCarrier stamps the active trace context onto the job data (a
     // no-op pass-through when tracing is off) so the worker continues this trace.
@@ -53,6 +57,7 @@ export class SimulationService {
       name: STAGE_JOB,
       data: injectTraceCarrier({
         deliveryId,
+        deliveryCreatedAt: dca,
         userId,
         coords: c,
         stageIndex: i,
@@ -66,7 +71,12 @@ export class SimulationService {
 
     const positionJobs = buildPositionTicks(c).map((tick, j) => ({
       name: POSITION_JOB,
-      data: injectTraceCarrier({ deliveryId, lat: tick.lat, lng: tick.lng }),
+      data: injectTraceCarrier({
+        deliveryId,
+        deliveryCreatedAt: dca,
+        lat: tick.lat,
+        lng: tick.lng,
+      }),
       opts: { ...JOB_OPTS, delay: tick.delay, jobId: `${deliveryId}:pos:${j}` },
     }));
 
@@ -88,6 +98,7 @@ export class SimulationService {
    */
   async scheduleKickoff(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     userId: string,
     coords: Partial<DeliveryCoords> | undefined,
     scheduledFor: Date,
@@ -98,7 +109,12 @@ export class SimulationService {
     await this.withTimeout(
       this.queue.add(
         KICKOFF_JOB,
-        injectTraceCarrier({ deliveryId, userId, coords: c }),
+        injectTraceCarrier({
+          deliveryId,
+          deliveryCreatedAt: deliveryCreatedAt.toISOString(),
+          userId,
+          coords: c,
+        }),
         // NOTE: queue.add() rejects a custom jobId containing ':' ("Custom Id
         // cannot contain :"), so the kickoff id uses a '-' separator (the
         // stage/pos ids use ':' but go through addBulk, which tolerates it).

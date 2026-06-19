@@ -62,10 +62,11 @@ export class DroneCommandService {
     deliveryId: string,
     dto: IssueCommandDto,
   ): Promise<DroneCommand> {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: {
         id: true,
+        createdAt: true,
         status: true,
         trackingSource: true,
         assignedDroneId: true,
@@ -104,6 +105,7 @@ export class DroneCommandService {
       const command = await this.prisma.droneCommand.create({
         data: {
           deliveryId,
+          deliveryCreatedAt: delivery.createdAt,
           droneId: delivery.assignedDroneId,
           type: dto.type,
           reason,
@@ -132,7 +134,7 @@ export class DroneCommandService {
 
   /** Admin audit history for a delivery (newest first). */
   async listForDelivery(deliveryId: string): Promise<DroneCommand[]> {
-    const exists = await this.prisma.delivery.findUnique({
+    const exists = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { id: true },
     });

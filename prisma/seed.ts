@@ -134,12 +134,23 @@ async function main() {
   ];
 
   for (const delivery of deliveries) {
-    await prisma.delivery.upsert({
+    // `deliveries` is partitioned (composite PK) so trackingId is no longer a
+    // unique-where; idempotent find-or-create, and the trackingId-registry row
+    // (which the service create() writes) must be created here too since the seed
+    // bypasses the service.
+    const existing = await prisma.delivery.findFirst({
       where: { trackingId: delivery.trackingId },
-      update: {},
-      create: {
-        ...delivery,
-        userId: user.id,
+      select: { id: true },
+    });
+    if (existing) continue;
+    const created = await prisma.delivery.create({
+      data: { ...delivery, userId: user.id },
+    });
+    await prisma.trackingIdRegistry.create({
+      data: {
+        trackingId: created.trackingId,
+        deliveryId: created.id,
+        deliveryCreatedAt: created.createdAt,
       },
     });
   }

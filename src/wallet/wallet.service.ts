@@ -168,7 +168,7 @@ export class WalletService {
    * Best-effort + idempotent via `exception-refund:<id>`. No-op for a $0 charge.
    */
   async refundChargeToWallet(deliveryId: string): Promise<void> {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { userId: true, estimatedPrice: true },
     });

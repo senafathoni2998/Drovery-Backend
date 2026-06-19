@@ -9,8 +9,22 @@ contract — read it before touching a partitioned table or the migration workfl
 | Table | Strategy | Key | Children |
 |-------|----------|-----|----------|
 | `notifications` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `notifications_yYYYYmMM` + a permanent `notifications_default` |
+| `deliveries` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `deliveries_yYYYYmMM` + `deliveries_default` |
 
-Migration: `prisma/migrations/20260616120000_partition_notifications/migration.sql`.
+Migrations: `20260616120000_partition_notifications`, `20260619140000_partition_deliveries`.
+
+**`deliveries` (delivery-graph Phase 1) is SHIPPED.** Because the parent PK is composite,
+all 6 children (`delivery_tracking`, `payments`, `proof_of_delivery`, `delivery_ratings`,
+`workflow_step_completions`, `drone_commands`) gained a `deliveryCreatedAt` column + a
+**composite FK** to `deliveries(id, "createdAt")` — but they stay **plain (non-partitioned)**.
+Global `trackingId` uniqueness lives in the non-partitioned **`tracking_id_registry`**
+(written in `create()`'s tx; a dup throws P2002 → the existing collision-retry). `create()`
+is now always-transactional; `findByTrackingId` resolves registry → composite-PK fetch;
+~22 by-id `findUnique` reads became `findFirst`; child writes thread `deliveryCreatedAt`
+(via the BullMQ job payloads for the worker path). **Phase 2 (deferred):** co-partition the
+two N:1 children (`workflow_step_completions`, `drone_commands`) by `deliveryCreatedAt` —
+needs the `partition_*` routines generalized to a per-table partition column. The 4 1:1
+children stay plain indefinitely (bounded by delivery count, point-lookup reads).
 
 ## Prisma rules (do not violate)
 

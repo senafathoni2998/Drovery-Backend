@@ -19,6 +19,7 @@ export class ProofService {
    */
   async createAutoProof(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     opts: { lat?: number; lng?: number; recipientName?: string | null },
   ) {
     const existing = await this.prisma.proofOfDelivery.findUnique({
@@ -31,6 +32,7 @@ export class ProofService {
     const proof = await this.prisma.proofOfDelivery.create({
       data: {
         deliveryId,
+        deliveryCreatedAt,
         photoUrl,
         lat: opts.lat ?? null,
         lng: opts.lng ?? null,
@@ -65,7 +67,7 @@ export class ProofService {
     return this.prisma.proofOfDelivery.upsert({
       where: { deliveryId },
       update: data,
-      create: { deliveryId, ...data },
+      create: { deliveryId, deliveryCreatedAt: delivery.createdAt, ...data },
     });
   }
 
@@ -84,7 +86,7 @@ export class ProofService {
   }
 
   private async requireOwnedDelivery(userId: string, deliveryId: string) {
-    const delivery = await this.prisma.delivery.findUnique({
+    const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
     });
     if (!delivery || delivery.userId !== userId) {

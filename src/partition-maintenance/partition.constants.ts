@@ -27,4 +27,7 @@ export const PARTITION_RETAIN_MONTHS =
 // Tables under native RANGE("createdAt") partition management. Extend as the
 // delivery-graph partitions land (see prisma/PARTITIONING.md). The plpgsql
 // partition_* routines are table-parameterized, so adding a table here is enough.
-export const PARTITIONED_TABLES: readonly string[] = ['notifications'];
+export const PARTITIONED_TABLES: readonly string[] = [
+  'notifications',
+  'deliveries',
+];

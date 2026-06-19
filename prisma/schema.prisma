@@ -197,9 +197,18 @@ enum TrackingSource {
   LIVE
 }
 
+// PARTITIONED TABLE — `deliveries` is PostgreSQL RANGE(createdAt)-partitioned by month
+// (migration 20260619xxxxxx_partition_deliveries; child DDL owned by the partition_*
+// routines + the partition-maintenance scheduler, NOT Prisma). The PK is composite
+// `@@id([id, createdAt])` (id-first). `prisma db push`/`db pull` are FORBIDDEN here
+// (migrations only). trackingId is no longer a single-column unique (a partitioned table
+// can't enforce it) — global uniqueness lives in the non-partitioned TrackingIdRegistry,
+// so `findUnique/update/delete({ where: { id } })` is gone (use findFirst / the id_createdAt
+// composite / updateMany). Every child relation references the composite PK via a
+// `deliveryCreatedAt` column. See prisma/PARTITIONING.md.
 model Delivery {
-  id         String @id @default(uuid())
-  trackingId String @unique
+  id         String @default(uuid())
+  trackingId String
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -247,17 +256,36 @@ model Delivery {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tracking        DeliveryTracking?
-  workflowSteps   WorkflowStepCompletion[]
-  payment         Payment?
-  proofOfDelivery ProofOfDelivery?
-  rating          DeliveryRating?
-  commands        DroneCommand[]
+  tracking         DeliveryTracking?
+  workflowSteps    WorkflowStepCompletion[]
+  payment          Payment?
+  proofOfDelivery  ProofOfDelivery?
+  rating           DeliveryRating?
+  commands         DroneCommand[]
+  trackingRegistry TrackingIdRegistry?
 
+  @@id([id, createdAt])
   @@index([userId])
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
+}
+
+// Global uniqueness for the public `trackingId` handle. A partitioned `deliveries`
+// can't enforce UNIQUE(trackingId) (it omits the partition key), so the registry —
+// a small NON-partitioned table — holds it: create() inserts here in the same tx, so a
+// duplicate 8-char slice throws P2002 on this PK and the existing collision-retry fires;
+// findByTrackingId resolves trackingId → (deliveryId, deliveryCreatedAt) → composite-PK fetch.
+model TrackingIdRegistry {
+  trackingId        String   @id
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
+  createdAt         DateTime @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+
+  @@unique([deliveryId, deliveryCreatedAt])
+  @@map("tracking_id_registry")
 }
 
 // Backend -> drone command OUTBOX. An ADMIN issues a PENDING command; the (mock)
@@ -270,8 +298,9 @@ model Delivery {
 // can't express the WHERE) so two admins racing collapse to a DB-level 409.
 model DroneCommand {
   id         String @id @default(uuid())
-  deliveryId String
-  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  deliveryId        String
+  deliveryCreatedAt DateTime
+  delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   // Denormalized from delivery.assignedDroneId at issue; the poll/ack ownership
   // second-factor (mirrors telemetry's assignedDroneId === droneId check).
@@ -368,10 +397,11 @@ model RecurringDelivery {
 
 model DeliveryRating {
   id         String   @id @default(uuid())
-  deliveryId String   @unique
-  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
+  delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   stars   Int // 1–5
   comment String?
@@ -379,6 +409,7 @@ model DeliveryRating {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@index([userId])
   @@map("delivery_ratings")
 }
@@ -387,9 +418,10 @@ model DeliveryRating {
 
 model ProofOfDelivery {
   id         String @id @default(uuid())
-  deliveryId String @unique
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   photoUrl      String
   recipientName String?
@@ -399,6 +431,7 @@ model ProofOfDelivery {
 
   capturedAt DateTime @default(now())
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@map("proof_of_delivery")
 }
 
@@ -406,9 +439,10 @@ model ProofOfDelivery {
 
 model DeliveryTracking {
   id         String @id @default(uuid())
-  deliveryId String @unique
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   droneLat    Float?
   droneLng    Float?
@@ -418,6 +452,7 @@ model DeliveryTracking {
 
   updatedAt DateTime @updatedAt
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@map("delivery_tracking")
 }
 
@@ -425,11 +460,12 @@ model DeliveryTracking {
 
 model WorkflowStepCompletion {
   id         String @id @default(uuid())
-  deliveryId String
-  workflowId String
-  stepId     String
+  deliveryId        String
+  deliveryCreatedAt DateTime
+  workflowId        String
+  stepId            String
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   completedAt DateTime @default(now())
 
@@ -468,9 +504,10 @@ model PaymentMethod {
 
 model Payment {
   id         String @id @default(uuid())
-  deliveryId String @unique
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   stripePaymentIntentId String?
   amount                Float
@@ -479,6 +516,7 @@ model Payment {
 
   createdAt DateTime @default(now())
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@map("payments")
 }
 

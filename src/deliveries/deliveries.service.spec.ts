@@ -224,6 +224,7 @@ describe('DeliveriesService', () => {
       // charges the delivery via PaymentsService for the priced total
       expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         18,
       );
     });
@@ -235,6 +236,7 @@ describe('DeliveriesService', () => {
 
       expect(simulationService.startSimulation).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         userId,
         {
           fromLat: createDto.fromLat,
@@ -270,6 +272,7 @@ describe('DeliveriesService', () => {
       expect(createCall.data.toLng).toBe(4.4);
       expect(simulationService.startSimulation).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         userId,
         { fromLat: 1.1, fromLng: 2.2, toLat: 3.3, toLng: 4.4 },
       );
@@ -367,6 +370,7 @@ describe('DeliveriesService', () => {
       );
       expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         16.2,
       );
     });
@@ -394,6 +398,7 @@ describe('DeliveriesService', () => {
       expect(promoService.redeemWithinTx).not.toHaveBeenCalled();
       expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         18,
       );
     });
@@ -421,6 +426,7 @@ describe('DeliveriesService', () => {
       );
       expect(paymentsService.createDeliveryPayment).toHaveBeenCalledWith(
         mockDelivery.id,
+        expect.any(Date),
         8,
       );
     });
@@ -663,6 +669,10 @@ describe('DeliveriesService', () => {
 
   describe('findByTrackingId', () => {
     it('should return the delivery by tracking ID for its owner', async () => {
+      prisma.trackingIdRegistry.findUnique.mockResolvedValue({
+        deliveryId: mockDelivery.id,
+        deliveryCreatedAt: mockDelivery.createdAt,
+      });
       prisma.delivery.findUnique.mockResolvedValue(mockDelivery);
 
       const result = await service.findByTrackingId(userId, 'AAAAAAAA');
@@ -679,6 +689,10 @@ describe('DeliveriesService', () => {
     });
 
     it('should throw NotFoundException if it belongs to another user (no leak)', async () => {
+      prisma.trackingIdRegistry.findUnique.mockResolvedValue({
+        deliveryId: mockDelivery.id,
+        deliveryCreatedAt: mockDelivery.createdAt,
+      });
       prisma.delivery.findUnique.mockResolvedValue({
         ...mockDelivery,
         userId: 'other-user',
@@ -857,11 +871,15 @@ describe('DeliveriesService', () => {
       const upd = prisma.delivery.updateMany.mock.calls[0][0];
       expect(upd.where.status).toBe(DeliveryStatus.AWAITING_HANDOFF);
       expect(upd.data.status).toBe(DeliveryStatus.DELIVERED);
-      expect(proofService.createAutoProof).toHaveBeenCalledWith('delivery-1', {
-        lat: -6.922,
-        lng: 107.607,
-        recipientName: 'Jane Doe',
-      });
+      expect(proofService.createAutoProof).toHaveBeenCalledWith(
+        'delivery-1',
+        expect.any(Date),
+        {
+          lat: -6.922,
+          lng: 107.607,
+          recipientName: 'Jane Doe',
+        },
+      );
     });
 
     it('rejects a wrong code with 401 and atomically increments the counter', async () => {

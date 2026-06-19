@@ -26,6 +26,7 @@ type MockPrismaService = {
     | 'referral'
     | 'favorite'
     | 'droneCommand'
+    | 'trackingIdRegistry'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -90,9 +91,18 @@ export function createMockPrismaService(): MockPrismaService {
     referral: createModelMock(),
     favorite: createModelMock(),
     droneCommand: createModelMock(),
+    trackingIdRegistry: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
   };
+  // `deliveries` is partitioned (composite PK), so the service reads it via findFirst
+  // (id alone is no longer a unique-where). Point delivery.findFirst at the SAME jest.fn
+  // as delivery.findUnique so existing specs that stub `delivery.findUnique` keep working
+  // (nothing stubs delivery.findFirst separately). The composite-PK findByTrackingId fetch
+  // still calls delivery.findUnique → same fn.
+  (mock.delivery as ReturnType<typeof createModelMock>).findFirst = (
+    mock.delivery as ReturnType<typeof createModelMock>
+  ).findUnique;
   // Supports both forms: array (Promise.all) AND the interactive callback form,
   // to which we pass the same mock as the transaction client (so tx.model.* works).
   mock.$transaction = jest.fn((args) =>
