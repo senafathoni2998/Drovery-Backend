@@ -27,6 +27,7 @@ describe('DroneCommandService', () => {
     droneCommandsTotal: { inc: jest.Mock };
     droneCommandTimeToAck: { observe: jest.Mock };
   };
+  let mqtt: { publish: jest.Mock };
   let service: DroneCommandService;
 
   const DRONE = 'drone-1';
@@ -46,10 +47,12 @@ describe('DroneCommandService', () => {
       droneCommandTimeToAck: { observe: jest.fn() },
     };
     prisma.droneCommand.count.mockResolvedValue(0); // under the per-delivery cap
+    mqtt = { publish: jest.fn() };
     service = new DroneCommandService(
       prisma as any,
       deliveries as any,
       metrics as any,
+      mqtt as any,
     );
   });
 
@@ -121,6 +124,34 @@ describe('DroneCommandService', () => {
         type: DroneCommandType.ABORT,
         result: 'issued',
       });
+    });
+
+    it('PUSHES the new command to the drone over MQTT (best-effort)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
+      prisma.droneCommand.create.mockImplementation((args: any) =>
+        Promise.resolve({ id: 'c-1', ...args.data }),
+      );
+      await service.issue('admin-1', 'd-1', {
+        type: DroneCommandType.RETURN_TO_BASE,
+      });
+      expect(mqtt.publish).toHaveBeenCalledWith(
+        'drovery/commands/drone-1',
+        expect.objectContaining({ id: 'c-1', droneId: DRONE }),
+      );
+    });
+
+    it('a throwing MQTT publish does NOT fail issue() (fail-open)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
+      prisma.droneCommand.create.mockImplementation((args: any) =>
+        Promise.resolve({ id: 'c-1', ...args.data }),
+      );
+      mqtt.publish.mockImplementation(() => {
+        throw new Error('broker down');
+      });
+      const cmd = await service.issue('admin-1', 'd-1', {
+        type: DroneCommandType.ABORT,
+      });
+      expect((cmd as any).id).toBe('c-1'); // issue still succeeds
     });
 
     it('defaults RETURN_TO_BASE reason to WEATHER_ABORT and honors an explicit override', async () => {

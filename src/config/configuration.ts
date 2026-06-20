@@ -84,4 +84,22 @@ export default () => ({
     placeholderBase:
       process.env.POD_PLACEHOLDER_BASE ?? 'https://picsum.photos/seed',
   },
+
+  mqtt: {
+    // Unset → MqttService is inert (MOCK mode); the HTTP /ingest endpoints stay the
+    // active drone↔backend transport. Set to a broker URL (mqtt:// or mqtts://) to enable
+    // the optional push transport ALONGSIDE HTTP (HTTP remains the fallback).
+    url: process.env.MQTT_URL,
+    username: process.env.MQTT_USERNAME,
+    password: process.env.MQTT_PASSWORD,
+    // MQTT5 SHARED SUBSCRIPTIONS ($share/<group>/…) so EXACTLY ONE api replica processes
+    // each ingest frame (no N× duplicate processing across the API tier). Disable
+    // (MQTT_SHARED=false) only for a v3.1.1-only broker — then run a single ingest owner.
+    shared: process.env.MQTT_SHARED !== 'false',
+    shareGroup: process.env.MQTT_SHARE_GROUP ?? 'drovery-ingest',
+    // Cap the outbound publish queue while the broker is unreachable so a long outage
+    // can't OOM (telemetry/command pushes are best-effort; the next frame supersedes).
+    offlineQueueMax: Number(process.env.MQTT_OFFLINE_QUEUE_MAX) || 1000,
+    reconnectMs: Number(process.env.MQTT_RECONNECT_MS) || 5000,
+  },
 });

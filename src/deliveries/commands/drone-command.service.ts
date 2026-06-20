@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import {
   DroneCommand,
   DroneCommandStatus,
@@ -6,6 +6,9 @@ import {
   Prisma,
   TrackingSource,
 } from '@prisma/client';
+
+import { commandTopic } from '../../mqtt/mqtt.constants';
+import { MqttService } from '../../mqtt/mqtt.service';
 
 import {
   AppConflictException,
@@ -51,6 +54,9 @@ export class DroneCommandService {
     private readonly prisma: PrismaService,
     private readonly deliveries: DeliveriesService,
     private readonly metrics: MetricsService,
+    // Optional: present only when MqttModule is wired (it's @Global, but @Optional keeps
+    // the service constructible in unit specs that don't provide it). Inert in MOCK mode.
+    @Optional() private readonly mqtt?: MqttService,
   ) {}
 
   // ── Operator side (ADMIN) ─────────────────────────────────────────────────
@@ -118,6 +124,23 @@ export class DroneCommandService {
       this.logger.log(
         `command ${command.id} ${dto.type} issued by admin ${adminId} for delivery ${deliveryId} (reason ${reason})`,
       );
+      // Best-effort PUSH to the drone over MQTT (a latency win vs the HTTP poll). Fail-open:
+      // the DB outbox row + the HTTP poll remain the durable fallback, and it's a no-op when
+      // MQTT is disabled. Post-commit, outside any transaction; a publish error (or a
+      // throwing client) must never fail an otherwise-successful issue.
+      try {
+        this.mqtt?.publish(commandTopic(command.droneId), {
+          id: command.id,
+          deliveryId: command.deliveryId,
+          droneId: command.droneId,
+          type: command.type,
+          reason: command.reason,
+          expiresAt: command.expiresAt,
+          createdAt: command.createdAt,
+        });
+      } catch (e) {
+        this.logger.warn(`MQTT command push failed: ${(e as Error).message}`);
+      }
       return command;
     } catch (e) {
       // The partial-unique index (one open command per delivery) → P2002 → 409.

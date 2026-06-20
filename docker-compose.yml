@@ -63,6 +63,22 @@ services:
       timeout: 3s
       retries: 10
 
+  # Optional MQTT push-transport broker. The api tier subscribes (telemetry + command ack);
+  # the HTTP /ingest endpoints stay the fallback. Mosquitto 2 supports MQTT5 shared
+  # subscriptions, so each ingest frame is processed by exactly ONE api replica.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: ['mosquitto', '-c', '/mosquitto/config/mosquitto.conf']
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquittodata:/mosquitto/data
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'mosquitto_pub -h 127.0.0.1 -t healthcheck -m ok || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # One-shot: apply migrations + seed, then exit. Runs DIRECTLY against Postgres
   # (DDL + migration advisory locks bypass the transaction pooler by design).
   migrate:
@@ -86,12 +102,17 @@ services:
       DATABASE_POOL_MAX: 10
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      # Enable the MQTT push transport on the api tier (shared subs → one replica per frame).
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_SHARED: 'true'
       JWT_SECRET: drovery_local_access_secret_a1b2c3d4e5f6
       JWT_REFRESH_SECRET: drovery_local_refresh_secret_f6e5d4c3b2a1
     depends_on:
       redis:
         condition: service_healthy
       pgbouncer:
+        condition: service_healthy
+      mosquitto:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -122,3 +143,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  mosquittodata:

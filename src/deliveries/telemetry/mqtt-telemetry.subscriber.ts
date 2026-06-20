@@ -1,45 +1,32 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 
+import { TELEMETRY_FILTER } from '../../mqtt/mqtt.constants';
+import { MqttService } from '../../mqtt/mqtt.service';
 import { TelemetryMessage } from './telemetry.constants';
 import { TelemetryService } from './telemetry.service';
 
 /**
- * OPTIONAL real-IoT transport, deferred (no broker / no `mqtt` dep is installed).
- * Mirrors the real-or-mock posture of WeatherService: when MQTT_URL is unset it
- * logs a disabled/MOCK notice and is a no-op; the HTTP endpoint remains the
- * testable primary transport. When a broker IS configured for production, wire
- * an mqtt client in onModuleInit to subscribe to `drovery/telemetry/+` and call
- * the SAME handleMessage() below — the safety core (TelemetryService.ingest) is
- * unchanged, so the transport is a drop-in.
+ * OPTIONAL real-IoT telemetry transport. Subscribes `drovery/telemetry/+` via the shared
+ * MqttService and forwards every frame to the SAME safety core as HTTP (TelemetryService.
+ * ingest), so it's a drop-in second producer. Inert when MQTT is disabled (MqttService is
+ * a no-op in MOCK mode) — the HTTP /ingest/telemetry endpoint stays the active transport.
  *
- * handleMessage is the unit-testable seam: it parses + delegates to ingest()
- * without ever opening a broker connection (so the same ingest assertions cover
- * the MQTT path with no broker/hardware).
+ * handleMessage is the unit-testable seam: it parses + delegates to ingest() without ever
+ * opening a broker connection (so the same ingest assertions cover the MQTT path, no broker).
  */
 @Injectable()
 export class MqttTelemetrySubscriber implements OnModuleInit {
   private readonly logger = new Logger(MqttTelemetrySubscriber.name);
 
   constructor(
-    private readonly config: ConfigService,
+    private readonly mqtt: MqttService,
     private readonly telemetry: TelemetryService,
   ) {}
 
   onModuleInit(): void {
-    const url = this.config.get<string>('MQTT_URL');
-    if (!url) {
-      this.logger.log(
-        'MQTT_URL not set — telemetry MQTT subscriber disabled (MOCK mode). HTTP ingest endpoint is the active transport.',
-      );
-      return;
-    }
-    // Deferred: a production broker integration needs the `mqtt` client (an
-    // optional runtime dep) + TLS/mTLS device certs. We do NOT pull the dep or
-    // open a connection here — this remains a documented shell so a reviewer
-    // can't mistake it for a tested live broker integration.
-    this.logger.warn(
-      `MQTT_URL is set (${url}) but the broker client is not installed — live MQTT ingestion is deferred. Install + wire 'mqtt' to enable; HTTP ingest remains active.`,
+    this.mqtt.subscribe(
+      TELEMETRY_FILTER,
+      (raw) => void this.handleMessage(raw),
     );
   }
 

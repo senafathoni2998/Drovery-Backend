@@ -25,6 +25,7 @@ import { TrackingSubscriber } from './tracking/tracking.subscriber';
 import { TrackingService } from './tracking/tracking.service';
 import { DroneAuthGuard } from './telemetry/drone-auth.guard';
 import { MqttTelemetrySubscriber } from './telemetry/mqtt-telemetry.subscriber';
+import { MqttCommandAckSubscriber } from './commands/mqtt-command-ack.subscriber';
 import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryService } from './telemetry/telemetry.service';
 import { CommandController } from './commands/command.controller';
@@ -73,10 +74,16 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     DroneCommandService,
     // The queue consumer (worker / dev), and the WS gateway + subscriber (api / dev).
     ...(RUN_PROCESSOR ? [SimulationProcessor] : []),
-    // The WS gateway + Redis subscriber + the (deferred) MQTT telemetry listener
-    // run wherever HTTP is served — a single ingest owner, not the worker.
+    // The WS gateway + Redis subscriber + the MQTT ingest subscribers (telemetry + command
+    // ack) run wherever HTTP is served — NOT the worker. With MQTT5 shared subscriptions
+    // (default) the broker still delivers each frame to exactly ONE api replica.
     ...(IS_API
-      ? [TrackingGateway, TrackingSubscriber, MqttTelemetrySubscriber]
+      ? [
+          TrackingGateway,
+          TrackingSubscriber,
+          MqttTelemetrySubscriber,
+          MqttCommandAckSubscriber,
+        ]
       : []),
   ],
   exports: [
