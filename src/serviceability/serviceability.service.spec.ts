@@ -66,6 +66,9 @@ describe('ServiceabilityService', () => {
     );
     expect(r.serviceable).toBe(false);
     expect(r.codes).toEqual(['NO_FLY_ZONE']);
+    // The zone name is surfaced as a localization param ({zoneName}), not just baked
+    // into the English reason string.
+    expect(r.params?.zoneName).toBeDefined();
   });
 
   it('holds for a storm (soft, weatherHold) without a hard code', async () => {
@@ -100,6 +103,7 @@ describe('ServiceabilityService', () => {
       107.607,
     );
     expect(r.codes).toEqual(['WEATHER_HOLD']);
+    expect(r.params?.windKph).toBe(47); // surfaced as a localization param
     expect(r.weatherHold).toBe(true);
   });
 
