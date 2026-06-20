@@ -60,6 +60,7 @@ export class ServiceabilityService {
       return this.blocked(
         'NO_FLY_ZONE',
         `Route is restricted near ${zone.name} (no-fly zone).`,
+        { zoneName: zone.name },
       );
     }
 
@@ -79,6 +80,7 @@ export class ServiceabilityService {
           : this.blocked(
               'WEATHER_HOLD',
               `High wind is grounding drones right now (${grounded.windKph} kph).`,
+              { windKph: grounded.windKph },
             );
       }
     } catch (e) {
@@ -94,12 +96,14 @@ export class ServiceabilityService {
   private blocked(
     code: ServiceabilityCode,
     reason: string,
+    params?: Record<string, string | number>,
   ): ServiceabilityResult {
     return {
       serviceable: false,
       reasons: [reason],
       codes: [code],
       weatherHold: code.startsWith('WEATHER'),
+      ...(params ? { params } : {}),
     };
   }
 
