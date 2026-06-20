@@ -27,20 +27,32 @@ Prereq: Docker daemon access (be in the `docker` group — `sudo usermod -aG doc
 then re-login — or prefix the commands with `sudo`). `docker compose config` validates the
 files without the daemon; `up`/`build`/`run` need it.
 
+**One command** (builds, scales, waits for the LB to be healthy, fires k6, all guarded):
+
 ```bash
-# 1. Build + start the scaled stack (detached). Pick the replica counts.
+sudo bash loadtest/run.sh                                   # api=3 worker=3 VUS=50 HOLD=90s
+sudo API=5 WORKER=5 VUS=100 HOLD=120s bash loadtest/run.sh  # heavier
+sudo bash loadtest/down.sh                                  # tear down + wipe volumes
+```
+
+Or the steps by hand:
+
+```bash
+# 1. Build + start the scaled stack (detached).
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
   --build --scale api=3 --scale worker=3
 
-# 2. Fire the load (k6 in a container). Tune peak VUs + durations via env.
+# 2. Fire the load. PASS THE SCALES TO `run` TOO — otherwise `docker compose run`
+#    silently rescales api/worker back to 1 (it ignores the earlier `up --scale`).
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
-  run --rm -e VUS=50 -e RAMP=30s -e HOLD=120s k6
+  run --rm --scale api=3 --scale worker=3 -e VUS=50 -e HOLD=120s k6
 
 # 3. Tear down (and wipe the volumes).
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml down -v
 ```
 
-Knobs (env on the `k6` run): `VUS` (peak virtual users), `RAMP`, `HOLD`, `BASE_URL`.
+Knobs: `VUS` (peak virtual users), `RAMP`, `HOLD`, `BASE_URL`, `LB_PORT` (host port for the
+ad-hoc LB — default 8088).
 
 ## The journey (per virtual user)
 
