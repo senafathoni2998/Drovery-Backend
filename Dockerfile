@@ -46,6 +46,12 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
+# The `migrate` role runs `prisma migrate deploy && prisma db seed`. Prisma 7 reads the SEED
+# COMMAND from prisma.config.ts (not package.json), and that command is `ts-node prisma/seed.ts`
+# — which needs tsconfig.json. Without these two, `prisma db seed` exits 1 (no seed command /
+# ts-node can't compile). They're tiny; copy them so the one-shot migrate+seed actually runs.
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 
 USER nodejs
 EXPOSE 3000
