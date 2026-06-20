@@ -35,31 +35,33 @@
 
 services:
   # ── Compute tiers: the scalable "nodes". limits apply PER REPLICA. ──
+  # CPU is the resource we bound to make a replica a known-size "node". MEMORY is given
+  # GENEROUS headroom, NOT a tight cap — two ways a tight memory budget silently breaks a run:
+  #  - a tight cgroup memory.max OOM-KILLS the container (cpu only throttles); and
+  #  - a low V8 --max-old-space-size CRASH-LOOPS a concurrency-10 worker (OBSERVED: the SIM
+  #    backlog froze at exactly the enqueued count with zero drain — workers never promoted
+  #    delayed jobs because they weren't running).
+  # So we do NOT cap the V8 heap and we leave plenty of room for Node + the separate Prisma
+  # binary query engine. On a memory-CONSTRAINED target node, lower the limit AND add a
+  # proportional NODE_OPTIONS=--max-old-space-size via the service env — deliberately, not by
+  # default. (memory is rarely the scarce resource on a dev box; CPU is.)
   api:
-    # Cap V8's old space WELL below the cgroup memory.max so a heap spike GCs/throws
-    # (recoverable, observable) BEFORE the kernel OOM-kills the container — the Prisma binary
-    # query engine is a SEPARATE ~60-100MB process in the same cgroup, so leave it headroom.
-    # An OOM-killed replica mid-run silently halves a tier and corrupts the per-node number.
-    environment:
-      NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=384}
     deploy:
       resources:
         limits:
           cpus: '${API_CPUS:-0.6}' # each api replica = 0.6 CPU of attributable compute
-          memory: ${API_MEM:-640M}
+          memory: ${API_MEM:-1G}
         reservations:
-          memory: 320M # soft floor so a replica isn't OOM-starved (memory.max kills, cpu only throttles)
+          memory: 384M
 
   worker:
-    environment:
-      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=300}
     deploy:
       resources:
         limits:
           cpus: '${WORKER_CPUS:-0.4}' # each worker replica = 0.4 CPU
-          memory: ${WORKER_MEM:-512M}
+          memory: ${WORKER_MEM:-768M}
         reservations:
-          memory: 256M
+          memory: 384M
 
   # ── Shared tiers: bounded too, so "a shared tier saturated" is a KNOWN budget, not an
   #    unbounded grab. These are the tiers that ultimately cap horizontal scaling. ──
