@@ -1,5 +1,5 @@
 import { Logger, Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -21,6 +21,7 @@ import { MetricsModule } from './metrics/metrics.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
@@ -167,6 +168,12 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    // Global error envelope + boundary localization (DI so it can inject I18nService).
+    // Replaces the `new AllExceptionsFilter()` in main.ts (must not be double-registered).
+    {
+      provide: APP_FILTER,
+      useClass: AllExceptionsFilter,
     },
   ],
 })

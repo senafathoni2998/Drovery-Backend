@@ -94,4 +94,31 @@ export const en: Record<string, string> = {
   'faq.6.question': 'Is my payment information secure?',
   'faq.6.answer':
     'Yes. All card data is encrypted via Stripe. We never store your full card number.',
+
+  // ── Validation (class-validator → boundary-localized; {property} stays the raw field) ──
+  'validation.isString': '{property} must be a string',
+  'validation.isNotEmpty': '{property} is required',
+  'validation.isNumber': '{property} must be a number',
+  'validation.isInt': '{property} must be an integer',
+  'validation.isBoolean': '{property} must be true or false',
+  'validation.isArray': '{property} must be a list',
+  'validation.isEmail': '{property} must be a valid email',
+  'validation.isPositive': '{property} must be a positive number',
+  'validation.isEnum': '{property} must be one of: {values}',
+  'validation.isIn': '{property} must be one of: {values}',
+  'validation.min': '{property} must be at least {min}',
+  'validation.max': '{property} must be at most {max}',
+  'validation.minLength': '{property} must be at least {min} characters',
+  'validation.maxLength': '{property} must be at most {max} characters',
+  'validation.isLength':
+    '{property} must be between {min} and {max} characters',
+  'validation.arrayMinSize': '{property} must contain at least {min} item(s)',
+  'validation.arrayMaxSize': '{property} must contain at most {max} item(s)',
+  'validation.matches': '{property} has an invalid format',
+  'validation.isDateString': '{property} must be a valid date',
+  'validation.isISO8601': '{property} must be a valid ISO 8601 date',
+  'validation.whitelistValidation': '{property} is not an allowed property',
+  'validation.invalid': '{property} is invalid',
+  'validation.code.sixDigit': 'code must be a 6-digit number',
+  'validation.timeOfDay.format': 'timeOfDay must be HH:MM (24-hour)',
 };

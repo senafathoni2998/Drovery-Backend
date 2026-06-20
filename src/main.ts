@@ -14,7 +14,7 @@ import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
-import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { i18nValidationExceptionFactory } from './common/validation/validation-exception.factory';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { setupSwagger } from './common/swagger';
 
@@ -52,18 +52,20 @@ async function bootstrap() {
       : { origin: '*', methods: 'GET,HEAD,PUT,PATCH,POST,DELETE' },
   );
 
-  // Global pipes
+  // Global pipes. The exceptionFactory turns each validation failure into a stable catalog
+  // key (validation.<constraint>) + params; AllExceptionsFilter translates it per request.
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
       transformOptions: { enableImplicitConversion: true },
+      exceptionFactory: i18nValidationExceptionFactory,
     }),
   );
 
-  // Global filters & interceptors
-  app.useGlobalFilters(new AllExceptionsFilter());
+  // AllExceptionsFilter is registered as an APP_FILTER in AppModule (DI — it injects
+  // I18nService). Do NOT also register it here, or it would run twice.
   app.useGlobalInterceptors(new TransformInterceptor());
 
   // Interactive OpenAPI docs at /{prefix}/docs (unless SWAGGER_ENABLED=false).
