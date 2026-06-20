@@ -1,18 +1,22 @@
 import { MqttCommandAckSubscriber } from './mqtt-command-ack.subscriber';
+import { MetricsService } from '../../metrics/metrics.service';
 import { MqttService } from '../../mqtt/mqtt.service';
 import { DroneCommandService } from './drone-command.service';
 
 describe('MqttCommandAckSubscriber', () => {
   let commands: { ack: jest.Mock };
   let mqtt: { subscribe: jest.Mock };
+  let metrics: { mqttFramesTotal: { inc: jest.Mock } };
   let sub: MqttCommandAckSubscriber;
 
   beforeEach(() => {
     commands = { ack: jest.fn().mockResolvedValue({}) };
     mqtt = { subscribe: jest.fn() };
+    metrics = { mqttFramesTotal: { inc: jest.fn() } };
     sub = new MqttCommandAckSubscriber(
       mqtt as unknown as MqttService,
       commands as unknown as DroneCommandService,
+      metrics as unknown as MetricsService,
     );
   });
 
@@ -24,9 +28,13 @@ describe('MqttCommandAckSubscriber', () => {
     );
   });
 
-  it('drives ack() from a valid frame (accepted defaults true)', async () => {
+  it('drives ack() from a valid frame (accepted defaults true) + counts ok', async () => {
     await sub.handleAck(JSON.stringify({ commandId: 'c1', droneId: 'x' }));
     expect(commands.ack).toHaveBeenCalledWith('c1', 'x', true, undefined);
+    expect(metrics.mqttFramesTotal.inc).toHaveBeenCalledWith({
+      flow: 'command_ack',
+      result: 'ok',
+    });
   });
 
   it('passes accepted=false + a (clamped) note through', async () => {
