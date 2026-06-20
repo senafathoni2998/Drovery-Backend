@@ -204,6 +204,29 @@ describe('AdminService', () => {
         } as any),
       ).rejects.toThrow(ConflictException);
     });
+
+    it('rejects updating a PERCENT promo above 100%', async () => {
+      prisma.promoCode.findUnique.mockResolvedValue({
+        id: 'p-1',
+        discountType: 'PERCENT',
+      });
+      await expect(
+        service.updatePromo('p-1', { discountValue: 150 } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.promoCode.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('applies a valid discountValue update', async () => {
+      prisma.promoCode.findUnique.mockResolvedValue({
+        id: 'p-1',
+        discountType: 'PERCENT',
+      });
+      prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
+      await service.updatePromo('p-1', { discountValue: 50 } as any);
+      expect(
+        prisma.promoCode.updateMany.mock.calls[0][0].data.discountValue,
+      ).toBe(50);
+    });
   });
 
   describe('overview', () => {
