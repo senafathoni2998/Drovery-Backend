@@ -65,13 +65,20 @@ export const id: Record<string, string> = {
     'Paket Anda telah kembali ke pangkalan. Pembayaran Anda telah dikembalikan ke dompet Anda.',
   'notification.exception.RETURNED.droneStatus': 'Telah kembali ke pangkalan',
 
-  // ── Email transaksional ──
+  // ── Email transaksional (MailRenderer menyusun blok: judul + isi + tombol CTA) ──
   'email.passwordReset.subject': 'Atur ulang kata sandi Drovery Anda',
+  'email.passwordReset.heading': 'Atur ulang kata sandi Anda',
   'email.passwordReset.body':
-    'Ketuk untuk mengatur ulang kata sandi Anda: {deepLink}\n\nAtau masukkan kode ini di aplikasi: {token}\n\nTautan ini kedaluwarsa dalam 1 jam. Jika Anda tidak memintanya, abaikan email ini.',
+    'Ketuk tombol di bawah untuk mengatur ulang kata sandi Drovery Anda. Tautan ini kedaluwarsa dalam 1 jam. Jika Anda tidak memintanya, Anda dapat mengabaikan email ini dengan aman.',
+  'email.passwordReset.cta': 'Atur ulang kata sandi',
   'email.verification.subject': 'Verifikasi email Drovery Anda',
+  'email.verification.heading': 'Verifikasi email Anda',
   'email.verification.body':
-    'Selamat datang di Drovery! Ketuk untuk memverifikasi email Anda: {deepLink}\n\nAtau masukkan kode ini di aplikasi: {token}\n\nTautan ini kedaluwarsa dalam 24 jam.',
+    'Selamat datang di Drovery! Ketuk tombol di bawah untuk memverifikasi alamat email Anda. Tautan ini kedaluwarsa dalam 24 jam.',
+  'email.verification.cta': 'Verifikasi email',
+  'email.common.codeHint': 'Atau masukkan kode ini di aplikasi: {token}',
+  'email.common.signoff': '— Tim Drovery',
+  'email.common.footer': 'Drovery · Pengiriman drone otonom',
 
   // ── Dukungan ──
   'support.autoAck':

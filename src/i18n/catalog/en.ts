@@ -65,13 +65,21 @@ export const en: Record<string, string> = {
     'Your package made it back to base. Your payment has been refunded to your wallet.',
   'notification.exception.RETURNED.droneStatus': 'Returned to base',
 
-  // ── Transactional emails ──
+  // ── Transactional emails (MailRenderer composes blocks: heading + body + a CTA
+  // button → deepLink, plus the shared code hint / signoff / footer chrome) ──
   'email.passwordReset.subject': 'Reset your Drovery password',
+  'email.passwordReset.heading': 'Reset your password',
   'email.passwordReset.body':
-    "Tap to reset your password: {deepLink}\n\nOr enter this code in the app: {token}\n\nThis link expires in 1 hour. If you didn't request it, ignore this email.",
+    "Tap the button below to reset your Drovery password. This link expires in 1 hour. If you didn't request it, you can safely ignore this email.",
+  'email.passwordReset.cta': 'Reset password',
   'email.verification.subject': 'Verify your Drovery email',
+  'email.verification.heading': 'Verify your email',
   'email.verification.body':
-    'Welcome to Drovery! Tap to verify your email: {deepLink}\n\nOr enter this code in the app: {token}\n\nThis link expires in 24 hours.',
+    'Welcome to Drovery! Tap the button below to verify your email address. This link expires in 24 hours.',
+  'email.verification.cta': 'Verify email',
+  'email.common.codeHint': 'Or enter this code in the app: {token}',
+  'email.common.signoff': '— The Drovery team',
+  'email.common.footer': 'Drovery · Autonomous drone delivery',
 
   // ── Support ──
   'support.autoAck':

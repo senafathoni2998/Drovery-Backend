@@ -32,6 +32,22 @@ export const VALIDATION_KEYS = [
   'validation.timeOfDay.format',
 ] as const;
 
+/** Transactional-email blocks (MailRenderer composes these per email + the shared common.*
+ * chrome). Enumerated so the completeness spec requires every locale to define them. */
+export const EMAIL_KEYS = [
+  'email.passwordReset.subject',
+  'email.passwordReset.heading',
+  'email.passwordReset.body',
+  'email.passwordReset.cta',
+  'email.verification.subject',
+  'email.verification.heading',
+  'email.verification.body',
+  'email.verification.cta',
+  'email.common.codeHint',
+  'email.common.signoff',
+  'email.common.footer',
+] as const;
+
 /** Keys for the thrown HTTP-exception messages (AppException carries one of these; the
  * filter translates it). Enumerated here so the completeness spec requires an `id`
  * translation for every one (the en==id parity assertion also covers them). */

@@ -3,7 +3,7 @@ import { DeliveryFailureReason } from '@prisma/client';
 import { STAGES } from '../deliveries/simulation/simulation.constants';
 import { FAQS } from '../support/data/faqs';
 import { CATALOGS, DEFAULT_LOCALE, SUPPORTED_LOCALES } from './catalog';
-import { ERROR_KEYS, VALIDATION_KEYS } from './catalog/keys';
+import { EMAIL_KEYS, ERROR_KEYS, VALIDATION_KEYS } from './catalog/keys';
 
 /**
  * Drift guard: every message key the app renders MUST exist in EVERY supported
@@ -31,13 +31,7 @@ describe('i18n catalog completeness', () => {
     }
   }
 
-  requiredKeys.push(
-    'email.passwordReset.subject',
-    'email.passwordReset.body',
-    'email.verification.subject',
-    'email.verification.body',
-    'support.autoAck',
-  );
+  requiredKeys.push(...EMAIL_KEYS, 'support.autoAck');
 
   for (const faq of FAQS) {
     requiredKeys.push(`faq.${faq.id}.question`, `faq.${faq.id}.answer`);

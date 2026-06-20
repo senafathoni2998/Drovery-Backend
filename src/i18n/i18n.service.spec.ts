@@ -37,27 +37,27 @@ describe('I18nService', () => {
   });
 
   it('interpolates {placeholder} params', () => {
-    const out = i18n.translate('email.passwordReset.body', 'en', {
-      deepLink: 'droverymobile://reset?token=abc',
-      token: 'abc',
+    const out = i18n.translate('error.delivery.cancel.bad_status', 'en', {
+      status: 'IN_TRANSIT',
+      allowed: 'SCHEDULED, PENDING',
     });
-    expect(out).toContain('droverymobile://reset?token=abc');
-    expect(out).toContain('abc');
-    expect(out).not.toContain('{deepLink}');
-    expect(out).not.toContain('{token}');
+    expect(out).toContain('IN_TRANSIT');
+    expect(out).toContain('SCHEDULED, PENDING');
+    expect(out).not.toContain('{status}');
+    expect(out).not.toContain('{allowed}');
   });
 
   it('leaves an unknown {param} literal rather than rendering "undefined"', () => {
-    const out = i18n.translate('email.passwordReset.body', 'en', {
-      deepLink: 'x',
-      // token intentionally omitted
+    const out = i18n.translate('error.delivery.cancel.bad_status', 'en', {
+      status: 'IN_TRANSIT',
+      // `allowed` intentionally omitted
     });
-    expect(out).toContain('{token}');
+    expect(out).toContain('{allowed}');
     expect(out).not.toContain('undefined');
   });
 
   it('is a no-op interpolation when no params are given', () => {
-    const out = i18n.translate('email.passwordReset.body', 'en');
-    expect(out).toContain('{deepLink}'); // left literal, not crashed
+    const out = i18n.translate('error.delivery.cancel.bad_status', 'en');
+    expect(out).toContain('{status}'); // left literal, not crashed
   });
 });
