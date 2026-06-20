@@ -131,7 +131,8 @@ describe('SupportChatGateway', () => {
         createdAt: '2026-06-12T10:00:00.000Z',
       });
       expect(res.event).toBe('message:sent');
-      expect(res.data.id).toBe('m-1');
+      // handleSend returns a union (payload | error frame); the success path is asserted above.
+      expect((res.data as { id: string }).id).toBe('m-1');
     });
 
     it('rejects empty content without touching the DB', async () => {
