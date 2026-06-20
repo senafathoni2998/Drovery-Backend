@@ -52,6 +52,10 @@ export class MetricsService {
   // Backend→drone command channel (money-touching control path on LIVE deliveries).
   readonly droneCommandsTotal: Counter<string>;
   readonly droneCommandTimeToAck: Histogram<string>;
+  // MQTT push transport (optional; flat 0 when MQTT_URL is unset). frames by flow+result;
+  // a connection gauge for parity with the HTTP ingest path's visibility.
+  readonly mqttFramesTotal: Counter<string>;
+  readonly mqttConnected: Gauge<string>;
   // Partition maintenance (worker tier): heartbeat + scheduler gauges (mirroring the
   // watchdog), per-table created/dropped counters, and a default-rows gauge that
   // alerts when rows pile in the DEFAULT partition (maintenance lag / short window).
@@ -139,6 +143,21 @@ export class MetricsService {
       // result-labelled so refusal/superseded latency does not skew true-ack p95.
       labelNames: ['type', 'result'],
       buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300],
+      registers: [this.registry],
+    });
+
+    this.mqttFramesTotal = new Counter({
+      name: 'drovery_mqtt_frames_total',
+      help: 'MQTT INGEST frames consumed by flow and result',
+      // flow ∈ telemetry | command_ack; result ∈ ok | dropped (bad/missing) | rejected (core
+      // threw). Outbound command pushes are already counted by drovery_drone_commands_total.
+      labelNames: ['flow', 'result'],
+      registers: [this.registry],
+    });
+
+    this.mqttConnected = new Gauge({
+      name: 'drovery_mqtt_connected',
+      help: '1 when the MQTT client is connected to the broker, else 0 (0 when MQTT disabled)',
       registers: [this.registry],
     });
 
