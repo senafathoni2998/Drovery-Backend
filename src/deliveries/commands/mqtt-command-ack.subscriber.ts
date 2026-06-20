@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
+import { MetricsService } from '../../metrics/metrics.service';
 import { COMMAND_ACK_FILTER } from '../../mqtt/mqtt.constants';
 import { MqttService } from '../../mqtt/mqtt.service';
 import { DroneCommandService } from './drone-command.service';
@@ -24,6 +25,7 @@ export class MqttCommandAckSubscriber implements OnModuleInit {
   constructor(
     private readonly mqtt: MqttService,
     private readonly commands: DroneCommandService,
+    private readonly metrics: MetricsService,
   ) {}
 
   onModuleInit(): void {
@@ -35,11 +37,19 @@ export class MqttCommandAckSubscriber implements OnModuleInit {
     try {
       frame = JSON.parse(raw) as AckFrame;
     } catch {
+      this.metrics.mqttFramesTotal.inc({
+        flow: 'command_ack',
+        result: 'dropped',
+      });
       this.logger.warn('Dropped malformed MQTT ack frame (invalid JSON)');
       return;
     }
     const { commandId, droneId } = frame;
     if (!commandId || !droneId) {
+      this.metrics.mqttFramesTotal.inc({
+        flow: 'command_ack',
+        result: 'dropped',
+      });
       this.logger.warn('Dropped MQTT ack frame missing commandId/droneId');
       return;
     }
@@ -50,7 +60,12 @@ export class MqttCommandAckSubscriber implements OnModuleInit {
         frame.accepted ?? true,
         frame.note?.slice(0, 200),
       );
+      this.metrics.mqttFramesTotal.inc({ flow: 'command_ack', result: 'ok' });
     } catch (error) {
+      this.metrics.mqttFramesTotal.inc({
+        flow: 'command_ack',
+        result: 'rejected',
+      });
       // ack() is the single-winner CAS — a duplicate/raced/unauthorized ack throws
       // (409/403/404). Swallow so the transport never retries into the broker loop.
       this.logger.warn(
