@@ -226,24 +226,27 @@ describe('DroneCommandService', () => {
     it('hands the drone NOTHING if the PENDING→FETCHED CAS lost to a concurrent expiry', async () => {
       // findFirst saw it PENDING, but between read and CAS the watchdog expired it:
       // the CAS matches 0 rows and a re-read shows it is no longer FETCHED.
-      prisma.droneCommand.findFirst.mockResolvedValue({
-        id: 'c-1',
-        deliveryId: 'd-1',
-        droneId: DRONE,
-        type: DroneCommandType.RETURN_TO_BASE,
-        reason: DeliveryFailureReason.WEATHER_ABORT,
-        status: DroneCommandStatus.PENDING,
-        expiresAt: future(),
-        createdAt: new Date(),
-        delivery: {
-          trackingSource: TrackingSource.LIVE,
-          assignedDroneId: DRONE,
-        },
-      });
+      // Both reads in fetchPending are findFirst (the queue poll AND the post-CAS re-read
+      // by id) — stub them distinctly with Once/Once so the re-read genuinely returns
+      // EXPIRED (a single mockResolvedValue would answer BOTH calls with the poll row,
+      // exercising the branch only by coincidence).
+      prisma.droneCommand.findFirst
+        .mockResolvedValueOnce({
+          id: 'c-1',
+          deliveryId: 'd-1',
+          droneId: DRONE,
+          type: DroneCommandType.RETURN_TO_BASE,
+          reason: DeliveryFailureReason.WEATHER_ABORT,
+          status: DroneCommandStatus.PENDING,
+          expiresAt: future(),
+          createdAt: new Date(),
+          delivery: {
+            trackingSource: TrackingSource.LIVE,
+            assignedDroneId: DRONE,
+          },
+        })
+        .mockResolvedValueOnce({ status: DroneCommandStatus.EXPIRED }); // re-read: no longer FETCHED
       prisma.droneCommand.updateMany.mockResolvedValue({ count: 0 }); // lost the CAS
-      prisma.droneCommand.findUnique.mockResolvedValue({
-        status: DroneCommandStatus.EXPIRED,
-      });
       await expect(service.fetchPending(DRONE)).resolves.toEqual({
         command: null,
       });

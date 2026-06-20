@@ -56,9 +56,27 @@ export class PartitionMaintenanceService {
         );
       } catch (e) {
         // One bad table must never fail the whole tick (BullMQ would retry the scan
-        // and re-process every table).
+        // and re-process every table). But the swallow must be OBSERVABLE: a retention
+        // DELETE/DROP that fails here would otherwise reclaim nothing silently (aged rows
+        // sit in month leaves, NOT the watched DEFAULT) — alert on this counter.
+        this.metrics.partitionMaintenanceFailures.inc({ table });
         this.logger.warn(
           `partition-maintenance ${table} failed: ${(e as Error).message}`,
+        );
+      }
+
+      // Retention-lag signal, independent of the DEFAULT: the age of the oldest monthly
+      // child. With retention enabled this stays ≤ PARTITION_RETAIN_MONTHS; if it climbs,
+      // drop_old is failing/no-op-ing (the failure above may be swallowed). Own try so a
+      // read error can't fail the tick.
+      try {
+        this.metrics.partitionOldestLeafAgeMonths.set(
+          { table },
+          await this.oldestLeafAgeMonths(table),
+        );
+      } catch (e) {
+        this.logger.warn(
+          `partition-maintenance ${table} oldest-leaf read failed: ${(e as Error).message}`,
         );
       }
 
@@ -100,6 +118,28 @@ export class PartitionMaintenanceService {
             table,
             n,
           );
+    return Number(rows?.[0]?.n ?? 0);
+  }
+
+  /** Age in months of the oldest non-DEFAULT monthly child of `table` (0 if none). The
+   * month is read from the child name (…_yYYYYmMM); `table` is from the hardcoded
+   * allowlist and is also passed as a bound parameter to the catalog lookups. */
+  private async oldestLeafAgeMonths(table: string): Promise<number> {
+    const rows = await this.prisma.$queryRawUnsafe<
+      Array<{ n: number | bigint }>
+    >(
+      `SELECT COALESCE(MAX(
+         (EXTRACT(YEAR FROM now()) - EXTRACT(YEAR FROM m)) * 12
+         + (EXTRACT(MONTH FROM now()) - EXTRACT(MONTH FROM m))), 0)::int AS n
+       FROM (
+         SELECT to_date(substring(c.relname FROM '(y[0-9]{4}m[0-9]{2})$'), '"y"YYYY"m"MM') AS m
+         FROM pg_inherits i
+         JOIN pg_class c ON c.oid = i.inhrelid
+         WHERE i.inhparent = to_regclass('public.' || quote_ident($1))
+           AND c.relname ~ ('^' || $1 || '_y[0-9]{4}m[0-9]{2}$')
+       ) leaves`,
+      table,
+    );
     return Number(rows?.[0]?.n ?? 0);
   }
 

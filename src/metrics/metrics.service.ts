@@ -60,6 +60,12 @@ export class MetricsService {
   readonly partitionDefaultRows: Gauge<string>;
   readonly partitionsCreatedTotal: Counter<string>;
   readonly partitionsDroppedTotal: Counter<string>;
+  // Retention observability: a per-table tick failure is swallowed (to isolate one table),
+  // so without these signals a broken retention reclaims nothing SILENTLY (aged rows hide in
+  // month leaves, not the watched DEFAULT). The counter makes the swallow alertable; the
+  // gauge is the authoritative retention-lag signal (oldest non-DEFAULT child age).
+  readonly partitionMaintenanceFailures: Counter<string>;
+  readonly partitionOldestLeafAgeMonths: Gauge<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -165,6 +171,20 @@ export class MetricsService {
     this.partitionsDroppedTotal = new Counter({
       name: 'drovery_partitions_dropped_total',
       help: 'Child partitions dropped by retention per table',
+      labelNames: ['table'],
+      registers: [this.registry],
+    });
+
+    this.partitionMaintenanceFailures = new Counter({
+      name: 'drovery_partition_maintenance_failures_total',
+      help: 'Per-table partition-maintenance tick failures (swallowed to isolate one table); alert if increasing',
+      labelNames: ['table'],
+      registers: [this.registry],
+    });
+
+    this.partitionOldestLeafAgeMonths = new Gauge({
+      name: 'drovery_partition_oldest_leaf_age_months',
+      help: 'Age in months of the oldest non-DEFAULT child partition (retention-lag signal; alert if > PARTITION_RETAIN_MONTHS when retention is enabled)',
       labelNames: ['table'],
       registers: [this.registry],
     });

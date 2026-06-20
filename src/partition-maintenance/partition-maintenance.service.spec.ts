@@ -10,6 +10,8 @@ describe('PartitionMaintenanceService', () => {
     partitionsDroppedTotal: { inc: jest.Mock };
     partitionDefaultRows: { set: jest.Mock };
     partitionLastScan: { set: jest.Mock };
+    partitionMaintenanceFailures: { inc: jest.Mock };
+    partitionOldestLeafAgeMonths: { set: jest.Mock };
   };
   let service: PartitionMaintenanceService;
 
@@ -20,6 +22,8 @@ describe('PartitionMaintenanceService', () => {
       partitionsDroppedTotal: { inc: jest.fn() },
       partitionDefaultRows: { set: jest.fn() },
       partitionLastScan: { set: jest.fn() },
+      partitionMaintenanceFailures: { inc: jest.fn() },
+      partitionOldestLeafAgeMonths: { set: jest.fn() },
     };
     service = new PartitionMaintenanceService(
       prisma as never,
@@ -62,9 +66,22 @@ describe('PartitionMaintenanceService', () => {
     );
   });
 
-  it('isolates a per-table failure and still stamps the heartbeat', async () => {
-    prisma.$queryRawUnsafe.mockRejectedValueOnce(new Error('boom')); // drain throws
+  it('isolates a per-table failure, increments the failure counter (alertable), and still stamps the heartbeat', async () => {
+    prisma.$queryRawUnsafe.mockRejectedValueOnce(new Error('boom')); // drain throws for the first table
     await expect(service.run()).resolves.toBeUndefined();
+    // The swallow must be OBSERVABLE — a silently-failing retention reclaims nothing.
+    expect(metrics.partitionMaintenanceFailures.inc).toHaveBeenCalledWith({
+      table: 'notifications',
+    });
     expect(metrics.partitionLastScan.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets the oldest-leaf retention-lag gauge per table (independent of the DEFAULT)', async () => {
+    prisma.$queryRawUnsafe.mockResolvedValue([{ n: 7 }]); // every read returns 7 months
+    await service.run();
+    expect(metrics.partitionOldestLeafAgeMonths.set).toHaveBeenCalledWith(
+      { table: 'notifications' },
+      7,
+    );
   });
 });

@@ -80,3 +80,19 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: '{{ $labels.job }} target down for 2m'
+
+  - name: drovery-partitioning
+    rules:
+      # ── Partition maintenance swallows a per-table failure (to isolate one table), so a
+      #    broken retention/drain/ensure can reclaim or provision nothing SILENTLY — aged
+      #    rows sit in month leaves, NOT the watched DEFAULT. Alert on the failure counter.
+      - alert: DroveryPartitionMaintenanceFailing
+        expr: increase(drovery_partition_maintenance_failures_total[2h]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Partition maintenance failing on {{ $labels.table }} (retention/drain may be silently no-op)'
+      # NOTE: drovery_partition_oldest_leaf_age_months{table} is the retention-lag gauge —
+      # exposed but NOT statically alerted here, because with PARTITION_RETAIN_MONTHS=0
+      # (the default) old partitions grow by design. When you enable retention, alert:
+      # drovery_partition_oldest_leaf_age_months > <PARTITION_RETAIN_MONTHS + 1>.

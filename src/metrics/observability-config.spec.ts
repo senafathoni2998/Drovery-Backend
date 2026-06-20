@@ -45,6 +45,8 @@ describe('observability config ↔ emitted metrics', () => {
       'drovery_nodejs_eventloop_lag_p99_seconds',
       'drovery_process_resident_memory_bytes',
       'drovery_process_cpu_seconds_total',
+      'drovery_partition_maintenance_failures_total',
+      'drovery_partition_oldest_leaf_age_months',
       'up',
     ];
     const referenced = [
