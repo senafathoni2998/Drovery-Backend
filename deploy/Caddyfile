@@ -1,0 +1,28 @@
+# Caddy edge for the Drovery system. Automatic HTTPS (Let's Encrypt) for $DOMAIN.
+#
+# Routing (single origin → no CORS, and the admin image needs no per-domain rebuild):
+#   • WebSocket upgrades (mobile tracking at "/", support chat at "/ws/support") → api
+#   • /api/*  (the REST API, prefix /api/v1)                                     → api
+#   • everything else (the operator console SPA)                                → admin
+{$DOMAIN} {
+	encode gzip zstd
+
+	# Any WebSocket handshake, whatever its path, goes to the API gateways.
+	@ws {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @ws {
+		reverse_proxy api:3000
+	}
+
+	# The REST API.
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	# Everything else: the static admin SPA (it serves its own /index.html history fallback).
+	handle {
+		reverse_proxy admin:80
+	}
+}
