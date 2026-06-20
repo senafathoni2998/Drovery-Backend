@@ -1,0 +1,91 @@
+# Resource-isolation overlay — emulate separate NODES on one host.
+#
+# Layer it AS THE THIRD file, after the base and the load-test overlay (run.sh does this
+# automatically when NODES=1):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+#     -f docker-compose.nodes.yml up -d --build --scale api=3 --scale worker=3
+#
+# WHY this exists: the load-test overlay SCALES replicas, but every container shares all
+# host cores UNBOUNDED — so "api=3" was really three threads CONTENDING for 4 cores, and a
+# single replica's throughput wasn't attributable. This overlay caps each container's CPU +
+# memory via `deploy.resources.limits`, which `docker compose up` (NON-swarm, Compose v2+)
+# honors PER REPLICA: every scaled api/worker container gets its OWN cgroup CPU quota. So N
+# replicas = N known-size "nodes", and adding one adds REAL, measurable capacity — until a
+# SHARED tier (PgBouncer pool / Postgres / the box's total cores) saturates. That ceiling is
+# the interesting result the capacity model needs, not an artifact.
+#
+# WHY a CPU QUOTA (`cpus`) and emphatically NOT `cpuset` PINNING:
+#   - `cpus` is a fractional CPU-TIME share; the scheduler is free to place each replica's
+#     slice on any core. Adding a replica therefore ADDS throughput (up to the host total).
+#   - `cpuset` PINS containers to a fixed core LIST. Every replica would be pinned to the
+#     SAME cores → they fight over one core set → adding a replica adds CONTENTION, not
+#     capacity. Pinning is for cache-locality micro-benchmarks; it is WRONG here.
+#   - `deploy.resources.limits` (Compose Spec) is the forward-looking key. The old lore
+#     "deploy is swarm-only, ignored by `compose up`" was true for docker-compose v1 (Python);
+#     Compose v2+ maps it straight to the container cgroup. Do NOT "fix" it back to the
+#     legacy top-level `cpus:`/`mem_limit:`.
+#
+# Budget tuned for a ~4-core host (api 3×0.6 + worker 3×0.4 = 3.0 CPU-quota for the app tier,
+# + pg 1.0 + pgb 0.5 + redis 0.5 = 5.0 requested on 4 cores). That's deliberately
+# OVER-subscribed: `cpus` is a CEILING, not a reservation, so over-subscription is fine and
+# the host-core contention it surfaces IS the ceiling the test is meant to find. For a strict
+# fit, drop API_CPUS to 0.4. Override per tier for a bigger box, e.g.:
+#   sudo NODES=1 API_CPUS=1.0 WORKER_CPUS=0.75 PG_CPUS=2.0 API=4 WORKER=4 bash loadtest/run.sh
+
+services:
+  # ── Compute tiers: the scalable "nodes". limits apply PER REPLICA. ──
+  api:
+    # Cap V8's old space WELL below the cgroup memory.max so a heap spike GCs/throws
+    # (recoverable, observable) BEFORE the kernel OOM-kills the container — the Prisma binary
+    # query engine is a SEPARATE ~60-100MB process in the same cgroup, so leave it headroom.
+    # An OOM-killed replica mid-run silently halves a tier and corrupts the per-node number.
+    environment:
+      NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=384}
+    deploy:
+      resources:
+        limits:
+          cpus: '${API_CPUS:-0.6}' # each api replica = 0.6 CPU of attributable compute
+          memory: ${API_MEM:-640M}
+        reservations:
+          memory: 320M # soft floor so a replica isn't OOM-starved (memory.max kills, cpu only throttles)
+
+  worker:
+    environment:
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=300}
+    deploy:
+      resources:
+        limits:
+          cpus: '${WORKER_CPUS:-0.4}' # each worker replica = 0.4 CPU
+          memory: ${WORKER_MEM:-512M}
+        reservations:
+          memory: 256M
+
+  # ── Shared tiers: bounded too, so "a shared tier saturated" is a KNOWN budget, not an
+  #    unbounded grab. These are the tiers that ultimately cap horizontal scaling. ──
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: '${PG_CPUS:-1.0}'
+          memory: ${PG_MEM:-1G}
+
+  pgbouncer:
+    deploy:
+      resources:
+        limits:
+          cpus: '${PGB_CPUS:-0.5}'
+          memory: ${PGB_MEM:-128M}
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: '${REDIS_CPUS:-0.5}'
+          memory: ${REDIS_MEM:-256M}
+
+  # lb, migrate, mosquitto, and especially k6 are intentionally LEFT UNBOUNDED:
+  #  - k6 is the LOAD GENERATOR — a CPU-throttled generator silently under-drives the system
+  #    and you'd measure the generator's ceiling, not the system's.
+  #  - lb is cheap connection forwarding; migrate runs once and exits before the measured
+  #    window; mosquitto is light pub/sub off the measured request path.
