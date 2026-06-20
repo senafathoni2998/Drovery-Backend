@@ -28,7 +28,7 @@ PROBE="$(dirname "$0")/metrics-probe.sh"
 # is attributable (see docker-compose.nodes.yml). Default run is byte-identical without it.
 if [ "${NODES:-0}" = 1 ]; then
   CF+=(-f docker-compose.nodes.yml)
-  echo "▸ node-isolation ON — per-replica caps: api=${API_CPUS:-0.6}cpu/${API_MEM:-512M}, worker=${WORKER_CPUS:-0.4}cpu/${WORKER_MEM:-384M}"
+  echo "▸ node-isolation ON — per-replica caps: api=${API_CPUS:-0.6}cpu/${API_MEM:-1G}, worker=${WORKER_CPUS:-0.4}cpu/${WORKER_MEM:-768M}"
 else
   echo "▸ node-isolation OFF (set NODES=1 to bound each replica to a known CPU/mem unit)"
 fi
