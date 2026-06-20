@@ -9,7 +9,7 @@ signals the production alerts fire on.
 
 ```
 k6 ──▶ nginx LB ──▶ api ×N  ─┐
-        (8080)               ├─ PgBouncer ─▶ Postgres
+        (8088)               ├─ PgBouncer ─▶ Postgres
    BullMQ queue ─▶ worker ×M ┘        │
         api + worker ─▶ Redis  (queue + cache + rate-limit)
 ```
