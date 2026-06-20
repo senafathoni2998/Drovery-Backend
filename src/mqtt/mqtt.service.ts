@@ -3,10 +3,12 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type MqttClient, connect } from 'mqtt';
 
+import { MetricsService } from '../metrics/metrics.service';
 import { sharedFilter } from './mqtt.constants';
 
 type MessageHandler = (payload: string) => void;
@@ -34,7 +36,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly handlers = new Map<string, MessageHandler>();
   private offlineQueued = 0;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    // @Optional so the service stays constructible in unit specs that don't provide it;
+    // MetricsModule is @Global so it's injected app-wide. Drives drovery_mqtt_connected.
+    @Optional() private readonly metrics?: MetricsService,
+  ) {}
 
   isMock(): boolean {
     return !this.config.get<string>('mqtt.url');
@@ -46,6 +53,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     const url = this.config.get<string>('mqtt.url');
+    this.metrics?.mqttConnected.set(0);
     if (!url) {
       this.logger.log(
         'MQTT disabled (MOCK mode) — HTTP /ingest is the active drone transport.',
@@ -67,10 +75,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.client.on('error', (e) =>
         this.logger.warn(`mqtt error: ${e.message}`),
       );
-      this.client.on('offline', () =>
-        this.logger.warn('mqtt offline — falling back to HTTP ingest'),
-      );
+      this.client.on('offline', () => {
+        this.metrics?.mqttConnected.set(0);
+        this.logger.warn('mqtt offline — falling back to HTTP ingest');
+      });
+      this.client.on('close', () => this.metrics?.mqttConnected.set(0));
       this.client.on('connect', () => {
+        this.metrics?.mqttConnected.set(1);
         this.logger.log('mqtt connected');
         this.offlineQueued = 0;
         // Re-arm every registered subscription so a reconnect restores them.
