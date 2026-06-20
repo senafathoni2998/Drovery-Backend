@@ -4,11 +4,12 @@ This document is the plan to take Drovery from "works on one laptop" to **100k+ 
 It is grounded in the current code: each section names the real blocker in this repo,
 why it breaks at scale, and the concrete fix.
 
-> TL;DR of the **hard blockers** (fix these first, in order):
-> 1. **In-memory delivery simulation** (`setTimeout` in `SimulationService`) — kills horizontal scaling.
-> 2. **Geocoding on the public Nominatim endpoint** — 1 req/sec policy = hard ceiling.
-> 3. **In-process WebSocket/state** — doesn't survive multiple instances.
-> 4. **Single Postgres, no pooling/replicas** — connection + read-load ceiling.
+> TL;DR — the four **hard blockers** this plan opened with are now all **RESOLVED** (this doc
+> records the journey; each section's status markers are current):
+> 1. ✅ **In-memory delivery simulation** (`setTimeout`) → durable BullMQ jobs on a standalone worker tier (§1).
+> 2. 🟡 **Geocoding on public Nominatim** → Redis-cached; a commercial-provider swap is the only remainder (§2).
+> 3. ✅ **In-process WebSocket/state** → WS + Redis pub/sub, fans out across replicas (§3).
+> 4. ✅ **Single Postgres, no pooling/replicas** → PgBouncer + env-gated read replicas + RANGE partitioning (§4).
 
 ---
 
@@ -77,9 +78,9 @@ Nominatim's ~1 req/sec ceiling for typical (repetitive) address traffic.
 - **Same pattern, second gateway — support chat.** `SupportChatGateway` reuses this design at a **distinct path `/ws/support`** (the `WsAdapter` routes upgrades by exact pathname, so the two gateways coexist and tracking's `/` is untouched — verified live). It differs only in *who publishes*: chat is **API-tier** (a message accepted by the gateway/REST is persisted then published to `support:ticket:<id>:messages`), whereas tracking publishes from the worker. The publisher is **tier-agnostic** (runs everywhere), so a future agent/admin surface on any replica can inject an `AGENT` message with no gateway change. `drovery_ws_support_connections` gauge.
 - Next at very high fan-out: a dedicated realtime tier (so sockets scale independently of the API), per-client subscription reverse-index (O(1) disconnect), and tracking-snapshot caching (§2) to absorb the remaining polling.
 
-## 4. 🔴 Database: pooling, indexes, replicas, partitioning
+## 4. ✅ Database: pooling, replicas, partitioning (done — managed-PG + cold archival remain)
 
-**Now:** single Postgres via a `pg` Pool per instance (`PrismaService`). At N instances × pool size, you exhaust Postgres connections fast.
+**The original problem:** single Postgres via a `pg` Pool per instance (`PrismaService`). At N instances × pool size, you exhaust Postgres connections fast. **All three fixes below shipped** (PgBouncer, replicas, partitioning of the full delivery graph); only a managed/hosted Postgres and cold-row archival remain.
 
 **Fix (in order):**
 - **PgBouncer** (transaction pooling) in front of Postgres; point Prisma at it. Essential once N instances > a handful.
@@ -90,7 +91,7 @@ Nominatim's ~1 req/sec ceiling for typical (repetitive) address traffic.
   - **Copy-swap raw-SQL migration** (PG can't convert a populated table in place; Prisma can't express partitioning): rename old → create partitioned parent via `LIKE … INCLUDING DEFAULTS` + composite PK → recreate the index/FK under their exact Prisma names → backfill through the `DEFAULT` then drain → drop old. Single transaction. Precedent: the `drone_commands` partial-index migration.
   - **Composite PK `@@id([id, "createdAt"])`** (id-first): a range-partitioned table requires the partition key in every key. The model change makes `prisma migrate diff` **clean** (proven) — keeping `id @id` would make every `migrate dev` emit a destructive PK-collapse that fails on a partitioned parent. Drift is gated in CI by `npm run prisma:drift-check`. The only code cost: `notifications.markAsRead` is now an ownership-scoped `updateMany({id,userId})` (also a security win — 404 not a 403 oracle). `prisma db push` is **forbidden** here (deploy-only) — see `prisma/PARTITIONING.md`.
   - **No-extension maintenance** (no `pg_partman`/`pg_cron` assumed): table-parameterized plpgsql routines `partition_drain_default` / `partition_ensure(months_ahead)` / `partition_drop_old(retain_months)` + a permanent `DEFAULT`, driven by a worker-tier Redis-coordinated repeatable scan (`src/partition-maintenance/`, mirrors the watchdog: kill-switch, NaN-safe knobs, metrics — `drovery_partition_*`). `drain_default` runs first each tick (a bare `CREATE … PARTITION OF` fails when the `DEFAULT` already holds in-range rows; the routine builds the child standalone, relocates the rows, then `ATTACH`es). Verified without scale by `scripts/verify-partitions.sql` (routing, default-catch, drain-heal, retention) + a live Prisma CRUD pass.
-- **Next: the delivery graph** (`deliveries` + `delivery_tracking`/`payments`/`proof_of_delivery`/`delivery_ratings`/`workflow_step_completions`/`drone_commands`). Two extra problems the leaf `notifications` didn't have: (a) **global `trackingId` uniqueness** — a partitioned table can't enforce a unique that omits the partition key, so `UNIQUE(trackingId)` alone is impossible; rely on the existing collision-safe generator + a small non-partitioned `trackingId` ledger (or a `UNIQUE(trackingId,"createdAt")` accepting per-window scope). (b) **composite-FK fan-out** — every child FK to `deliveries(id)` must become `(id,"createdAt")`, so each child gains a `deliveryCreatedAt` column. **Trigger:** when `deliveries`/`notifications` exceed ~50–100M rows or autovacuum/index bloat degrades hot list queries (visible on the Grafana dashboards). At scale, replace the single-statement backfill with a month-by-month batched copy under a dual-write window (the `partition_*` routines are reused) — see the runbook.
+- ✅ **Delivery graph — partitioned (Phase 1 + 2, done).** Covers (`deliveries` + `delivery_tracking`/`payments`/`proof_of_delivery`/`delivery_ratings`/`workflow_step_completions`/`drone_commands`); the unbounded N:1 children (`workflow_step_completions`, `drone_commands`) are co-partitioned by `deliveryCreatedAt` so retention is an O(1) `DROP`. The two extra problems the leaf `notifications` didn't have were solved as predicted: (a) **global `trackingId` uniqueness** — a partitioned table can't enforce a unique that omits the partition key, so `UNIQUE(trackingId)` alone is impossible; rely on the existing collision-safe generator + a small non-partitioned `trackingId` ledger (or a `UNIQUE(trackingId,"createdAt")` accepting per-window scope). (b) **composite-FK fan-out** — every child FK to `deliveries(id)` must become `(id,"createdAt")`, so each child gains a `deliveryCreatedAt` column. **Trigger:** when `deliveries`/`notifications` exceed ~50–100M rows or autovacuum/index bloat degrades hot list queries (visible on the Grafana dashboards). At scale, replace the single-statement backfill with a month-by-month batched copy under a dual-write window (the `partition_*` routines are reused) — see the runbook.
 - ✅ **`trackingId` collision-safe** — **done**. `create()` wraps the insert (plain + the promo/credit/referral `$transaction`) in a bounded retry: on a `P2002` whose target is `trackingId`, regenerate the 8-char id and retry (the whole tx rolls back so promo/credit/referral re-run cleanly); other `P2002`s propagate; exhaustion → `409`.
 
 ## 5. Caching tier (Redis)
@@ -145,6 +146,27 @@ Introduce Redis as a first-class cache, not just a queue:
 
 ---
 
+## 12. Shipped beyond this plan
+
+Capabilities added after the original scaling plan — all in-repo and verified:
+
+- **Delivery-graph partitioning (Phase 1 + 2)** — see §4; the full delivery graph + the
+  unbounded N:1 children are RANGE-partitioned, with generic self-discovering plpgsql
+  maintenance and inbound-FK-aware retention.
+- **MQTT push transport** — an opt-in (`MQTT_URL`-gated) MQTT5 path that coexists with the HTTP
+  `/ingest` endpoints; shared subscriptions (`$share/`) ensure one api replica processes each
+  frame. The dependency-free `MqttModule` is fail-open (a down broker never blocks boot).
+- **i18n depth (en/id)** — boundary-localized: business errors + validation throw a *key*,
+  translated once in the exception filter via a persisted `User.locale`; email templates too.
+- **Capacity model + node-isolated load-test harness** (`loadtest/`) — bounds each replica to a
+  known CPU/mem unit so per-node throughput is attributable, isolates the bcrypt wall from pure
+  I/O, and projects measured per-node numbers to a 100k-DAU node count.
+- **drovery-admin operator console** (separate repo) — a React/MUI web app on the role-gated
+  `/admin` API: dashboard, delivery oversight (force-cancel/fail/refund/drone commands), promo
+  CRUD, user roles, and a live (WS) support inbox.
+
+---
+
 ## Phased rollout
 
 | Phase | Users | Must-do |
@@ -181,8 +203,9 @@ provable on `kind`/`minikube` at $0 — no live mega-cluster):
    throttle_proof scenarios; pairs with the `LOADTEST_BYPASS_THROTTLE` flag so a single-IP
    run can measure real throughput instead of the shared limiter.
 
-✅ Sentry error tracking (see §10). **Next:** a real cluster run (KEDA + Prometheus +
-metrics-server) to capture actual scale-up numbers, Grafana dashboards, and read replicas.
+✅ Sentry error tracking (see §10). ✅ Grafana dashboards and ✅ read replicas are now done
+(§10 / §4). **Only remaining:** a real **cloud** multi-node cluster run for absolute scale-up
+numbers — the local node-isolation harness + capacity model (§12) approximate it hardware-free.
 
 **Phase 1's worker tier** — the delivery lifecycle lives in Redis/BullMQ instead of one
 process's `setTimeout`s, with a **standalone worker** (`npm run worker`) that scales
