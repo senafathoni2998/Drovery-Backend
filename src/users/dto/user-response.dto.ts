@@ -1,7 +1,14 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { Role } from '@prisma/client';
+
 export class UserResponseDto {
   id: string;
   email: string;
   name: string;
+  // The user's own role — exposed so a client (e.g. the admin console) can render
+  // role-appropriate UI. The authoritative gate remains the server-side RolesGuard.
+  @ApiProperty({ enum: Role })
+  role: Role;
   phone: string | null;
   address: string | null;
   bio: string | null;
@@ -17,6 +24,7 @@ export class UserResponseDto {
     id: string;
     email: string;
     name: string;
+    role: Role;
     phone: string | null;
     address: string | null;
     bio: string | null;
@@ -30,6 +38,7 @@ export class UserResponseDto {
     dto.id = user.id;
     dto.email = user.email;
     dto.name = user.name;
+    dto.role = user.role;
     dto.phone = user.phone;
     dto.address = user.address;
     dto.bio = user.bio;
