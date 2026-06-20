@@ -1,13 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  HttpException,
-  HttpStatus,
-  Injectable,
-  Logger,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   DeliveryFailureReason,
   DeliveryStatus,
@@ -17,6 +8,14 @@ import {
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
+import {
+  AppBadRequestException,
+  AppConflictException,
+  AppHttpException,
+  AppNotFoundException,
+  AppUnauthorizedException,
+  AppUnprocessableEntityException,
+} from '../common/exceptions/app-exception';
 import { GeoService } from '../geo/geo.service';
 import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -128,9 +127,9 @@ export class DeliveriesService {
     const leadMs = scheduledFor ? scheduledFor.getTime() - Date.now() : 0;
     const isScheduled = leadMs > SCHEDULE_THRESHOLD_MS;
     if (isScheduled && leadMs > MAX_SCHEDULE_MS) {
-      throw new BadRequestException(
-        `Pickup can be scheduled at most ${MAX_SCHEDULE_DAYS} days ahead.`,
-      );
+      throw new AppBadRequestException('error.delivery.schedule.too_far', {
+        maxDays: MAX_SCHEDULE_DAYS,
+      });
     }
 
     // A LIVE delivery is driven by a real drone reporting its lifecycle now — it
@@ -139,8 +138,8 @@ export class DeliveriesService {
     // it out of SCHEDULED), so reject the combination rather than strand it.
     const isLive = dto.trackingSource === 'LIVE';
     if (isLive && isScheduled) {
-      throw new BadRequestException(
-        'A LIVE-tracked delivery cannot be scheduled for a future pickup window.',
+      throw new AppBadRequestException(
+        'error.delivery.schedule.live_not_allowed',
       );
     }
 
@@ -272,9 +271,7 @@ export class DeliveriesService {
       }
     }
     if (!delivery) {
-      throw new ConflictException(
-        'Could not allocate a unique tracking id, please retry.',
-      );
+      throw new AppConflictException('error.delivery.tracking_id_alloc_failed');
     }
 
     // Create the payment (Stripe PaymentIntent) for the discounted total.
@@ -373,15 +370,10 @@ export class DeliveriesService {
       coords.toLat == null ||
       coords.toLng == null
     ) {
-      throw new HttpException(
-        {
-          statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
-          error: 'Unprocessable Entity',
-          message:
-            "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
-          code: 'UNRESOLVED_LOCATION',
-        },
-        HttpStatus.UNPROCESSABLE_ENTITY,
+      throw new AppUnprocessableEntityException(
+        'error.delivery.serviceability.unresolved_location',
+        undefined,
+        { code: 'UNRESOLVED_LOCATION' },
       );
     }
 
@@ -400,19 +392,15 @@ export class DeliveriesService {
       ? result.codes.find((c) => c.startsWith('WEATHER'))
       : result.codes.find((c) => !c.startsWith('WEATHER'));
 
-    throw new HttpException(
+    throw new AppHttpException(
+      status,
+      'error.delivery.serviceability.not_flyable',
+      undefined,
       {
-        statusCode: status,
-        error: result.weatherHold
-          ? 'Service Unavailable'
-          : 'Unprocessable Entity',
-        message:
-          result.reasons[0] ?? 'This delivery cannot be flown right now.',
         reasons: result.reasons,
-        code,
+        ...(code ? { code } : {}),
         ...(result.weatherHold ? { retryAfter: 1800 } : {}),
       },
-      status,
     );
   }
 
@@ -496,7 +484,9 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
 
     return delivery;
@@ -532,8 +522,9 @@ export class DeliveriesService {
 
     // Ownership-scoped: don't leak other users' deliveries by tracking id.
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(
-        `Delivery with tracking id "${trackingId}" not found`,
+      throw new AppNotFoundException(
+        'error.delivery.not_found_by_tracking_id',
+        { trackingId },
       );
     }
 
@@ -572,13 +563,16 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
 
     if (!CANCELABLE_STATUSES.includes(delivery.status)) {
-      throw new BadRequestException(
-        `Delivery cannot be canceled in "${delivery.status}" status. Only ${CANCELABLE_STATUSES.join(', ')} deliveries can be canceled.`,
-      );
+      throw new AppBadRequestException('error.delivery.cancel.bad_status', {
+        status: delivery.status,
+        allowed: CANCELABLE_STATUSES.join(', '),
+      });
     }
 
     // Remove the delivery's pending simulation jobs (best-effort).
@@ -644,11 +638,13 @@ export class DeliveriesService {
         select: { status: true },
       });
       if (!existing) {
-        throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+        throw new AppNotFoundException('error.delivery.not_found', {
+          id: deliveryId,
+        });
       }
-      throw new ConflictException(
-        `Delivery cannot be canceled in "${existing.status}" status.`,
-      );
+      throw new AppConflictException('error.delivery.cancel.race_bad_status', {
+        status: existing.status,
+      });
     }
 
     // Best-effort cleanup (reuses the same services the owner-cancel uses).
@@ -749,11 +745,13 @@ export class DeliveriesService {
         select: { status: true },
       });
       if (!existing) {
-        throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+        throw new AppNotFoundException('error.delivery.not_found', {
+          id: deliveryId,
+        });
       }
-      throw new ConflictException(
-        `Delivery cannot be failed in "${existing.status}" status.`,
-      );
+      throw new AppConflictException('error.delivery.fail.bad_status', {
+        status: existing.status,
+      });
     }
     return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -888,13 +886,17 @@ export class DeliveriesService {
     });
 
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
     if (delivery.status === DeliveryStatus.DELIVERED) {
-      throw new ConflictException('This delivery has already been completed.');
+      throw new AppConflictException(
+        'error.delivery.handoff.already_completed',
+      );
     }
     if (delivery.status !== DeliveryStatus.AWAITING_HANDOFF) {
-      throw new ConflictException('This delivery is not awaiting handoff yet.');
+      throw new AppConflictException('error.delivery.handoff.not_awaiting');
     }
     if (delivery.handoffAttempts >= MAX_HANDOFF_ATTEMPTS) {
       // Already locked. Self-heal: if a prior (concurrent) race locked the counter
@@ -939,7 +941,7 @@ export class DeliveriesService {
         );
         throw this.handoffLockedError();
       }
-      throw new UnauthorizedException('Invalid handoff code.');
+      throw new AppUnauthorizedException('error.delivery.handoff.invalid_code');
     }
 
     // Atomic single-winner transition: only one concurrent confirm can flip
@@ -952,7 +954,9 @@ export class DeliveriesService {
       },
     });
     if (count === 0) {
-      throw new ConflictException('This delivery has already been completed.');
+      throw new AppConflictException(
+        'error.delivery.handoff.already_completed',
+      );
     }
 
     // Record proof of delivery now that the recipient has confirmed receipt
@@ -975,13 +979,11 @@ export class DeliveriesService {
   /** 423 Locked, in object form so the body carries an `error` field like the
    * built-in Nest exceptions (consistent shape through AllExceptionsFilter). */
   private handoffLockedError(): HttpException {
-    return new HttpException(
-      {
-        statusCode: HANDOFF_LOCKED,
-        error: 'Locked',
-        message: 'Too many incorrect attempts — the handoff is locked.',
-      },
+    return new AppHttpException(
       HANDOFF_LOCKED,
+      'error.delivery.handoff.locked',
+      undefined,
+      { error: 'Locked' },
     );
   }
 

@@ -3,7 +3,7 @@ import { DeliveryFailureReason } from '@prisma/client';
 import { STAGES } from '../deliveries/simulation/simulation.constants';
 import { FAQS } from '../support/data/faqs';
 import { CATALOGS, DEFAULT_LOCALE, SUPPORTED_LOCALES } from './catalog';
-import { VALIDATION_KEYS } from './catalog/keys';
+import { ERROR_KEYS, VALIDATION_KEYS } from './catalog/keys';
 
 /**
  * Drift guard: every message key the app renders MUST exist in EVERY supported
@@ -43,9 +43,9 @@ describe('i18n catalog completeness', () => {
     requiredKeys.push(`faq.${faq.id}.question`, `faq.${faq.id}.answer`);
   }
 
-  // Validation keys (one per class-validator constraint the factory maps) aren't derivable
-  // from a code enum, so they're enumerated from the shared VALIDATION_KEYS source.
-  requiredKeys.push(...VALIDATION_KEYS);
+  // Validation + thrown-error keys aren't derivable from a code enum, so they're enumerated
+  // from the shared sources the factory/AppException sites use.
+  requiredKeys.push(...VALIDATION_KEYS, ...ERROR_KEYS);
 
   for (const locale of SUPPORTED_LOCALES) {
     it(`'${locale}' catalog has every required key`, () => {

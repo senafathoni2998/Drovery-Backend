@@ -1,6 +1,7 @@
-import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOkResponse } from '@nestjs/swagger';
 
+import { AppBadRequestException } from '../common/exceptions/app-exception';
 import { GeoService } from './geo.service';
 import {
   GeocodeResponseDto,
@@ -17,7 +18,7 @@ export class GeoController {
     @Query('q') q: string,
   ): Promise<{ data: { lat: number; lng: number } | null }> {
     if (!q || q.trim().length === 0) {
-      throw new BadRequestException('Query parameter "q" is required');
+      throw new AppBadRequestException('error.geo.q_required');
     }
 
     const result = await this.geoService.geocode(q);
@@ -29,9 +30,7 @@ export class GeoController {
   @ApiOkResponse({ type: ReverseGeocodeResponseDto })
   async reverseGeocode(@Query('lat') lat: number, @Query('lng') lng: number) {
     if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
-      throw new BadRequestException(
-        'Query parameters "lat" and "lng" are required and must be numbers',
-      );
+      throw new AppBadRequestException('error.geo.latlng_required');
     }
 
     const address = await this.geoService.reverseGeocode(lat, lng);

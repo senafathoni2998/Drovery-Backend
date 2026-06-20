@@ -1,10 +1,10 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { RecurringDelivery } from '@prisma/client';
 
+import {
+  AppBadRequestException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRecurringDeliveryDto, RecurringQueryDto } from './dto';
 import { RecurrenceRule, computeNextOccurrence } from './recurrence';
@@ -17,16 +17,14 @@ export class RecurringDeliveriesService {
     const startDate = dto.startDate ? new Date(dto.startDate) : new Date();
     const endDate = dto.endDate ? new Date(dto.endDate) : null;
     if (endDate && endDate.getTime() < startDate.getTime()) {
-      throw new BadRequestException('endDate must be on or after startDate.');
+      throw new AppBadRequestException('error.recurring.end_before_start');
     }
 
     let daysOfWeek: number[] = [];
     if (dto.freq === 'WEEKLY') {
       daysOfWeek = [...new Set(dto.daysOfWeek ?? [])].sort((a, b) => a - b);
       if (daysOfWeek.length === 0) {
-        throw new BadRequestException(
-          'WEEKLY schedules require at least one day in daysOfWeek.',
-        );
+        throw new AppBadRequestException('error.recurring.weekly_needs_days');
       }
     }
     // DAILY ignores daysOfWeek (kept empty).
@@ -42,9 +40,7 @@ export class RecurringDeliveriesService {
       new Date(),
     );
     if (!nextRunAt) {
-      throw new BadRequestException(
-        'This schedule produces no future occurrence (check the time, days, and end date).',
-      );
+      throw new AppBadRequestException('error.recurring.no_future_occurrence');
     }
 
     return this.prisma.recurringDelivery.create({
@@ -94,7 +90,7 @@ export class RecurringDeliveriesService {
       where: { id, userId },
     });
     if (!row) {
-      throw new NotFoundException(`Recurring delivery "${id}" not found`);
+      throw new AppNotFoundException('error.recurring.not_found', { id });
     }
     return row;
   }
@@ -107,7 +103,7 @@ export class RecurringDeliveriesService {
       data: { active: false },
     });
     if (count === 0) {
-      throw new NotFoundException(`Recurring delivery "${id}" not found`);
+      throw new AppNotFoundException('error.recurring.not_found', { id });
     }
     return this.findOne(userId, id);
   }
@@ -117,7 +113,7 @@ export class RecurringDeliveriesService {
     const row = await this.findOne(userId, id); // 404 if not owned
     const next = computeNextOccurrence(this.toRule(row), new Date());
     if (!next) {
-      throw new BadRequestException('This recurrence has already ended.');
+      throw new AppBadRequestException('error.recurring.already_ended');
     }
     await this.prisma.recurringDelivery.updateMany({
       where: { id, userId },
@@ -131,7 +127,7 @@ export class RecurringDeliveriesService {
       where: { id, userId },
     });
     if (count === 0) {
-      throw new NotFoundException(`Recurring delivery "${id}" not found`);
+      throw new AppNotFoundException('error.recurring.not_found', { id });
     }
   }
 

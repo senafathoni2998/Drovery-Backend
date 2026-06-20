@@ -1,10 +1,10 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 
+import {
+  AppBadRequestException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { PrismaService } from '../prisma/prisma.service';
 import { WORKFLOWS, Workflow } from './data';
 import { CompleteStepDto } from './dto';
@@ -24,7 +24,9 @@ export class WorkflowsService {
     const workflow = WORKFLOWS[workflowId];
 
     if (!workflow) {
-      throw new NotFoundException(`Workflow "${workflowId}" not found`);
+      throw new AppNotFoundException('error.workflow.not_found', {
+        workflowId,
+      });
     }
 
     return workflow;
@@ -38,15 +40,18 @@ export class WorkflowsService {
     const workflow = WORKFLOWS[dto.workflowId];
 
     if (!workflow) {
-      throw new NotFoundException(`Workflow "${dto.workflowId}" not found`);
+      throw new AppNotFoundException('error.workflow.not_found', {
+        workflowId: dto.workflowId,
+      });
     }
 
     const stepExists = workflow.steps.some((step) => step.id === dto.stepId);
 
     if (!stepExists) {
-      throw new BadRequestException(
-        `Step "${dto.stepId}" does not exist in workflow "${dto.workflowId}"`,
-      );
+      throw new AppBadRequestException('error.workflow.step_not_found', {
+        stepId: dto.stepId,
+        workflowId: dto.workflowId,
+      });
     }
 
     // `deliveries` is partitioned (composite PK), so a child write needs the parent's
@@ -57,7 +62,9 @@ export class WorkflowsService {
       select: { createdAt: true },
     });
     if (!delivery) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
 
     return this.prisma.workflowStepCompletion.upsert({

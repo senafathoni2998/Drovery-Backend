@@ -1,11 +1,4 @@
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   DroneCommand,
   DroneCommandStatus,
@@ -14,6 +7,12 @@ import {
   TrackingSource,
 } from '@prisma/client';
 
+import {
+  AppConflictException,
+  AppForbiddenException,
+  AppNotFoundException,
+  AppUnprocessableEntityException,
+} from '../../common/exceptions/app-exception';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveriesService } from '../deliveries.service';
@@ -72,22 +71,24 @@ export class DroneCommandService {
         assignedDroneId: true,
       },
     });
-    if (!delivery) throw new NotFoundException('Delivery not found');
+    if (!delivery)
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     if (delivery.trackingSource !== TrackingSource.LIVE) {
       // No real drone drives a SIMULATED delivery — there is nothing to command.
-      throw new UnprocessableEntityException(
-        'Only LIVE deliveries can be commanded',
-      );
+      throw new AppUnprocessableEntityException('error.command.live_only');
     }
     if (!delivery.assignedDroneId) {
-      throw new ConflictException('Delivery has no assigned drone');
+      throw new AppConflictException('error.command.no_drone');
     }
     const legal = COMMAND_TYPE_TO_LEGAL_STATUSES[dto.type];
     if (!legal.includes(delivery.status)) {
       // Fail fast; the ack-time CAS is still the authoritative guard.
-      throw new ConflictException(
-        `Cannot ${dto.type} a delivery in status ${delivery.status}`,
-      );
+      throw new AppConflictException('error.command.illegal_for_status', {
+        type: dto.type,
+        status: delivery.status,
+      });
     }
     const reason = dto.reason ?? COMMAND_TYPE_DEFAULT_REASON[dto.type];
 
@@ -98,7 +99,7 @@ export class DroneCommandService {
       where: { deliveryId },
     });
     if (total >= MAX_COMMANDS_PER_DELIVERY) {
-      throw new ConflictException('Command limit reached for this delivery');
+      throw new AppConflictException('error.command.limit_reached');
     }
 
     try {
@@ -124,9 +125,7 @@ export class DroneCommandService {
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === 'P2002'
       ) {
-        throw new ConflictException(
-          'A command is already pending for this delivery',
-        );
+        throw new AppConflictException('error.command.already_pending');
       }
       throw e;
     }
@@ -138,7 +137,10 @@ export class DroneCommandService {
       where: { id: deliveryId },
       select: { id: true },
     });
-    if (!exists) throw new NotFoundException('Delivery not found');
+    if (!exists)
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     return this.prisma.droneCommand.findMany({
       where: { deliveryId },
       orderBy: { createdAt: 'desc' },
@@ -233,14 +235,14 @@ export class DroneCommandService {
         delivery: { select: { trackingSource: true, assignedDroneId: true } },
       },
     });
-    if (!command) throw new NotFoundException('Command not found');
+    if (!command) throw new AppNotFoundException('error.command.not_found');
 
     if (
       command.droneId !== droneId ||
       command.delivery.trackingSource !== TrackingSource.LIVE ||
       command.delivery.assignedDroneId !== droneId
     ) {
-      throw new ForbiddenException('Drone is not assigned to this delivery');
+      throw new AppForbiddenException('error.command.drone_not_assigned');
     }
 
     // An expired-but-still-FETCHED command must never execute late.
@@ -262,7 +264,7 @@ export class DroneCommandService {
           result: 'expired',
         });
       }
-      throw new ConflictException('Command has expired');
+      throw new AppConflictException('error.command.expired');
     }
 
     const accept = accepted !== false; // default true
@@ -280,7 +282,7 @@ export class DroneCommandService {
       },
     });
     if (count === 0) {
-      throw new ConflictException('Command is not awaiting acknowledgement');
+      throw new AppConflictException('error.command.not_awaiting_ack');
     }
 
     let appliedTransition = false;

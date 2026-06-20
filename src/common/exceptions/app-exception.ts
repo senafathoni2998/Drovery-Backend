@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   HttpStatus,
   NotFoundException,
   UnauthorizedException,
@@ -140,6 +141,23 @@ export class AppUnprocessableEntityException extends UnprocessableEntityExceptio
         messageParams,
         passthrough,
       ),
+    );
+  }
+}
+
+/** A localized exception with an EXPLICIT status — for the few sites whose status is chosen
+ * at runtime (e.g. serviceability: 503 on a weather hold else 422). Same body shape, so the
+ * filter localizes it identically. */
+export class AppHttpException extends HttpException {
+  constructor(
+    status: number,
+    messageKey: string,
+    messageParams?: MessageParams,
+    passthrough?: Passthrough,
+  ) {
+    super(
+      localizedBody(status, messageKey, messageParams, passthrough),
+      status,
     );
   }
 }

@@ -1,6 +1,7 @@
-import { HttpException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, WalletTxnReason } from '@prisma/client';
 
+import { AppConflictException } from '../common/exceptions/app-exception';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -66,14 +67,10 @@ export class WalletService {
       data: { creditBalance: { decrement: amt } },
     });
     if (count === 0) {
-      throw new HttpException(
-        {
-          statusCode: 409,
-          error: 'Conflict',
-          message: 'Insufficient wallet credits.',
-          code: 'WALLET_INSUFFICIENT_CREDITS',
-        },
-        409,
+      throw new AppConflictException(
+        'error.wallet.insufficient_credits',
+        undefined,
+        { error: 'Conflict', code: 'WALLET_INSUFFICIENT_CREDITS' },
       );
     }
     const u = await tx.user.findUnique({

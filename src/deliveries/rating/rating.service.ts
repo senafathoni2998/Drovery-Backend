@@ -1,10 +1,10 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DeliveryStatus } from '@prisma/client';
 
+import {
+  AppConflictException,
+  AppNotFoundException,
+} from '../../common/exceptions/app-exception';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RateDeliveryDto } from './dto/rate-delivery.dto';
 
@@ -19,9 +19,7 @@ export class RatingService {
   async rate(userId: string, deliveryId: string, dto: RateDeliveryDto) {
     const delivery = await this.ownDelivery(userId, deliveryId);
     if (delivery.status !== DeliveryStatus.DELIVERED) {
-      throw new ConflictException(
-        'You can only rate a delivery once it has been delivered.',
-      );
+      throw new AppConflictException('error.delivery.rating.not_delivered');
     }
 
     return this.prisma.deliveryRating.upsert({
@@ -44,9 +42,9 @@ export class RatingService {
       where: { deliveryId },
     });
     if (!rating) {
-      throw new NotFoundException(
-        `Delivery "${deliveryId}" has not been rated yet`,
-      );
+      throw new AppNotFoundException('error.delivery.rating.not_rated', {
+        id: deliveryId,
+      });
     }
     return rating;
   }
@@ -56,7 +54,9 @@ export class RatingService {
       where: { id: deliveryId },
     });
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
     return delivery;
   }

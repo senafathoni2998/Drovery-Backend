@@ -121,4 +121,116 @@ export const en: Record<string, string> = {
   'validation.invalid': '{property} is invalid',
   'validation.code.sixDigit': 'code must be a 6-digit number',
   'validation.timeOfDay.format': 'timeOfDay must be HH:MM (24-hour)',
+
+  // ── Thrown HTTP errors (one key per literal; the filter translates at the boundary) ──
+  // Cross-cutting authz / user.
+  'error.authz.forbidden': 'Insufficient permissions',
+  'error.authz.access_denied': 'Access denied',
+  'error.user.not_found': 'User not found',
+
+  // Delivery.
+  'error.delivery.not_found': 'Delivery with id "{id}" not found',
+  'error.delivery.not_found_by_tracking_id':
+    'Delivery with tracking id "{trackingId}" not found',
+  'error.delivery.schedule.too_far':
+    'Pickup can be scheduled at most {maxDays} days ahead.',
+  'error.delivery.schedule.live_not_allowed':
+    'A LIVE-tracked delivery cannot be scheduled for a future pickup window.',
+  'error.delivery.tracking_id_alloc_failed':
+    'Could not allocate a unique tracking id, please retry.',
+  'error.delivery.serviceability.unresolved_location':
+    "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
+  'error.delivery.serviceability.not_flyable':
+    'This delivery cannot be flown right now.',
+  'error.delivery.cancel.bad_status':
+    'Delivery cannot be canceled in "{status}" status. Only {allowed} deliveries can be canceled.',
+  'error.delivery.cancel.race_bad_status':
+    'Delivery cannot be canceled in "{status}" status.',
+  'error.delivery.fail.bad_status':
+    'Delivery cannot be failed in "{status}" status.',
+  'error.delivery.handoff.already_completed':
+    'This delivery has already been completed.',
+  'error.delivery.handoff.not_awaiting':
+    'This delivery is not awaiting handoff yet.',
+  'error.delivery.handoff.invalid_code': 'Invalid handoff code.',
+  'error.delivery.handoff.locked':
+    'Too many incorrect attempts — the handoff is locked.',
+  'error.delivery.proof.not_found': 'No proof of delivery for delivery "{id}"',
+  'error.delivery.rating.not_delivered':
+    'You can only rate a delivery once it has been delivered.',
+  'error.delivery.rating.not_rated': 'Delivery "{id}" has not been rated yet',
+  'error.delivery.tracking.not_found':
+    'Tracking data for delivery "{id}" not found',
+
+  // Drone commands.
+  'error.command.not_found': 'Command not found',
+  'error.command.live_only': 'Only LIVE deliveries can be commanded',
+  'error.command.no_drone': 'Delivery has no assigned drone',
+  'error.command.illegal_for_status':
+    'Cannot {type} a delivery in status {status}',
+  'error.command.limit_reached': 'Command limit reached for this delivery',
+  'error.command.already_pending':
+    'A command is already pending for this delivery',
+  'error.command.drone_not_assigned': 'Drone is not assigned to this delivery',
+  'error.command.expired': 'Command has expired',
+  'error.command.not_awaiting_ack': 'Command is not awaiting acknowledgement',
+
+  // Telemetry (request-side; the ingest-guard machine messages stay English).
+  'error.telemetry.latlng_pair_required':
+    'lat and lng must be provided together',
+  'error.telemetry.not_live': 'Delivery is not live-tracked',
+  'error.telemetry.drone_not_assigned':
+    'Drone is not assigned to this delivery',
+
+  // Auth. The two invalid-credentials + the token messages are deliberately vague
+  // (anti-enumeration) — DO NOT add detail in any locale.
+  'error.auth.email_taken': 'A user with this email already exists',
+  'error.auth.signup_failed': 'Could not complete signup, please try again',
+  'error.auth.invalid_credentials': 'Invalid email or password',
+  'error.auth.refresh_invalid': 'Refresh token is invalid or has been revoked',
+  'error.auth.user_gone': 'User no longer exists',
+  'error.auth.reset_token_invalid': 'Invalid or expired reset token',
+  'error.auth.verify_token_invalid': 'Invalid or expired verification token',
+
+  // Admin.
+  'error.admin.ticket.not_found': 'Ticket "{id}" not found',
+  'error.admin.ticket.closed': 'This ticket is closed; reopen it first.',
+  'error.admin.refund.invalid_amount':
+    'Refund must be greater than 0 and at most the charged total.',
+  'error.admin.refund.already_refunded':
+    'This delivery has already been refunded.',
+  'error.admin.promo.code_exists':
+    'A promo code with that code already exists.',
+  'error.admin.promo.not_found': 'Promo "{id}" not found',
+  'error.admin.promo.percent_range':
+    'A PERCENT discountValue must be between 0 and 100.',
+  'error.admin.user.not_found': 'User "{id}" not found',
+  'error.admin.user.last_admin': 'Cannot demote the last remaining admin.',
+
+  // Payment.
+  'error.payment.method.not_found': 'Payment method with id "{id}" not found',
+
+  // Recurring deliveries.
+  'error.recurring.end_before_start': 'endDate must be on or after startDate.',
+  'error.recurring.weekly_needs_days':
+    'WEEKLY schedules require at least one day in daysOfWeek.',
+  'error.recurring.no_future_occurrence':
+    'This schedule produces no future occurrence (check the time, days, and end date).',
+  'error.recurring.not_found': 'Recurring delivery "{id}" not found',
+  'error.recurring.already_ended': 'This recurrence has already ended.',
+
+  // Saved addresses / favorites / workflows / geo / support / wallet.
+  'error.saved_address.not_found': 'Saved address with id "{id}" not found',
+  'error.saved_address.limit': 'You can save at most {max} addresses.',
+  'error.favorite.not_found': 'Favorite "{id}" not found',
+  'error.workflow.not_found': 'Workflow "{workflowId}" not found',
+  'error.workflow.step_not_found':
+    'Step "{stepId}" does not exist in workflow "{workflowId}"',
+  'error.geo.q_required': 'Query parameter "q" is required',
+  'error.geo.latlng_required':
+    'Query parameters "lat" and "lng" are required and must be numbers',
+  'error.support.message_required': 'Message is required',
+  'error.support.ticket.not_found': 'Support ticket not found',
+  'error.support.ticket.closed': 'This support ticket is closed',
+  'error.wallet.insufficient_credits': 'Insufficient wallet credits.',
 };

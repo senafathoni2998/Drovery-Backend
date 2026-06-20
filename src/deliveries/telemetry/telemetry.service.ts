@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   DeliveryFailureReason,
   DeliveryStatus,
@@ -12,6 +7,10 @@ import {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { I18nService } from '../../i18n/i18n.service';
+import {
+  AppBadRequestException,
+  AppForbiddenException,
+} from '../../common/exceptions/app-exception';
 import { DeliveriesService } from '../deliveries.service';
 import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { statusesBefore } from '../simulation/simulation.constants';
@@ -67,7 +66,7 @@ export class TelemetryService {
     const hasLat = lat !== undefined && lat !== null;
     const hasLng = lng !== undefined && lng !== null;
     if (hasLat !== hasLng) {
-      throw new BadRequestException('lat and lng must be provided together');
+      throw new AppBadRequestException('error.telemetry.latlng_pair_required');
     }
 
     // The HTTP DTO already bounds-checks, but the ingest core is the shared,
@@ -101,14 +100,14 @@ export class TelemetryService {
     // sim + a live producer can't both mutate one row (the sim is the only
     // writer for SIMULATED; for LIVE no sim jobs were ever enqueued).
     if (delivery.trackingSource !== TrackingSource.LIVE) {
-      throw new ForbiddenException('Delivery is not live-tracked');
+      throw new AppForbiddenException('error.telemetry.not_live');
     }
 
     // Stream-to-delivery ownership: a gateway with a valid key still can't drive
     // a delivery it isn't bound to. (LIVE deliveries always get an assignedDroneId
     // at create(), so a missing binding means undrivable, not open.)
     if (!delivery.assignedDroneId || delivery.assignedDroneId !== droneId) {
-      throw new ForbiddenException('Drone is not assigned to this delivery');
+      throw new AppForbiddenException('error.telemetry.drone_not_assigned');
     }
 
     // Exception phases (FAILED/RETURNING/RETURNED) are BRANCHES off the happy

@@ -1,5 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
+import { AppNotFoundException } from '../../common/exceptions/app-exception';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { SubmitProofDto } from './dto/submit-proof.dto';
@@ -78,9 +79,9 @@ export class ProofService {
       where: { deliveryId },
     });
     if (!proof) {
-      throw new NotFoundException(
-        `No proof of delivery for delivery "${deliveryId}"`,
-      );
+      throw new AppNotFoundException('error.delivery.proof.not_found', {
+        id: deliveryId,
+      });
     }
     return proof;
   }
@@ -90,7 +91,9 @@ export class ProofService {
       where: { id: deliveryId },
     });
     if (!delivery || delivery.userId !== userId) {
-      throw new NotFoundException(`Delivery with id "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
     }
     return delivery;
   }

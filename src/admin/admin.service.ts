@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   DeliveryFailureReason,
   DeliveryStatus,
@@ -13,6 +7,11 @@ import {
   SupportTicketStatus,
 } from '@prisma/client';
 
+import {
+  AppBadRequestException,
+  AppConflictException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -73,7 +72,8 @@ export class AdminService {
         messages: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
       },
     });
-    if (!ticket) throw new NotFoundException(`Ticket "${id}" not found`);
+    if (!ticket)
+      throw new AppNotFoundException('error.admin.ticket.not_found', { id });
     return ticket;
   }
 
@@ -84,9 +84,12 @@ export class AdminService {
       where: { id: ticketId },
       select: { status: true },
     });
-    if (!ticket) throw new NotFoundException(`Ticket "${ticketId}" not found`);
+    if (!ticket)
+      throw new AppNotFoundException('error.admin.ticket.not_found', {
+        id: ticketId,
+      });
     if (ticket.status === 'CLOSED') {
-      throw new ConflictException('This ticket is closed; reopen it first.');
+      throw new AppConflictException('error.admin.ticket.closed');
     }
 
     const [message] = await this.prisma.$transaction([
@@ -119,7 +122,9 @@ export class AdminService {
       data: { status },
     });
     if (count === 0)
-      throw new NotFoundException(`Ticket "${ticketId}" not found`);
+      throw new AppNotFoundException('error.admin.ticket.not_found', {
+        id: ticketId,
+      });
     this.logger.log(`ticket ${ticketId} status → ${status}`);
     return this.prisma.supportTicket.findUnique({ where: { id: ticketId } });
   }
@@ -157,7 +162,8 @@ export class AdminService {
         rating: true,
       },
     });
-    if (!delivery) throw new NotFoundException(`Delivery "${id}" not found`);
+    if (!delivery)
+      throw new AppNotFoundException('error.delivery.not_found', { id });
     return delivery;
   }
 
@@ -182,13 +188,13 @@ export class AdminService {
       select: { userId: true, estimatedPrice: true },
     });
     if (!delivery)
-      throw new NotFoundException(`Delivery "${deliveryId}" not found`);
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
 
     const refundAmount = amount ?? delivery.estimatedPrice;
     if (refundAmount <= 0 || refundAmount > delivery.estimatedPrice) {
-      throw new BadRequestException(
-        'Refund must be greater than 0 and at most the charged total.',
-      );
+      throw new AppBadRequestException('error.admin.refund.invalid_amount');
     }
 
     try {
@@ -210,7 +216,7 @@ export class AdminService {
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === 'P2002'
       ) {
-        throw new ConflictException('This delivery has already been refunded.');
+        throw new AppConflictException('error.admin.refund.already_refunded');
       }
       throw e;
     }
@@ -256,9 +262,7 @@ export class AdminService {
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === 'P2002'
       ) {
-        throw new ConflictException(
-          'A promo code with that code already exists.',
-        );
+        throw new AppConflictException('error.admin.promo.code_exists');
       }
       throw e;
     }
@@ -280,7 +284,8 @@ export class AdminService {
 
   async getPromo(id: string) {
     const promo = await this.prisma.promoCode.findUnique({ where: { id } });
-    if (!promo) throw new NotFoundException(`Promo "${id}" not found`);
+    if (!promo)
+      throw new AppNotFoundException('error.admin.promo.not_found', { id });
     return promo;
   }
 
@@ -308,15 +313,14 @@ export class AdminService {
         ...(dto.active !== undefined ? { active: dto.active } : {}),
       },
     });
-    if (count === 0) throw new NotFoundException(`Promo "${id}" not found`);
+    if (count === 0)
+      throw new AppNotFoundException('error.admin.promo.not_found', { id });
     return this.prisma.promoCode.findUnique({ where: { id } });
   }
 
   private assertDiscountValue(type: string, value: number) {
     if (type === 'PERCENT' && (value <= 0 || value > 100)) {
-      throw new BadRequestException(
-        'A PERCENT discountValue must be between 0 and 100.',
-      );
+      throw new AppBadRequestException('error.admin.promo.percent_range');
     }
   }
 
@@ -392,13 +396,16 @@ export class AdminService {
       where: { id: targetId },
       select: { role: true },
     });
-    if (!target) throw new NotFoundException(`User "${targetId}" not found`);
+    if (!target)
+      throw new AppNotFoundException('error.admin.user.not_found', {
+        id: targetId,
+      });
 
     // Don't strand the system with zero admins.
     if (target.role === 'ADMIN' && role !== 'ADMIN') {
       const admins = await this.prisma.user.count({ where: { role: 'ADMIN' } });
       if (admins <= 1) {
-        throw new ConflictException('Cannot demote the last remaining admin.');
+        throw new AppConflictException('error.admin.user.last_admin');
       }
     }
 

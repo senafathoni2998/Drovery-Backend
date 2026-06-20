@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
+import { AppNotFoundException } from '../common/exceptions/app-exception';
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { nowInServiceTz } from '../deliveries/delivery-schedule';
 import { PrismaService } from '../prisma/prisma.service';
@@ -46,7 +47,7 @@ export class FavoritesService {
       where: { id, userId },
     });
     if (count === 0) {
-      throw new NotFoundException(`Favorite "${id}" not found`);
+      throw new AppNotFoundException('error.favorite.not_found', { id });
     }
   }
 
@@ -55,7 +56,7 @@ export class FavoritesService {
   async order(userId: string, id: string, overrides?: OrderFavoriteDto) {
     const fav = await this.prisma.favorite.findFirst({ where: { id, userId } });
     if (!fav) {
-      throw new NotFoundException(`Favorite "${id}" not found`);
+      throw new AppNotFoundException('error.favorite.not_found', { id });
     }
     const now = nowInServiceTz();
     return this.deliveries.create(userId, {

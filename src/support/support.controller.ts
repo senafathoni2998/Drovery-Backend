@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
+import { AppBadRequestException } from '../common/exceptions/app-exception';
 import { parseLocale } from '../i18n/accept-language';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { PublicApi } from '../common/decorators/public-api.decorator';
@@ -60,7 +60,7 @@ export class SupportController {
     @Body() body: CreateTicketDto,
   ) {
     if (!body.message || body.message.trim().length === 0) {
-      throw new BadRequestException('Message is required');
+      throw new AppBadRequestException('error.support.message_required');
     }
 
     return this.supportService.submitTicket(userId, body.message.trim());

@@ -1,13 +1,12 @@
-import {
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PaymentStatus } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  AppForbiddenException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { StripeService, StripeEvent } from '../stripe/stripe.service';
 import { AddPaymentMethodDto } from './dto';
 
@@ -58,13 +57,13 @@ export class PaymentsService {
     });
 
     if (!method) {
-      throw new NotFoundException(
-        `Payment method with id "${paymentMethodId}" not found`,
-      );
+      throw new AppNotFoundException('error.payment.method.not_found', {
+        id: paymentMethodId,
+      });
     }
 
     if (method.userId !== userId) {
-      throw new ForbiddenException('Access denied');
+      throw new AppForbiddenException('error.authz.access_denied');
     }
 
     await this.prisma.paymentMethod.delete({
@@ -95,13 +94,13 @@ export class PaymentsService {
     });
 
     if (!method) {
-      throw new NotFoundException(
-        `Payment method with id "${paymentMethodId}" not found`,
-      );
+      throw new AppNotFoundException('error.payment.method.not_found', {
+        id: paymentMethodId,
+      });
     }
 
     if (method.userId !== userId) {
-      throw new ForbiddenException('Access denied');
+      throw new AppForbiddenException('error.authz.access_denied');
     }
 
     // Unset all other defaults for this user, then set the chosen one
@@ -259,7 +258,7 @@ export class PaymentsService {
   private async ensureStripeCustomer(userId: string): Promise<string> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new AppNotFoundException('error.user.not_found');
     }
     if (user.stripeCustomerId) return user.stripeCustomerId;
 

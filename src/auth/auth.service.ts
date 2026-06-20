@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -12,6 +6,11 @@ import * as crypto from 'crypto';
 
 import { Prisma } from '@prisma/client';
 
+import {
+  AppBadRequestException,
+  AppConflictException,
+  AppUnauthorizedException,
+} from '../common/exceptions/app-exception';
 import { Locale } from '../i18n/catalog';
 import { parseLocale } from '../i18n/accept-language';
 import { MailService } from '../mail/mail.service';
@@ -41,7 +40,7 @@ export class AuthService {
     });
 
     if (existing) {
-      throw new ConflictException('A user with this email already exists');
+      throw new AppConflictException('error.auth.email_taken');
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_SALT_ROUNDS);
@@ -75,9 +74,7 @@ export class AuthService {
       }
     }
     if (!user) {
-      throw new ConflictException(
-        'Could not complete signup, please try again',
-      );
+      throw new AppConflictException('error.auth.signup_failed');
     }
 
     // Link an inbound referral (best-effort — an unknown/self code never blocks
@@ -135,7 +132,7 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new AppUnauthorizedException('error.auth.invalid_credentials');
     }
 
     const passwordMatches = await bcrypt.compare(
@@ -144,7 +141,7 @@ export class AuthService {
     );
 
     if (!passwordMatches) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new AppUnauthorizedException('error.auth.invalid_credentials');
     }
 
     const tokens = await this.generateTokens(user.id, user.email);
@@ -175,14 +172,12 @@ export class AuthService {
       record.userId !== userId ||
       record.expiresAt.getTime() < Date.now()
     ) {
-      throw new UnauthorizedException(
-        'Refresh token is invalid or has been revoked',
-      );
+      throw new AppUnauthorizedException('error.auth.refresh_invalid');
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
-      throw new UnauthorizedException('User no longer exists');
+      throw new AppUnauthorizedException('error.auth.user_gone');
     }
 
     // Revoke the used token (rotation), then issue + persist a new pair.
@@ -251,7 +246,7 @@ export class AuthService {
     });
 
     if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
-      throw new BadRequestException('Invalid or expired reset token');
+      throw new AppBadRequestException('error.auth.reset_token_invalid');
     }
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
@@ -305,7 +300,7 @@ export class AuthService {
     });
 
     if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
-      throw new BadRequestException('Invalid or expired verification token');
+      throw new AppBadRequestException('error.auth.verify_token_invalid');
     }
 
     await this.prisma.$transaction([

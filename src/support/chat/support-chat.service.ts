@@ -1,9 +1,9 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
+import {
+  AppBadRequestException,
+  AppNotFoundException,
+} from '../../common/exceptions/app-exception';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -16,7 +16,7 @@ export class SupportChatService {
       where: { id: ticketId, userId },
     });
     if (!ticket) {
-      throw new NotFoundException('Support ticket not found');
+      throw new AppNotFoundException('error.support.ticket.not_found');
     }
     return ticket;
   }
@@ -48,7 +48,7 @@ export class SupportChatService {
   async createUserMessage(userId: string, ticketId: string, content: string) {
     const ticket = await this.assertOwnedTicket(userId, ticketId);
     if (ticket.status === 'CLOSED') {
-      throw new BadRequestException('This support ticket is closed');
+      throw new AppBadRequestException('error.support.ticket.closed');
     }
     const [message] = await this.prisma.$transaction([
       this.prisma.supportChatMessage.create({

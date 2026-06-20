@@ -1,9 +1,9 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
+import {
+  AppBadRequestException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { GeoService } from '../geo/geo.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSavedAddressDto, UpdateSavedAddressDto } from './dto';
@@ -40,7 +40,7 @@ export class SavedAddressesService {
       where: { id },
     });
     if (!address || address.userId !== userId) {
-      throw new NotFoundException(`Saved address with id "${id}" not found`);
+      throw new AppNotFoundException('error.saved_address.not_found', { id });
     }
     return address;
   }
@@ -48,9 +48,9 @@ export class SavedAddressesService {
   async create(userId: string, dto: CreateSavedAddressDto) {
     const count = await this.prisma.savedAddress.count({ where: { userId } });
     if (count >= MAX_ADDRESSES_PER_USER) {
-      throw new BadRequestException(
-        `You can save at most ${MAX_ADDRESSES_PER_USER} addresses.`,
-      );
+      throw new AppBadRequestException('error.saved_address.limit', {
+        max: MAX_ADDRESSES_PER_USER,
+      });
     }
 
     const { lat, lng } = await this.resolveCoords(
