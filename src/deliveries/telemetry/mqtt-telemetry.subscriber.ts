@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
+import { MetricsService } from '../../metrics/metrics.service';
 import { TELEMETRY_FILTER } from '../../mqtt/mqtt.constants';
 import { MqttService } from '../../mqtt/mqtt.service';
 import { TelemetryMessage } from './telemetry.constants';
@@ -21,6 +22,7 @@ export class MqttTelemetrySubscriber implements OnModuleInit {
   constructor(
     private readonly mqtt: MqttService,
     private readonly telemetry: TelemetryService,
+    private readonly metrics: MetricsService,
   ) {}
 
   onModuleInit(): void {
@@ -40,12 +42,21 @@ export class MqttTelemetrySubscriber implements OnModuleInit {
     try {
       msg = JSON.parse(raw.toString()) as TelemetryMessage;
     } catch {
+      this.metrics.mqttFramesTotal.inc({
+        flow: 'telemetry',
+        result: 'dropped',
+      });
       this.logger.warn('Dropped malformed MQTT telemetry frame (invalid JSON)');
       return;
     }
     try {
       await this.telemetry.ingest(msg);
+      this.metrics.mqttFramesTotal.inc({ flow: 'telemetry', result: 'ok' });
     } catch (error) {
+      this.metrics.mqttFramesTotal.inc({
+        flow: 'telemetry',
+        result: 'rejected',
+      });
       this.logger.warn(
         `MQTT telemetry frame rejected: ${(error as Error).message}`,
       );
