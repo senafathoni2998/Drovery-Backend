@@ -233,4 +233,7 @@ export const en: Record<string, string> = {
   'error.support.ticket.not_found': 'Support ticket not found',
   'error.support.ticket.closed': 'This support ticket is closed',
   'error.wallet.insufficient_credits': 'Insufficient wallet credits.',
+  'error.notification.not_found': 'Notification with id "{id}" not found',
+  'error.notification.quiet_hours_pair':
+    'quietHoursStart and quietHoursEnd must be set together (or both cleared)',
 };

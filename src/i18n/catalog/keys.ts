@@ -102,4 +102,6 @@ export const ERROR_KEYS = [
   'error.support.ticket.not_found',
   'error.support.ticket.closed',
   'error.wallet.insufficient_credits',
+  'error.notification.not_found',
+  'error.notification.quiet_hours_pair',
 ] as const;

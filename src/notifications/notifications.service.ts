@@ -1,11 +1,10 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import {
+  AppBadRequestException,
+  AppNotFoundException,
+} from '../common/exceptions/app-exception';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDeviceDto, UpdateNotificationPreferencesDto } from './dto';
 
@@ -54,9 +53,9 @@ export class NotificationsService {
     });
 
     if (count === 0) {
-      throw new NotFoundException(
-        `Notification with id "${notificationId}" not found`,
-      );
+      throw new AppNotFoundException('error.notification.not_found', {
+        id: notificationId,
+      });
     }
 
     // Return the full updated row (keeps the NotificationResponseDto contract);
@@ -68,9 +67,9 @@ export class NotificationsService {
       where: { id: notificationId, userId },
     });
     if (!updated) {
-      throw new NotFoundException(
-        `Notification with id "${notificationId}" not found`,
-      );
+      throw new AppNotFoundException('error.notification.not_found', {
+        id: notificationId,
+      });
     }
     return updated;
   }
@@ -156,9 +155,7 @@ export class NotificationsService {
         ? dto.quietHoursEnd
         : current.quietHoursEnd;
     if ((start == null) !== (end == null)) {
-      throw new BadRequestException(
-        'quietHoursStart and quietHoursEnd must be set together (or both cleared)',
-      );
+      throw new AppBadRequestException('error.notification.quiet_hours_pair');
     }
 
     return this.prisma.notificationPreference.upsert({

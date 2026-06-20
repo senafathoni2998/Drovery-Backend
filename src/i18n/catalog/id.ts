@@ -243,4 +243,7 @@ export const id: Record<string, string> = {
   'error.support.ticket.not_found': 'Tiket dukungan tidak ditemukan',
   'error.support.ticket.closed': 'Tiket dukungan ini ditutup',
   'error.wallet.insufficient_credits': 'Kredit dompet tidak mencukupi.',
+  'error.notification.not_found': 'Notifikasi dengan id "{id}" tidak ditemukan',
+  'error.notification.quiet_hours_pair':
+    'quietHoursStart dan quietHoursEnd harus diatur bersama (atau keduanya dikosongkan)',
 };

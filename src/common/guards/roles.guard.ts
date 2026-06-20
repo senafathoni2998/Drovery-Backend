@@ -1,13 +1,9 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { AppForbiddenException } from '../exceptions/app-exception';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 
 /**
@@ -33,14 +29,14 @@ export class RolesGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest();
     const userId = req.user?.sub as string | undefined;
-    if (!userId) throw new ForbiddenException('Insufficient permissions');
+    if (!userId) throw new AppForbiddenException('error.authz.forbidden');
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { role: true },
     });
     if (!user || !required.includes(user.role)) {
-      throw new ForbiddenException('Insufficient permissions');
+      throw new AppForbiddenException('error.authz.forbidden');
     }
 
     req.user.role = user.role; // available downstream / for logging
