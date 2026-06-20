@@ -148,6 +148,14 @@ export const id: Record<string, string> = {
     'Kami tidak dapat menemukan lokasi penjemputan atau pengantaran. Pilih titiknya di peta dan coba lagi.',
   'error.delivery.serviceability.not_flyable':
     'Pengiriman ini tidak dapat diterbangkan saat ini.',
+  'error.serviceability.OUT_OF_AREA':
+    'Lokasi penjemputan atau pengantaran berada di luar area layanan kami.',
+  'error.serviceability.NO_FLY_ZONE':
+    'Rute dibatasi di dekat {zoneName} (zona larangan terbang).',
+  'error.serviceability.WEATHER_STORM':
+    'Badai sedang membuat drone tidak dapat terbang di lokasi ini saat ini.',
+  'error.serviceability.WEATHER_HOLD':
+    'Angin kencang membuat drone tidak dapat terbang saat ini ({windKph} kph).',
   'error.delivery.cancel.bad_status':
     'Pengiriman tidak dapat dibatalkan dalam status "{status}". Hanya pengiriman {allowed} yang dapat dibatalkan.',
   'error.delivery.cancel.race_bad_status':
