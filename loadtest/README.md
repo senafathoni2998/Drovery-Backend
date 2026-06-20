@@ -126,8 +126,8 @@ sudo NODES=1 API_CPUS=1.0 WORKER_CPUS=0.75 PG_CPUS=2.0 \
 
 | tier | per-replica CPU | per-replica mem | override |
 |---|---|---|---|
-| api | 0.6 | 640M | `API_CPUS` / `API_MEM` |
-| worker | 0.4 | 512M | `WORKER_CPUS` / `WORKER_MEM` |
+| api | 0.6 | 1G | `API_CPUS` / `API_MEM` |
+| worker | 0.4 | 768M | `WORKER_CPUS` / `WORKER_MEM` |
 | postgres (shared) | 1.0 | 1G | `PG_CPUS` / `PG_MEM` |
 | pgbouncer (shared) | 0.5 | 128M | `PGB_CPUS` / `PGB_MEM` |
 | redis (shared) | 0.5 | 256M | `REDIS_CPUS` / `REDIS_MEM` |
@@ -142,10 +142,13 @@ The default CPU budget is intentionally **oversubscribed** on a 4-core box (api 
 so the host-core contention it surfaces *is* the ceiling the test finds. On a 4-core laptop the
 sweep therefore demonstrates the **shape** (per-node ~flat until a shared tier *or host cores*
 cap), not strict additive linearity; for a strict non-oversubscribed fit use `API_CPUS=0.4` or a
-bigger box. Memory limits are a hard `memory.max` (unlike `cpus`, which only throttles): the
-overlay adds a `NODE_OPTIONS=--max-old-space-size` cap per tier so V8 GCs before the kernel
-OOM-kills a replica — **a replica restart during a run invalidates that step's per-node number**
-(check `docker compose ps` for restarts if numbers look off).
+bigger box. **Memory is given generous headroom, not a tight cap** — only CPU is bounded (the
+point of "nodes"). A tight `memory.max` OOM-kills the container, and a low V8
+`--max-old-space-size` crash-loops a concurrency-10 worker (we hit exactly this: the SIM
+backlog froze at the enqueued count with zero drain), so the overlay caps neither; on a
+memory-constrained *target* node, lower the limit and add a proportional `NODE_OPTIONS`
+deliberately. A replica restart during a run still invalidates that step's per-node number —
+check `docker compose ps` for restarts if numbers look off.
 
 **What it proves:** per-node throughput is attributable, and bounded nodes scale ~linearly
 until a shared tier (PgBouncer pool / Postgres / host cores) caps — and the overlay makes that
