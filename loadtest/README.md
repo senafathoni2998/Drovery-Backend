@@ -94,3 +94,27 @@ metrics the SLO alerts use (`observability/alerts.yml`):
 
 > Real 100k-scale numbers need real (multi-node, cloud) infra — this harness proves the
 > design holds and the signals fire; the absolute numbers are bounded by the single box.
+
+## Sample result (4-core laptop · api=3 worker=3 · 50 VUs · 90s)
+
+```
+checks ................ 100.00%  (4344/4344)   ✓ signup/create/list/get all 201/200
+http_req_failed ....... 0.00%    (0/4344)      ← zero errors under load
+http_reqs ............. 4344     33.2 req/s    (1086 full journeys)
+http_req_duration p95 . 5.66s    ✗ (>1500ms)   ← entirely the signup step (below)
+
+  step_create_delivery  p95 659ms   (DB write + payment + BullMQ enqueue)
+  step_get_one          p95 323ms   (read)
+  step_list             p95 248ms   (read)
+  step_signup           p95 7.72s   ← bcrypt cost-12 hashing, CPU-bound
+```
+
+**Read:** correctness is perfect (0 failures, 100% checks) — the LB → API×3 → PgBouncer →
+Postgres + worker-split + partitioned-writes design holds under load with no 5xx, no
+timeouts, no pool exhaustion. The *only* latency pressure is `signup`: bcrypt at cost 12 is
+deliberately CPU-hard, and 50 concurrent signups saturate a 4-core box that's ALSO running
+the whole stack + k6 — so the CPU-bound hashing queues. The I/O-bound endpoints stayed fast
+under the same load. This is the textbook signal horizontal scaling across real nodes fixes
+(each API replica gets its own cores; bcrypt parallelizes) — NOT something to "fix" by
+weakening the hash cost. The p95 threshold breach correctly *identified* the auth path as
+the scaling pressure point.
