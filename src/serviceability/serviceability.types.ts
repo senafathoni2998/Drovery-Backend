@@ -24,7 +24,10 @@ export type ServiceabilityCode =
 
 export interface ServiceabilityResult {
   serviceable: boolean;
-  reasons: string[]; // human-readable
+  reasons: string[]; // human-readable (English; kept as machine/debug passthrough)
   codes: ServiceabilityCode[]; // machine
   weatherHold: boolean; // true iff any code is a WEATHER_* (transient → retryable)
+  // Interpolation params for the blocking reason's localized message ({zoneName} for
+  // NO_FLY_ZONE, {windKph} for WEATHER_HOLD), so the boundary can translate per-code.
+  params?: Record<string, string | number>;
 }
