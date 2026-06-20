@@ -42,10 +42,10 @@ Or the steps by hand:
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
   --build --scale api=3 --scale worker=3
 
-# 2. Fire the load. PASS THE SCALES TO `run` TOO — otherwise `docker compose run`
-#    silently rescales api/worker back to 1 (it ignores the earlier `up --scale`).
+# 2. Fire the load. Use --no-deps so `run` doesn't reconcile (and silently rescale to 1)
+#    the already-up api/worker — they're held at scale 3 by the `up` above.
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
-  run --rm --scale api=3 --scale worker=3 -e VUS=50 -e HOLD=120s k6
+  run --rm --no-deps -e VUS=50 -e HOLD=120s k6
 
 # 3. Tear down (and wipe the volumes).
 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml down -v

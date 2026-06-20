@@ -31,5 +31,8 @@ if [ "$ok" != 1 ]; then
 fi
 echo "✅ stack healthy — firing k6 (VUS=${VUS:-50} HOLD=${HOLD:-90s})"
 
-docker compose "${CF[@]}" run --rm --scale "api=$API" --scale "worker=$WORKER" \
+# --no-deps: the stack is already up at the requested scale (above), so DON'T let `run`
+# reconcile dependencies — that's what silently rescales api/worker back to 1. (This
+# compose build's `run` also rejects `--scale`, so --no-deps is the portable fix.)
+docker compose "${CF[@]}" run --rm --no-deps \
   -e VUS="${VUS:-50}" -e RAMP="${RAMP:-30s}" -e HOLD="${HOLD:-90s}" k6
