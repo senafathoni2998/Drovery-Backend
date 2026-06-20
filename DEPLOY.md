@@ -113,7 +113,40 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 Rollback = set `TAG` back to the previous version and re-run the pull flow. Postgres/Redis data
 persist in named volumes across restarts.
 
+## 7. Automatic deploy (CI/CD via SSH)
+
+The **Deploy to VPS** workflow (`.github/workflows/deploy.yml`) SSHes into the VPS and runs the
+pull-flow for you — so a release is: tag → images publish → click Deploy.
+
+**One-time setup** — add four repo secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `VPS_HOST` | the VPS IP / hostname |
+| `VPS_USER` | the SSH user (in the `docker` group) |
+| `VPS_SSH_KEY` | a **private** key whose public half is in that user's `~/.ssh/authorized_keys` |
+| `VPS_PATH` | the `drovery-backend` directory on the VPS (where `.env` lives) |
+
+**Run it:** Actions → *Deploy to VPS* → *Run workflow* → enter the image tag (`latest`, a
+`vX.Y.Z`, or a `sha-<short>`). It runs `docker compose … pull && up -d` with
+`DOCKER_REGISTRY=senaahmad2998` and that `TAG`, then prints `ps`.
+
+It's **manual by design** (a human gates each prod deploy). For fully-automatic
+deploy-on-release, change its trigger to `push: { tags: ['v*'] }` — but mind the timing: it
+must run *after* both publish workflows finish, so prefer triggering on the tag in *this* repo
+only once you've confirmed the images are pushed.
+
 ## Notes
+
+- **Tag strategy**: `:latest` is convenient but mutable (it moves on every push) — fine for a
+  staging box. For real prod, **pin a release** (`TAG=v1.0.0`, or a `:sha-<short>`) so a deploy
+  is reproducible and rollback is exact; the Deploy workflow takes the tag as an input.
+- **Secrets**: never commit `.env`. The Postgres password feeds postgres + pgbouncer + the
+  app connection strings; rotating it means recreating the postgres volume (or `ALTER ROLE`).
+- **Backups**: `docker compose ... exec postgres pg_dump -U postgres drovery > backup.sql`.
+- **Scaling on a bigger box**: `--scale api=3 --scale worker=3` (Caddy load-balances the api
+  replicas automatically); for real multi-node, see `k8s/` (HPA + KEDA) and `ARCHITECTURE.md`.
+- **Observability**: layer `docker-compose.observability.yml` for Prometheus + Grafana.
 
 - **Secrets**: never commit `.env`. The Postgres password feeds postgres + pgbouncer + the
   app connection strings; rotating it means recreating the postgres volume (or `ALTER ROLE`).
