@@ -2,6 +2,60 @@
 
 A drone delivery platform API built with [NestJS](https://nestjs.com), [Prisma](https://prisma.io), and PostgreSQL.
 
+## Drovery — system overview
+
+Drovery is a full-stack drone-delivery platform: customers book and **watch a drone fly their
+package in real time**, operators oversee the fleet, and the system is engineered — and
+measured — for **100k+ users**. It spans three repositories:
+
+| Repository | Role | Stack | Scale |
+|---|---|---|---|
+| **drovery-backend** (this repo) | API · realtime · background workers | NestJS 11 · Prisma 7 · PostgreSQL 16 · Redis/BullMQ | 28 modules · 96 endpoints · 25 models · 610 tests |
+| [**drovery-mobile**](https://github.com/senafathoni2998/drovery-mobile) | customer app | Expo / React Native 0.81 · TypeScript | live tracking · handoff OTP · 280 tests |
+| [**drovery-admin**](https://github.com/senafathoni2998/Drovery-Admin-Frontend) | operator & support console | Vite · React 19 · MUI 7 · Redux Toolkit | 5 sections · live support · 65 tests · CI |
+
+```
+  Mobile (Expo/RN) ─┐                              ┌─► PgBouncer ─► PostgreSQL (primary + read replicas)
+  Admin (React/MUI) ┼─► nginx LB ─► API ×N ────────┤        RANGE-partitioned hot tables (notifications,
+  Drone (HTTP/MQTT) ┘   (stateless)  │  WS gateways │        deliveries + graph) · CI drift gate
+                                     │              └─► Redis  (queue · cache · pub/sub · rate-limit)
+                                     └─► Worker ×M ──┘  lifecycle · watchdog · partition maint · push
+   one image, role = PROCESS_ROLE        (BullMQ)       HPA scales api on CPU · KEDA scales worker on queue depth
+```
+
+### Engineering highlights
+
+- **One tracking core, two producers.** A delivery is `SIMULATED` or `LIVE`; both drive the
+  *same* monotonic compare-and-set tracking pipeline — so a real drone is just another
+  producer over `POST /ingest/telemetry` (or MQTT). The whole live path is demoable with **no
+  hardware**, and a self-healing **watchdog** reaps a drone that goes silent.
+- **Stateless + horizontally scalable.** The delivery lifecycle runs as durable BullMQ jobs
+  on a separate worker tier (survives restarts); real-time **tracking + support chat** scale
+  across replicas over WebSockets + Redis pub/sub (worker publishes, any API node fans out).
+- **PostgreSQL RANGE partitioning** of the hot tables — `notifications` *and* the full delivery
+  graph (`deliveries` + 8 children) — with **no `pg_partman`/`pg_cron`**: self-discovering
+  plpgsql maintenance + retention, composite-FK fan-out solved, drift gated in CI.
+- **Operated like production:** PgBouncer pooling · env-gated read replicas · K8s + HPA/KEDA ·
+  OpenTelemetry tracing (one `traceId` across api→queue→worker→DB) · Prometheus + Grafana +
+  SLO alerts (as code) · Sentry · OpenAPI/Swagger · bidirectional drone commands · en/id i18n.
+
+### Built for scale — and measured
+
+A containerized cluster (`docker compose` → nginx LB over scaled api/worker → PgBouncer →
+Postgres) plus a [capacity model](./loadtest/CAPACITY-MODEL.md) turn "designed for 100k" into
+numbers: a 50-VU run drove **4,344 requests with 0 failures / 100% checks**, the per-node
+sweep showed throughput scaling (api 1→2→3 ≈ 45→78→84 req/s until a shared tier knees), and the
+model projects **1 api + 1 worker node serve 100k DAU at the SLO** — the PgBouncer connection
+budget (~95 api nodes) is the eventual ceiling. The lone latency wall is cost-12 bcrypt on
+signup — the textbook CPU-bound case horizontal scaling fixes.
+
+> **Deeper dives:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) (the 100k scaling design, section by
+> section) · [`INTEGRATION.md`](./INTEGRATION.md) (mobile↔backend contract) ·
+> [`loadtest/`](./loadtest) (the cluster harness + capacity model) ·
+> [`prisma/PARTITIONING.md`](./prisma/PARTITIONING.md) (the partitioning runbook).
+
+---
+
 > **Companion app:** this API is consumed by the **drovery-mobile** Expo / React Native app (sibling repo at `../drovery-mobile`). For the full mobile↔backend contract — endpoint map, auth/token lifecycle, response envelope, and how to point the app at this server — see **[INTEGRATION.md](./INTEGRATION.md)**.
 
 ---
