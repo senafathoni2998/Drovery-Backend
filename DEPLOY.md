@@ -60,21 +60,23 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
 ### Option B — pull pre-built images from Docker Hub
 
-First publish the images (one-time setup):
+The `publish.yml` workflow in each repo is the CI/CD that builds + pushes to Docker Hub
+(`senaahmad2998/drovery-backend` and `senaahmad2998/drovery-admin`). One-time setup:
 
-1. Create a Docker Hub **access token** (Account Settings → Security → New Access Token).
-2. In **each** repo on GitHub (Backend + Admin-Frontend) → Settings → Secrets → Actions, add
-   `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
-3. Tag a release in each repo to trigger the `publish.yml` workflow:
-   ```bash
-   git tag v1.0.0 && git push origin v1.0.0
-   ```
-   This pushes `<user>/drovery-backend:v1.0.0` (+ `:latest`) and `<user>/drovery-admin:…`.
+1. Create a Docker Hub **access token** (Account Settings → Security → New Access Token,
+   Read/Write).
+2. In **each** repo on GitHub (Backend + Admin-Frontend) → Settings → Secrets and variables →
+   Actions, add a single secret: **`DOCKERHUB_TOKEN`** (the username is hard-coded, not secret).
 
-Then on the VPS you only need the backend repo (no source build):
+It then publishes automatically:
+- **every push** to the working branch → `:latest` + `:sha-<short>` (continuous delivery)
+- **a version tag** (`git tag v1.0.0 && git push origin v1.0.0`) → `:v1.0.0` + `:latest`
+- or run it manually from the Actions tab.
+
+Then on the VPS you only need the backend repo (no source build, no admin clone):
 
 ```bash
-# in .env: set DOCKER_REGISTRY=<your-dockerhub-user>  (and TAG=v1.0.0 to pin)
+# in .env: set DOCKER_REGISTRY=senaahmad2998  (and TAG=v1.0.0 to pin a release, else latest)
 docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
