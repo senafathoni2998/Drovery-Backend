@@ -1,11 +1,20 @@
 name: Publish image
 
-# Build + push the backend image (api/worker/migrate all use it) to Docker Hub on a version
-# tag (e.g. v1.0.0), or on demand. Requires repo secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# CI/CD: build the backend image (api/worker/migrate all use it) and push to Docker Hub
+# (senaahmad2998/drovery-backend). Fires on every push to a working branch (→ :latest +
+# :sha-<short>) and on a version tag (→ :vX.Y.Z + :latest), or on demand.
+#
+# Setup: add ONE repo secret — DOCKERHUB_TOKEN (Docker Hub → Account Settings → Security →
+# New Access Token, Read/Write). The username is public, so it's hard-coded below.
 on:
   push:
+    branches: [main, feat/live-tracking-notifications]
     tags: ['v*']
   workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -17,16 +26,17 @@ jobs:
 
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: senaahmad2998
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/drovery-backend
+          images: senaahmad2998/drovery-backend
           tags: |
-            type=ref,event=tag
             type=raw,value=latest
+            type=sha,format=short
+            type=ref,event=tag
 
       - uses: docker/build-push-action@v6
         with:
@@ -34,3 +44,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
