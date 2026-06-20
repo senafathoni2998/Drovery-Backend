@@ -1,5 +1,8 @@
 # Drovery Backend
 
+[![CI](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/ci.yml)
+[![Publish image](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/publish.yml/badge.svg)](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/publish.yml)
+
 A drone delivery platform API built with [NestJS](https://nestjs.com), [Prisma](https://prisma.io), and PostgreSQL.
 
 ## Drovery — system overview
