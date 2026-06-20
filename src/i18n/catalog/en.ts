@@ -150,6 +150,14 @@ export const en: Record<string, string> = {
     "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
   'error.delivery.serviceability.not_flyable':
     'This delivery cannot be flown right now.',
+  'error.serviceability.OUT_OF_AREA':
+    'Pickup or dropoff is outside our service area.',
+  'error.serviceability.NO_FLY_ZONE':
+    'Route is restricted near {zoneName} (no-fly zone).',
+  'error.serviceability.WEATHER_STORM':
+    'A storm is grounding drones at this location right now.',
+  'error.serviceability.WEATHER_HOLD':
+    'High wind is grounding drones right now ({windKph} kph).',
   'error.delivery.cancel.bad_status':
     'Delivery cannot be canceled in "{status}" status. Only {allowed} deliveries can be canceled.',
   'error.delivery.cancel.race_bad_status':
