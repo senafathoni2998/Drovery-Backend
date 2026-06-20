@@ -48,4 +48,11 @@ services:
       VUS: ${VUS:-30}
       RAMP: ${RAMP:-20s}
       HOLD: ${HOLD:-40s}
+      # Pure-I/O scenario selection (run.sh overrides the command to pick the script and
+      # forwards these too). SCENARIO=auth → scenario.js; io|read → scenario-io.js.
+      SCENARIO: ${SCENARIO:-auth}
+      POOL: ${POOL:-50}
+      SEED_DELIVERIES: ${SEED_DELIVERIES:-1}
+    # Default command runs the auth journey for a bare `compose run k6`; run.sh replaces it
+    # with `run /scripts/scenario-io.js` for the io/read scenarios.
     command: ['run', '/scripts/scenario.js']
