@@ -93,7 +93,7 @@ describe('PaymentsController', () => {
       const result = await controller.setDefault(userId, 'pm-1');
 
       expect(paymentsService.setDefault).toHaveBeenCalledWith(userId, 'pm-1');
-      expect(result.isDefault).toBe(true);
+      expect(result?.isDefault).toBe(true);
     });
   });
 });
