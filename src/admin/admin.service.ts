@@ -290,7 +290,13 @@ export class AdminService {
   }
 
   async updatePromo(id: string, dto: UpdatePromoDto) {
-    await this.getPromo(id); // 404 if missing
+    const existing = await this.getPromo(id); // 404 if missing
+    // Update can change discountValue but NOT discountType — so validate the new value
+    // against the EXISTING type (createPromo enforces this; update must too, or a PERCENT
+    // promo could be PATCHed to >100%).
+    if (dto.discountValue !== undefined) {
+      this.assertDiscountValue(existing.discountType, dto.discountValue);
+    }
     const { count } = await this.prisma.promoCode.updateMany({
       where: { id },
       data: {
