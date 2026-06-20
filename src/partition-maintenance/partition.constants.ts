@@ -24,10 +24,20 @@ export const PARTITION_MONTHS_AHEAD =
 export const PARTITION_RETAIN_MONTHS =
   Number(process.env.PARTITION_RETAIN_MONTHS) || 0;
 
-// Tables under native RANGE("createdAt") partition management. Extend as the
-// delivery-graph partitions land (see prisma/PARTITIONING.md). The plpgsql
-// partition_* routines are table-parameterized, so adding a table here is enough.
+// Tables under native RANGE partition management (the routines self-discover each
+// table's partition column — "createdAt" for notifications/deliveries, "deliveryCreatedAt"
+// for the two co-partitioned children). Extend as the delivery-graph partitions land
+// (see prisma/PARTITIONING.md). Adding a table here is enough.
+//
+// ORDER MATTERS for retention COST (not correctness): the maintenance loop runs
+// drain→ensure→drop_old per table in array order, so the co-partitioned children are
+// listed BEFORE `deliveries`. Each aged child month is a bare O(1) DROP (no inbound FK);
+// doing them first means fewer child rows remain for `deliveries`' O(rows) DELETE-cascade
+// of the same month. (Dropping a child leaf is metadata-only and never fires the
+// child→deliveries FK — that FK points the other way.)
 export const PARTITIONED_TABLES: readonly string[] = [
   'notifications',
+  'workflow_step_completions',
+  'drone_commands',
   'deliveries',
 ];

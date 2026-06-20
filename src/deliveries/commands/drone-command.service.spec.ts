@@ -31,6 +31,9 @@ describe('DroneCommandService', () => {
 
   const DRONE = 'drone-1';
   const future = () => new Date(Date.now() + COMMAND_TTL_MS);
+  // drone_commands is partitioned by deliveryCreatedAt (the parent's createdAt); the ack
+  // flow threads it into the composite-PK update.
+  const DCA = new Date('2026-06-01T00:00:00.000Z');
 
   beforeEach(() => {
     prisma = createMockPrismaService();
@@ -274,6 +277,7 @@ describe('DroneCommandService', () => {
     const fetched = (over: Record<string, unknown> = {}) => ({
       id: 'c-1',
       deliveryId: 'd-1',
+      deliveryCreatedAt: DCA,
       droneId: DRONE,
       type: DroneCommandType.RETURN_TO_BASE,
       reason: DeliveryFailureReason.WEATHER_ABORT,
@@ -351,7 +355,7 @@ describe('DroneCommandService', () => {
         appliedTransition: true,
       });
       expect(prisma.droneCommand.update).toHaveBeenCalledWith({
-        where: { id: 'c-1' },
+        where: { id_deliveryCreatedAt: { id: 'c-1', deliveryCreatedAt: DCA } },
         data: { appliedTransition: true },
       });
       expect(metrics.droneCommandsTotal.inc).toHaveBeenCalledWith({
@@ -384,7 +388,7 @@ describe('DroneCommandService', () => {
       expect(res.status).toBe(DroneCommandStatus.REJECTED);
       expect(res.appliedTransition).toBe(false);
       expect(prisma.droneCommand.update).toHaveBeenCalledWith({
-        where: { id: 'c-1' },
+        where: { id_deliveryCreatedAt: { id: 'c-1', deliveryCreatedAt: DCA } },
         data: expect.objectContaining({ status: DroneCommandStatus.REJECTED }),
       });
       // An accepted-but-superseded ack is counted distinctly from a refusal.

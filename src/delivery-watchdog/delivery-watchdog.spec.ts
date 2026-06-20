@@ -21,6 +21,9 @@ describe('DeliveryWatchdog', () => {
   const ago = (ms: number) => new Date(Date.now() - ms);
   const STALE = WATCHDOG_SILENCE_MS + 60_000;
   const FRESH = 1_000;
+  // drone_commands is partitioned by deliveryCreatedAt; the stranded-ack reconcile threads
+  // it into the composite-PK update.
+  const DCA = new Date('2026-06-01T00:00:00.000Z');
 
   // A candidate row as the (pre-filtered) scan would return it.
   const row = (over: Record<string, unknown> = {}) => ({
@@ -189,6 +192,7 @@ describe('DeliveryWatchdog', () => {
       {
         id: 'c-1',
         deliveryId: 'd-1',
+        deliveryCreatedAt: DCA,
         type: 'RETURN_TO_BASE',
         reason: 'WEATHER_ABORT',
       },
@@ -203,8 +207,9 @@ describe('DeliveryWatchdog', () => {
     expect(sel.where.status).toBe('ACKED');
     expect(sel.where.appliedTransition).toBe(false);
     expect(sel.where.ackedAt.lt).toBeInstanceOf(Date);
+    expect(sel.select.deliveryCreatedAt).toBe(true); // needed for the composite-PK update
     expect(prisma.droneCommand.update).toHaveBeenCalledWith({
-      where: { id: 'c-1' },
+      where: { id_deliveryCreatedAt: { id: 'c-1', deliveryCreatedAt: DCA } },
       data: { appliedTransition: true },
     });
   });
@@ -212,12 +217,18 @@ describe('DeliveryWatchdog', () => {
   it('resolves a stranded ACKED command to REJECTED when the delivery already settled', async () => {
     prisma.delivery.findMany.mockResolvedValue([]);
     prisma.droneCommand.findMany.mockResolvedValue([
-      { id: 'c-2', deliveryId: 'd-2', type: 'ABORT', reason: 'ADMIN_ABORT' },
+      {
+        id: 'c-2',
+        deliveryId: 'd-2',
+        deliveryCreatedAt: DCA,
+        type: 'ABORT',
+        reason: 'ADMIN_ABORT',
+      },
     ]);
     deliveries.failExceptional.mockResolvedValue(false); // delivery already terminal
     await watchdog.scanAndReap();
     expect(prisma.droneCommand.update).toHaveBeenCalledWith({
-      where: { id: 'c-2' },
+      where: { id_deliveryCreatedAt: { id: 'c-2', deliveryCreatedAt: DCA } },
       data: expect.objectContaining({ status: 'REJECTED' }),
     });
   });

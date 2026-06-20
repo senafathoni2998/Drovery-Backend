@@ -20,6 +20,7 @@ DECLARE
   v_future    date := (date_trunc('month', now()) + INTERVAL '5 months')::date;
   v_past      date := (date_trunc('month', now()) - INTERVAL '2 months')::date;
   v_id        text;
+  v_cid       text;
   v_loc       regclass;
   v_expected  text;
   v_default   bigint;
@@ -175,6 +176,85 @@ BEGIN
     RAISE EXCEPTION 'FAIL 8c: registry row not cascaded on partition drop';
   END IF;
   RAISE NOTICE 'OK 8: drop_old cascade-dropped the aged deliveries partition (% incl. children+registry), DEFAULT preserved', v_dropped;
+
+  -- ── delivery-graph Phase 2: co-partitioned N:1 children ───────────────────────
+  -- 9. workflow_step_completions + drone_commands are RANGE("deliveryCreatedAt")-partitioned
+  --    with a DEFAULT; the routines self-discover that column (NOT drone_commands' decoy
+  --    "createdAt" audit column).
+  IF (SELECT relkind FROM pg_class WHERE relname = 'workflow_step_completions') <> 'p'
+     OR (SELECT relkind FROM pg_class WHERE relname = 'drone_commands') <> 'p' THEN
+    RAISE EXCEPTION 'FAIL 9: a co-partitioned child is not partitioned';
+  END IF;
+  IF to_regclass('public.workflow_step_completions_default') IS NULL
+     OR to_regclass('public.drone_commands_default') IS NULL THEN
+    RAISE EXCEPTION 'FAIL 9: a co-partitioned child has no DEFAULT partition';
+  END IF;
+  IF (SELECT a.attname FROM pg_partitioned_table pt
+        JOIN pg_class c ON c.oid = pt.partrelid
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = pt.partattrs[0]
+      WHERE c.relname = 'drone_commands') <> 'deliveryCreatedAt' THEN
+    RAISE EXCEPTION 'FAIL 9: drone_commands partition column mis-discovered (the decoy createdAt?)';
+  END IF;
+  RAISE NOTICE 'OK 9: both N:1 children RANGE(deliveryCreatedAt)-partitioned + DEFAULT; self-discover correct';
+
+  -- 10. The one-open partial unique (now including the partition key) still rejects a 2nd
+  --     OPEN command per delivery, and allows a non-open (EXPIRED) duplicate.
+  v_id := gen_random_uuid()::text; -- a current-month delivery (trackingId is a plain index now)
+  INSERT INTO deliveries ("id","trackingId","userId","fromAddress","toAddress","receiver",
+    "packages","packageSize","packageWeight","packageTypes","pickupDate","pickupTime",
+    "estimatedPrice","createdAt","updatedAt")
+    VALUES (v_id,'VERIFYDC',v_user,'A','B','R','box','S',1,'{}',now(),'10:00 AM',10,now(),now());
+  INSERT INTO drone_commands ("id","deliveryId","deliveryCreatedAt","droneId","type","reason","status","expiresAt","updatedAt")
+    VALUES (gen_random_uuid()::text, v_id, now(), 'drone-x', 'RETURN_TO_BASE', 'WEATHER_ABORT', 'PENDING', now() + INTERVAL '1 hour', now());
+  BEGIN
+    INSERT INTO drone_commands ("id","deliveryId","deliveryCreatedAt","droneId","type","reason","status","expiresAt","updatedAt")
+      VALUES (gen_random_uuid()::text, v_id, now(), 'drone-x', 'ABORT', 'ADMIN_ABORT', 'PENDING', now() + INTERVAL '1 hour', now());
+    RAISE EXCEPTION 'FAIL 10: a 2nd OPEN command for the delivery was NOT rejected';
+  EXCEPTION WHEN unique_violation THEN NULL; -- expected
+  END;
+  INSERT INTO drone_commands ("id","deliveryId","deliveryCreatedAt","droneId","type","reason","status","expiresAt","updatedAt")
+    VALUES (gen_random_uuid()::text, v_id, now(), 'drone-x', 'ABORT', 'ADMIN_ABORT', 'EXPIRED', now() + INTERVAL '1 hour', now());
+  RAISE NOTICE 'OK 10: one-open partial unique holds across the partition key (EXPIRED dup allowed)';
+
+  -- 11. Retention end-to-end with the corrected ordering: a co-partitioned child's aged
+  --     partition is BARE-dropped (no inbound FK → O(1), no DELETE/DETACH), keyed on
+  --     deliveryCreatedAt (the command's audit createdAt is now() — a decoy); then the
+  --     parent deliveries' aged partition cascade-drops. Children-before-parent order.
+  CREATE TABLE IF NOT EXISTS deliveries_y2019m01 PARTITION OF deliveries
+    FOR VALUES FROM ('2019-01-01') TO ('2019-02-01');
+  CREATE TABLE IF NOT EXISTS drone_commands_y2019m01 PARTITION OF drone_commands
+    FOR VALUES FROM ('2019-01-01') TO ('2019-02-01');
+  v_id := gen_random_uuid()::text;
+  INSERT INTO deliveries ("id","trackingId","userId","fromAddress","toAddress","receiver",
+    "packages","packageSize","packageWeight","packageTypes","pickupDate","pickupTime",
+    "estimatedPrice","createdAt","updatedAt")
+    VALUES (v_id,'VERIFYAGED',v_user,'A','B','R','box','S',1,'{}','2019-01-15'::timestamp,
+            '10:00 AM',10,'2019-01-15'::timestamp,'2019-01-15'::timestamp);
+  v_cid := gen_random_uuid()::text;
+  INSERT INTO drone_commands ("id","deliveryId","deliveryCreatedAt","droneId","type","reason","status","expiresAt","createdAt","updatedAt")
+    VALUES (v_cid, v_id, '2019-01-15'::timestamp, 'drone-y', 'ABORT', 'ADMIN_ABORT', 'ACKED', now() + INTERVAL '1 hour', now(), now());
+  SELECT tableoid::regclass INTO v_loc FROM drone_commands WHERE id = v_cid;
+  IF v_loc::text <> 'drone_commands_y2019m01' THEN
+    RAISE EXCEPTION 'FAIL 11a: aged command routed to % (expected drone_commands_y2019m01)', v_loc;
+  END IF;
+  v_dropped := partition_drop_old('drone_commands', 1);
+  IF to_regclass('public.drone_commands_y2019m01') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL 11b: aged drone_commands partition not bare-dropped (retention broken)';
+  END IF;
+  IF to_regclass('public.drone_commands_default') IS NULL THEN
+    RAISE EXCEPTION 'FAIL 11b: drone_commands DEFAULT wrongly dropped';
+  END IF;
+  SELECT count(*) INTO v_default FROM drone_commands WHERE id = v_cid;
+  IF v_default <> 0 THEN
+    RAISE EXCEPTION 'FAIL 11b: aged command survived (drop keyed on the decoy createdAt?)';
+  END IF;
+  v_dropped := partition_drop_old('deliveries', 1);
+  IF to_regclass('public.deliveries_y2019m01') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL 11c: aged deliveries partition not dropped after children';
+  END IF;
+  SELECT count(*) INTO v_default FROM deliveries WHERE id = v_id;
+  IF v_default <> 0 THEN RAISE EXCEPTION 'FAIL 11c: aged delivery survived'; END IF;
+  RAISE NOTICE 'OK 11: child bare-DROP (O(1), keyed on deliveryCreatedAt) then parent cascade-drop — ordering clean';
 
   RAISE NOTICE 'ALL PARTITION CHECKS PASSED';
 END $$;

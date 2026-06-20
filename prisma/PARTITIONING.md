@@ -10,8 +10,12 @@ contract — read it before touching a partitioned table or the migration workfl
 |-------|----------|-----|----------|
 | `notifications` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `notifications_yYYYYmMM` + a permanent `notifications_default` |
 | `deliveries` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `deliveries_yYYYYmMM` + `deliveries_default` |
+| `workflow_step_completions` | `RANGE("deliveryCreatedAt")` | composite PK `(id, "deliveryCreatedAt")` | monthly `workflow_step_completions_yYYYYmMM` + `_default` |
+| `drone_commands` | `RANGE("deliveryCreatedAt")` | composite PK `(id, "deliveryCreatedAt")` | monthly `drone_commands_yYYYYmMM` + `_default` |
 
-Migrations: `20260616120000_partition_notifications`, `20260619140000_partition_deliveries`.
+Migrations: `20260616120000_partition_notifications`, `20260619140000_partition_deliveries`,
+`20260620160000_partition_routines_self_discover`, `20260620170000_partition_workflow_step_completions`,
+`20260620180000_partition_drone_commands`.
 
 **`deliveries` (delivery-graph Phase 1) is SHIPPED.** Because the parent PK is composite,
 all 6 children (`delivery_tracking`, `payments`, `proof_of_delivery`, `delivery_ratings`,
@@ -21,10 +25,24 @@ Global `trackingId` uniqueness lives in the non-partitioned **`tracking_id_regis
 (written in `create()`'s tx; a dup throws P2002 → the existing collision-retry). `create()`
 is now always-transactional; `findByTrackingId` resolves registry → composite-PK fetch;
 ~22 by-id `findUnique` reads became `findFirst`; child writes thread `deliveryCreatedAt`
-(via the BullMQ job payloads for the worker path). **Phase 2 (deferred):** co-partition the
-two N:1 children (`workflow_step_completions`, `drone_commands`) by `deliveryCreatedAt` —
-needs the `partition_*` routines generalized to a per-table partition column. The 4 1:1
-children stay plain indefinitely (bounded by delivery count, point-lookup reads).
+(via the BullMQ job payloads for the worker path).
+
+**`workflow_step_completions` + `drone_commands` (delivery-graph Phase 2) are SHIPPED.** The
+two **N:1 (unbounded)** children are now co-partitioned by `RANGE("deliveryCreatedAt")`
+(composite PK `(id, "deliveryCreatedAt")`), so retention can **bare-DROP their old month
+partitions (O(1))** instead of an O(rows) cascade-DELETE when an aged `deliveries` month is
+pruned. Each keeps its **composite FK** to the partitioned `deliveries` (a partitioned-child
+→ partitioned-parent FK; PG auto-propagates it to every `deliveries` partition). The
+`drone_commands` one-open-command **partial unique** and the `workflow_step_completions`
+`@@unique` both absorb the partition key (`(deliveryId, deliveryCreatedAt) WHERE status open`
+and `(deliveryId, workflowId, stepId, deliveryCreatedAt)`) — semantically unchanged because a
+delivery has one `deliveryCreatedAt`. The `partition_*` routines now **self-discover** each
+table's partition column from the catalog (`pg_partitioned_table.partattrs[0]` → attname), so
+they work for `"deliveryCreatedAt"` as well as `"createdAt"` — **critical** because
+`drone_commands` also has a decoy `createdAt` audit column that is *not* the partition key.
+The 4 **1:1 children** (`delivery_tracking`, `payments`, `proof_of_delivery`,
+`delivery_ratings`) + `tracking_id_registry` stay **plain** indefinitely (bounded by delivery
+count, point-lookup reads).
 
 ## Prisma rules (do not violate)
 
@@ -61,14 +79,20 @@ the stuck-delivery watchdog). Each tick, per table in `PARTITIONED_TABLES`:
 2. `partition_ensure(table, PARTITION_MONTHS_AHEAD)` — create the current month + N future
    children so a new-month insert never falls to the `DEFAULT`.
 3. `partition_drop_old(table, PARTITION_RETAIN_MONTHS)` — drop children entirely older than
-   the retention window (no-op when `PARTITION_RETAIN_MONTHS=0`). For a **FK-referenced**
-   parent like `deliveries` (6 children + `tracking_id_registry` all composite-FK `ON DELETE
-   CASCADE`) a bare `DROP TABLE` of a leaf is **refused** by Postgres — each leaf carries the
-   inbound-FK schema dependency. So the routine `DELETE`s the month's rows *through the parent*
-   (firing the composite cascade into every child), then `DETACH PARTITION` + `DROP` the now
-   unreferenced leaf. Equivalent (just a row-purge) for a childless parent like `notifications`.
-   **At real scale that `DELETE` should be batched under a maintenance window** — dropping a
-   month of `deliveries` also discards that month's payments/proofs/ratings/tracking + registry.
+   the retention window (no-op when `PARTITION_RETAIN_MONTHS=0`). The routine branches on
+   whether the table is **FK-referenced** (`EXISTS` an inbound FK on the partitioned parent's
+   oid): for a referenced parent like `deliveries` (6 children + `tracking_id_registry`, all
+   composite-FK `ON DELETE CASCADE`) a bare `DROP TABLE` of a leaf is **refused** by Postgres
+   (the leaf carries the inbound-FK schema dependency), so it `DELETE`s the month's rows
+   *through the parent* (using the **self-discovered** partition column — firing the composite
+   cascade into every child), then `DETACH PARTITION` + `DROP`. For a table with **no inbound
+   FK** (`notifications` and the two co-partitioned children `workflow_step_completions` /
+   `drone_commands`) it's a **bare `DROP` — O(1), no DELETE/DETACH**. `PARTITIONED_TABLES`
+   lists the **children before `deliveries`** so each aged child month is bare-dropped before
+   `deliveries`' cascade-DELETE of that month (a cost optimization, not a correctness need).
+   **At real scale the `deliveries` `DELETE` should be batched under a maintenance window** —
+   dropping a month of `deliveries` also discards that month's payments/proofs/ratings + the
+   1:1 children/registry rows (the co-partitioned children are already gone via their own DROP).
 
 The permanent `DEFAULT` partition is the safety net: an insert can **never** fail with
 "no partition found" even if maintenance lags.

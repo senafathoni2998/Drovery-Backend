@@ -62,10 +62,11 @@ export class WorkflowsService {
 
     return this.prisma.workflowStepCompletion.upsert({
       where: {
-        deliveryId_workflowId_stepId: {
+        deliveryId_workflowId_stepId_deliveryCreatedAt: {
           deliveryId,
           workflowId: dto.workflowId,
           stepId: dto.stepId,
+          deliveryCreatedAt: delivery.createdAt,
         },
       },
       update: {

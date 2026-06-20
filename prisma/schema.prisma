@@ -297,7 +297,8 @@ model TrackingIdRegistry {
 // delivery is enforced by a partial unique index (added in the migration; Prisma
 // can't express the WHERE) so two admins racing collapse to a DB-level 409.
 model DroneCommand {
-  id         String @id @default(uuid())
+  // `drone_commands` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) → composite PK.
+  id         String @default(uuid())
   deliveryId        String
   deliveryCreatedAt DateTime
   delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
@@ -329,6 +330,7 @@ model DroneCommand {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@id([id, deliveryCreatedAt])
   @@index([droneId, status]) // hot poll predicate: one drone's open queue
   @@index([deliveryId])
   @@map("drone_commands")
@@ -459,7 +461,9 @@ model DeliveryTracking {
 // ==================== WORKFLOW ====================
 
 model WorkflowStepCompletion {
-  id         String @id @default(uuid())
+  // `workflow_step_completions` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) →
+  // composite PK, and the uniqueness rule must include the partition key.
+  id         String @default(uuid())
   deliveryId        String
   deliveryCreatedAt DateTime
   workflowId        String
@@ -469,7 +473,8 @@ model WorkflowStepCompletion {
 
   completedAt DateTime @default(now())
 
-  @@unique([deliveryId, workflowId, stepId])
+  @@id([id, deliveryCreatedAt])
+  @@unique([deliveryId, workflowId, stepId, deliveryCreatedAt])
   @@map("workflow_step_completions")
 }
 

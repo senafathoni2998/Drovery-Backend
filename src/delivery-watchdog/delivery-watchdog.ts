@@ -181,7 +181,13 @@ export class DeliveryWatchdog {
           appliedTransition: false,
           ackedAt: { lt: cutoff },
         },
-        select: { id: true, deliveryId: true, type: true, reason: true },
+        select: {
+          id: true,
+          deliveryId: true,
+          deliveryCreatedAt: true,
+          type: true,
+          reason: true,
+        },
         take: WATCHDOG_BATCH,
       });
       for (const c of stranded) {
@@ -191,7 +197,12 @@ export class DeliveryWatchdog {
               ? await this.deliveries.beginReturnToBase(c.deliveryId, c.reason)
               : await this.deliveries.failExceptional(c.deliveryId, c.reason);
           await this.prisma.droneCommand.update({
-            where: { id: c.id },
+            where: {
+              id_deliveryCreatedAt: {
+                id: c.id,
+                deliveryCreatedAt: c.deliveryCreatedAt,
+              },
+            },
             data: applied
               ? { appliedTransition: true }
               : {

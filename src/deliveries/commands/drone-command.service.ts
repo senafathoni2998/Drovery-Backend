@@ -196,7 +196,7 @@ export class DroneCommandService {
         // Lost the PENDING→FETCHED CAS to a sibling poll OR a concurrent watchdog
         // expiry sweep. Re-read the truth rather than reporting an assumed FETCHED:
         // if it's no longer FETCHED (e.g. EXPIRED), hand the drone nothing.
-        const fresh = await this.prisma.droneCommand.findUnique({
+        const fresh = await this.prisma.droneCommand.findFirst({
           where: { id: command.id },
           select: { status: true },
         });
@@ -224,7 +224,10 @@ export class DroneCommandService {
     status: DroneCommandStatus;
     appliedTransition: boolean;
   }> {
-    const command = await this.prisma.droneCommand.findUnique({
+    // `drone_commands` is partitioned (composite PK), and `commandId` is a raw URL param
+    // with no deliveryCreatedAt in scope → findFirst (the uuid id matches at most one row).
+    // The full row it returns carries deliveryCreatedAt for the composite-key updates below.
+    const command = await this.prisma.droneCommand.findFirst({
       where: { id: commandId },
       include: {
         delivery: { select: { trackingSource: true, assignedDroneId: true } },
@@ -300,13 +303,23 @@ export class DroneCommandService {
 
       if (appliedTransition) {
         await this.prisma.droneCommand.update({
-          where: { id: commandId },
+          where: {
+            id_deliveryCreatedAt: {
+              id: commandId,
+              deliveryCreatedAt: command.deliveryCreatedAt,
+            },
+          },
           data: { appliedTransition: true },
         });
       } else {
         finalStatus = DroneCommandStatus.REJECTED;
         await this.prisma.droneCommand.update({
-          where: { id: commandId },
+          where: {
+            id_deliveryCreatedAt: {
+              id: commandId,
+              deliveryCreatedAt: command.deliveryCreatedAt,
+            },
+          },
           data: {
             status: DroneCommandStatus.REJECTED,
             resultNote: note ?? 'delivery no longer in a commandable state',
