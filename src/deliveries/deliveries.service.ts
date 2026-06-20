@@ -392,10 +392,15 @@ export class DeliveriesService {
       ? result.codes.find((c) => c.startsWith('WEATHER'))
       : result.codes.find((c) => !c.startsWith('WEATHER'));
 
+    // Localize the SPECIFIC blocking reason per code (error.serviceability.<CODE>, with
+    // {zoneName}/{windKph} params); fall back to the generic key if no code is present.
+    // The English reasons[] + code + retryAfter stay as machine passthrough.
     throw new AppHttpException(
       status,
-      'error.delivery.serviceability.not_flyable',
-      undefined,
+      code
+        ? `error.serviceability.${code}`
+        : 'error.delivery.serviceability.not_flyable',
+      result.params,
       {
         reasons: result.reasons,
         ...(code ? { code } : {}),
