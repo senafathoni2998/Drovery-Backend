@@ -53,30 +53,39 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const shared = this.config.get<boolean>('mqtt.shared');
-    this.client = connect(url, {
-      username: this.config.get<string>('mqtt.username'),
-      password: this.config.get<string>('mqtt.password'),
-      reconnectPeriod: this.config.get<number>('mqtt.reconnectMs') ?? 5000,
-      connectTimeout: 10_000,
-      queueQoSZero: false,
-    });
-    // Fail-open: never throw out of a transport event.
-    this.client.on('error', (e) =>
-      this.logger.warn(`mqtt error: ${e.message}`),
-    );
-    this.client.on('offline', () =>
-      this.logger.warn('mqtt offline — falling back to HTTP ingest'),
-    );
-    this.client.on('connect', () => {
-      this.logger.log('mqtt connected');
-      this.offlineQueued = 0;
-      // Re-arm every registered subscription so a reconnect restores them.
-      for (const filter of this.handlers.keys()) this.armSubscription(filter);
-    });
-    this.client.on('message', (topic, payload) =>
-      this.dispatch(topic, payload.toString()),
-    );
-    this.logger.log(`MqttService connecting to ${url} (shared=${shared})`);
+    // Fail-open even at INIT: a malformed MQTT_URL makes connect() throw synchronously —
+    // it must NOT crash NestFactory boot. On any failure, stay inert (HTTP ingest active).
+    try {
+      this.client = connect(url, {
+        username: this.config.get<string>('mqtt.username'),
+        password: this.config.get<string>('mqtt.password'),
+        reconnectPeriod: this.config.get<number>('mqtt.reconnectMs') ?? 5000,
+        connectTimeout: 10_000,
+        queueQoSZero: false,
+      });
+      // Fail-open: never throw out of a transport event.
+      this.client.on('error', (e) =>
+        this.logger.warn(`mqtt error: ${e.message}`),
+      );
+      this.client.on('offline', () =>
+        this.logger.warn('mqtt offline — falling back to HTTP ingest'),
+      );
+      this.client.on('connect', () => {
+        this.logger.log('mqtt connected');
+        this.offlineQueued = 0;
+        // Re-arm every registered subscription so a reconnect restores them.
+        for (const filter of this.handlers.keys()) this.armSubscription(filter);
+      });
+      this.client.on('message', (topic, payload) =>
+        this.dispatch(topic, payload.toString()),
+      );
+      this.logger.log(`MqttService connecting to ${url} (shared=${shared})`);
+    } catch (e) {
+      this.client = undefined;
+      this.logger.warn(
+        `MqttService init failed (${(e as Error).message}) — MQTT disabled, HTTP ingest active`,
+      );
+    }
   }
 
   /** Register a handler for a bare topic filter. (Re)subscribes on connect. No-op in MOCK. */
@@ -100,20 +109,24 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   publish(topic: string, payload: unknown): void {
     if (!this.client) return;
     const max = this.config.get<number>('mqtt.offlineQueueMax') ?? 1000;
-    if (!this.client.connected && this.offlineQueued >= max) {
+    // Count ONLY publishes made while disconnected (the ones that actually buffer). A
+    // connected publish neither increments nor decrements, so the counter can't drift.
+    const offline = !this.client.connected;
+    if (offline && this.offlineQueued >= max) {
       this.logger.warn(
         `mqtt offline queue full (${max}) — dropping publish to ${topic}`,
       );
       return;
     }
-    if (!this.client.connected) this.offlineQueued++;
+    if (offline) this.offlineQueued++;
     try {
       this.client.publish(topic, JSON.stringify(payload), { qos: 1 }, (err) => {
-        if (this.offlineQueued > 0) this.offlineQueued--;
+        if (offline && this.offlineQueued > 0) this.offlineQueued--;
         if (err)
           this.logger.warn(`mqtt publish ${topic} failed: ${err.message}`);
       });
     } catch (e) {
+      if (offline && this.offlineQueued > 0) this.offlineQueued--;
       this.logger.warn(`mqtt publish ${topic} threw: ${(e as Error).message}`);
     }
   }

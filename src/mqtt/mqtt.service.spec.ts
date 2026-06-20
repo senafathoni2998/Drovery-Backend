@@ -75,6 +75,13 @@ describe('MqttService', () => {
       for (let i = 0; i < 10; i++) svc.publish('t', { a: i }); // exceed the cap → drop, no throw
       svc.onModuleDestroy();
     });
+
+    it('a malformed MQTT_URL does not crash init (stays inert + fail-open)', () => {
+      const svc = new MqttService(cfg({ 'mqtt.url': 'ftp://127.0.0.1:1' }));
+      expect(() => svc.onModuleInit()).not.toThrow();
+      expect(() => svc.publish('t', { a: 1 })).not.toThrow();
+      expect(() => svc.onModuleDestroy()).not.toThrow();
+    });
   });
 
   describe('round-trip against an in-process aedes broker (no docker)', () => {
