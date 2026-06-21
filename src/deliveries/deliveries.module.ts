@@ -9,6 +9,7 @@ import { PricingModule } from '../pricing/pricing.module';
 import { PromoModule } from '../promo/promo.module';
 import { ServiceabilityModule } from '../serviceability/serviceability.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { OutboxModule } from '../outbox/outbox.module';
 import { StorageModule } from '../storage/storage.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
@@ -50,6 +51,7 @@ const RUN_PROCESSOR = IS_WORKER_TIER;
     ServiceabilityModule,
     PromoModule,
     WalletModule,
+    OutboxModule, // exports OutboxService (referral-reward enqueue in create())
     BullModule.registerQueue({ name: SIM_QUEUE }),
     // JwtService for the WS gateway's handshake auth. AuthModule only exports
     // AuthService, so register Jwt here (same secret resolved from config).

@@ -22,6 +22,8 @@ import { TrackingPublisher } from './tracking/tracking.publisher';
 import { TrackingHotStore } from './tracking/tracking-hot-store';
 import { PromoService } from '../promo/promo.service';
 import { WalletService } from '../wallet/wallet.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { OUTBOX_EVENT_REFERRAL_REWARD } from '../outbox/outbox.constants';
 import { createMockPrismaService } from '../test/prisma-mock';
 
 const SERVICEABLE = {
@@ -61,6 +63,7 @@ describe('DeliveriesService', () => {
   let notificationsService: { create: jest.Mock };
   let trackingPublisher: { publishUpdate: jest.Mock };
   let trackingHotStore: { enabled: boolean; readPosition: jest.Mock };
+  let outbox: { enqueueWithinTx: jest.Mock };
 
   const userId = 'user-1';
 
@@ -137,6 +140,7 @@ describe('DeliveriesService', () => {
       publishUpdate: jest.fn().mockResolvedValue(undefined),
     };
     trackingHotStore = { enabled: false, readPosition: jest.fn() };
+    outbox = { enqueueWithinTx: jest.fn().mockResolvedValue(undefined) };
     // Default: no pending referral (keeps the no-promo path a plain create).
     prisma.referral.findFirst.mockResolvedValue(null);
 
@@ -155,6 +159,7 @@ describe('DeliveriesService', () => {
         { provide: NotificationsService, useValue: notificationsService },
         { provide: TrackingPublisher, useValue: trackingPublisher },
         { provide: TrackingHotStore, useValue: trackingHotStore },
+        { provide: OutboxService, useValue: outbox },
         { provide: I18nService, useValue: new I18nService() },
       ],
     }).compile();
@@ -484,6 +489,53 @@ describe('DeliveriesService', () => {
       prisma.delivery.create.mockResolvedValue(mockDelivery);
       await service.create(userId, createDto);
       expect(walletService.debitWithinTx).not.toHaveBeenCalled();
+    });
+  });
+
+  // The producer side of the outbox fork (DELIVERY_OUTBOX_REFERRAL=true). The flag is an
+  // import-time const, so we drive the gate via referralOutboxEnabled() to exercise the
+  // ENQUEUE arm — pinning that it enqueues the right event inside the tx, on the same
+  // pendingReferral gate, and crucially does NOT also grant inline (no double-credit, B4).
+  describe('create — referral via the outbox (routing enabled)', () => {
+    beforeEach(() => {
+      jest.spyOn(service as any, 'referralOutboxEnabled').mockReturnValue(true);
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+    });
+
+    it('enqueues a REFERRAL_REWARD event inside the tx and does NOT grant inline', async () => {
+      prisma.referral.findFirst.mockResolvedValue({
+        id: 'ref-1',
+        refereeId: userId,
+      });
+
+      await service.create(userId, createDto);
+
+      expect(outbox.enqueueWithinTx).toHaveBeenCalledTimes(1);
+      expect(outbox.enqueueWithinTx).toHaveBeenCalledWith(
+        expect.anything(), // the tx handle — proves it runs inside $transaction
+        expect.objectContaining({
+          aggregateType: 'delivery',
+          aggregateId: mockDelivery.id,
+          eventType: OUTBOX_EVENT_REFERRAL_REWARD,
+          idempotencyKey: `outbox-referral:${mockDelivery.id}`,
+          payload: { refereeUserId: userId },
+        }),
+      );
+      // No double-apply: the inline grant must NOT also fire.
+      expect(
+        walletService.maybeGrantReferralRewardWithinTx,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('neither enqueues nor grants when there is no pending referral (same gate)', async () => {
+      prisma.referral.findFirst.mockResolvedValue(null);
+
+      await service.create(userId, createDto);
+
+      expect(outbox.enqueueWithinTx).not.toHaveBeenCalled();
+      expect(
+        walletService.maybeGrantReferralRewardWithinTx,
+      ).not.toHaveBeenCalled();
     });
   });
 

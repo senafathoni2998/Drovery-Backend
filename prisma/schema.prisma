@@ -538,6 +538,46 @@ model WebhookEvent {
   @@map("webhook_events")
 }
 
+// ==================== TRANSACTIONAL OUTBOX ====================
+// Phase-3 (SCALING-1M.md §2) DB-write-shard unblock. create()'s $transaction today
+// co-commits the delivery with USER-ROOTED balance mutations (promo / wallet-debit /
+// referral) — a single tx can't span shards once the delivery lives on a different
+// physical shard than the user. The fix: write the side-effect as an OutboxEvent row
+// INSIDE the delivery's tx (atomic, same shard), and let a worker-tier dispatcher apply
+// it to the user's shard asynchronously + idempotently. Non-partitioned (low volume).
+// at-least-once: handlers MUST be idempotent (the dispatcher status is liveness, not the
+// dedupe authority — the handler's own idempotency keys are). Stage-1 carries ONLY the
+// referral reward (a pure credit with no failure mode); promo/debit follow with their
+// compensation designs.
+enum OutboxStatus {
+  PENDING // enqueued, not yet dispatched
+  PROCESSING // claimed by a dispatcher tick (CAS); a stale claim is reaped back to PENDING
+  PROCESSED // handler applied (terminal success)
+  FAILED // exhausted attempts (terminal; safe to replay → PENDING, handlers are idempotent)
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid())
+  aggregateType String // e.g. 'delivery'
+  aggregateId   String // e.g. the delivery id (provenance / correlation)
+  eventType     String // routes to a handler, e.g. 'REFERRAL_REWARD'
+  payload       Json // handler input, e.g. { refereeUserId }
+  // Dedupes the enqueue itself (the create() tracking-id retry loop re-runs the whole
+  // tx body; same key → P2002 on the retry → at-most-once enqueue per aggregate).
+  idempotencyKey String      @unique
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0) // incremented on claim; FAILED when it exceeds the cap
+  lastError     String?
+  claimedAt     DateTime? // when the current PROCESSING claim was taken (drives the stale-claim reaper)
+  createdAt     DateTime     @default(now())
+  processedAt   DateTime?
+
+  // Supports the dispatcher claim (WHERE status=PENDING ORDER BY createdAt) and the
+  // reaper (WHERE status=PROCESSING).
+  @@index([status, createdAt])
+  @@map("outbox_events")
+}
+
 // ==================== PROMO CODES ====================
 // NOTE: no admin CRUD surface yet — codes are reference data seeded via the
 // migration (and prisma/seed.ts). Admin management is deferred.

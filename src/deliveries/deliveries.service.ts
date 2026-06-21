@@ -31,6 +31,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { PromoService } from '../promo/promo.service';
 import { WalletService } from '../wallet/wallet.service';
+import { OutboxService } from '../outbox/outbox.service';
+import {
+  OUTBOX_EVENT_REFERRAL_REWARD,
+  OUTBOX_REFERRAL_ENABLED,
+} from '../outbox/outbox.constants';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { TrackingPublisher } from './tracking/tracking.publisher';
@@ -104,7 +109,18 @@ export class DeliveriesService {
     // Optional so the many specs that build DeliveriesService don't all need it; the
     // app always provides it (DeliveriesModule). Freshens the poll under the hot-store.
     @Optional() private readonly trackingHotStore?: TrackingHotStore,
+    // Optional (same reason). When present + DELIVERY_OUTBOX_REFERRAL=true, the referral
+    // reward is enqueued as a transactional-outbox event instead of granted inline (§2
+    // Phase-3 DB-write-shard unblock). Absent or flag-off → today's inline grant.
+    @Optional() private readonly outbox?: OutboxService,
   ) {}
+
+  /** Route the referral reward through the transactional outbox (when the flag is on AND
+   * the service is wired) vs the inline in-tx grant. Extracted so the producer fork in
+   * create() is unit-testable without re-importing the import-time env const. */
+  private referralOutboxEnabled(): boolean {
+    return OUTBOX_REFERRAL_ENABLED && !!this.outbox;
+  }
 
   async create(userId: string, dto: CreateDeliveryDto) {
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
@@ -264,10 +280,30 @@ export class DeliveriesService {
             });
           }
           if (pendingReferral) {
-            await this.walletService.maybeGrantReferralRewardWithinTx(
-              tx,
-              userId,
-            );
+            // The referral reward is a pure credit with no failure mode, so it is the
+            // first user-rooted side effect peeled out of this (future cross-shard) tx
+            // (SCALING-1M.md §2). When the outbox is wired + DELIVERY_OUTBOX_REFERRAL=true,
+            // enqueue a transactional-outbox event (committed atomically with the delivery
+            // on its shard; applied to the user's shard by the worker dispatcher,
+            // idempotently). Gated on the SAME `pendingReferral` pre-check as the inline
+            // path, and the dispatcher re-runs maybeGrantReferralRewardWithinTx's CAS, so
+            // behavior is identical to today (the flag-off default is byte-identical).
+            if (this.referralOutboxEnabled()) {
+              await this.outbox!.enqueueWithinTx(tx, {
+                aggregateType: 'delivery',
+                aggregateId: created.id,
+                eventType: OUTBOX_EVENT_REFERRAL_REWARD,
+                // Per-delivery key dedupes the tracking-id retry loop (a collision rolls
+                // the whole tx back + re-runs this block → same key → P2002 on retry).
+                idempotencyKey: `outbox-referral:${created.id}`,
+                payload: { refereeUserId: userId },
+              });
+            } else {
+              await this.walletService.maybeGrantReferralRewardWithinTx(
+                tx,
+                userId,
+              );
+            }
           }
           return created;
         });
