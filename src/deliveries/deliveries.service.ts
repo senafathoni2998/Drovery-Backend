@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import {
   DeliveryFailureReason,
   DeliveryStatus,
@@ -28,6 +34,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { TrackingPublisher } from './tracking/tracking.publisher';
+import { TrackingHotStore } from './tracking/tracking-hot-store';
 import {
   FAILABLE_STATUSES,
   RETURNABLE_STATUSES,
@@ -94,6 +101,9 @@ export class DeliveriesService {
     private readonly notificationsService: NotificationsService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly i18n: I18nService,
+    // Optional so the many specs that build DeliveriesService don't all need it; the
+    // app always provides it (DeliveriesModule). Freshens the poll under the hot-store.
+    @Optional() private readonly trackingHotStore?: TrackingHotStore,
   ) {}
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -492,6 +502,22 @@ export class DeliveriesService {
       throw new AppNotFoundException('error.delivery.not_found', {
         id: deliveryId,
       });
+    }
+
+    // Under the tracking hot-store, delivery.tracking is the last CHECKPOINTED position
+    // (up to the checkpoint interval stale). Overlay the live position from Redis so a
+    // poll — the WS-down fallback — reflects the drone within ms (SCALING-1M.md §3).
+    // No-op when the hot-store is off, there's no tracking row, or no live position
+    // exists (terminal/expired) → the checkpointed row stands.
+    if (this.trackingHotStore?.enabled && delivery.tracking) {
+      const hot = await this.trackingHotStore.readPosition(deliveryId);
+      if (hot) {
+        const t = delivery.tracking;
+        if (hot.droneLat !== undefined) t.droneLat = hot.droneLat;
+        if (hot.droneLng !== undefined) t.droneLng = hot.droneLng;
+        if (hot.droneStatus !== undefined) t.droneStatus = hot.droneStatus;
+        if (hot.eta !== undefined) t.eta = hot.eta;
+      }
     }
 
     return delivery;
