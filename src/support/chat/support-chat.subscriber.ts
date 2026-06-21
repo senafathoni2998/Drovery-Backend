@@ -43,7 +43,7 @@ export class SupportChatSubscriber implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.sub = new Redis({
-      ...buildRedisOptions(this.config),
+      ...buildRedisOptions(this.config, 'pubsub'),
       maxRetriesPerRequest: null,
       enableOfflineQueue: false,
     });

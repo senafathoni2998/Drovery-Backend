@@ -17,7 +17,7 @@ const redisProvider = {
   useFactory: (config: ConfigService): Redis => {
     const logger = new Logger('CacheRedis');
     const client = new Redis({
-      ...buildRedisOptions(config),
+      ...buildRedisOptions(config, 'cache'),
       // Cache ops must fail fast (and open) rather than hang/retry forever.
       maxRetriesPerRequest: 2,
       enableOfflineQueue: false,

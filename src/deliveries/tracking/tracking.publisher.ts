@@ -40,7 +40,7 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.client = new Redis({
-      ...buildRedisOptions(this.config),
+      ...buildRedisOptions(this.config, 'pubsub'),
       maxRetriesPerRequest: null,
       enableOfflineQueue: false,
     });

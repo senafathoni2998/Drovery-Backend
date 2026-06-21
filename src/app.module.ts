@@ -60,7 +60,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
       useFactory: (config: ConfigService) => {
         const logger = new Logger('ThrottlerRedis');
         const client = new Redis({
-          ...buildRedisOptions(config),
+          ...buildRedisOptions(config, 'throttle'),
           // Throttle checks must fail fast rather than hang on a Redis blip.
           maxRetriesPerRequest: 2,
         });
@@ -115,7 +115,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         connection: {
-          ...buildRedisOptions(config),
+          ...buildRedisOptions(config, 'queue'),
           maxRetriesPerRequest: null,
         },
       }),
