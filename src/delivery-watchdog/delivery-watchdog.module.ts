@@ -6,6 +6,7 @@ import { DeliveryWatchdog } from './delivery-watchdog';
 import { WATCHDOG_QUEUE } from './watchdog.constants';
 import { WatchdogProcessor } from './watchdog.processor';
 import { WatchdogScheduler } from './watchdog.scheduler';
+import { IS_WORKER_TIER } from '../common/process-role';
 
 // Both run on the worker tier only (api-only nodes register neither). The SCHEDULER
 // is always registered there (mirrors RecurringScheduler) — NOT gated on the
@@ -15,7 +16,7 @@ import { WatchdogScheduler } from './watchdog.scheduler';
 // always registered on the worker so any reap job a prior enabled deploy left in
 // Redis still drains. The DeliveryWatchdog service is always provided so it stays
 // unit-testable regardless of tier/flag.
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 @Module({
   imports: [

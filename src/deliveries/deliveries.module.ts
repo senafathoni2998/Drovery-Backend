@@ -31,11 +31,14 @@ import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryService } from './telemetry/telemetry.service';
 import { CommandController } from './commands/command.controller';
 import { DroneCommandService } from './commands/drone-command.service';
+import {
+  IS_HTTP_TIER,
+  IS_INGEST_TIER,
+  IS_WORKER_TIER,
+} from '../common/process-role';
 
-// The queue consumer runs everywhere except API-only instances (PROCESS_ROLE=api).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
-// The WS gateway + Redis subscriber run wherever HTTP is served (NOT the worker).
-const IS_API = process.env.PROCESS_ROLE !== 'worker';
+// The sim queue consumer runs on the worker tier only (NOT api/realtime).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 @Module({
   imports: [
@@ -75,18 +78,16 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     // Backend → drone command outbox (issue/poll/ack). Provided on every tier so
     // AdminService (api) and the controller can reuse it.
     DroneCommandService,
-    // The queue consumer (worker / dev), and the WS gateway + subscriber (api / dev).
+    // The sim queue consumer runs on the worker tier (worker / dev).
     ...(RUN_PROCESSOR ? [SimulationProcessor] : []),
-    // The WS gateway + Redis subscriber + the MQTT ingest subscribers (telemetry + command
-    // ack) run wherever HTTP is served — NOT the worker. With MQTT5 shared subscriptions
-    // (default) the broker still delivers each frame to exactly ONE api replica.
-    ...(IS_API
-      ? [
-          TrackingGateway,
-          TrackingSubscriber,
-          MqttTelemetrySubscriber,
-          MqttCommandAckSubscriber,
-        ]
+    // The WS gateway + Redis subscriber run on EVERY HTTP tier — api + realtime + dev —
+    // so the socket-holding realtime tier can fan tracking updates out.
+    ...(IS_HTTP_TIER ? [TrackingGateway, TrackingSubscriber] : []),
+    // The MQTT ingest subscribers (telemetry + command-ack) run on the INGEST tier —
+    // api + dev — NOT the realtime tier (which fans OUT, it doesn't ingest). MQTT5 shared
+    // subscriptions deliver each frame to exactly ONE replica.
+    ...(IS_INGEST_TIER
+      ? [MqttTelemetrySubscriber, MqttCommandAckSubscriber]
       : []),
   ],
   exports: [

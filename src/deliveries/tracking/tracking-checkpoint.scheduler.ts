@@ -9,10 +9,11 @@ import {
   TRACKING_CHECKPOINT_QUEUE,
   TRACKING_HOT_STORE_ENABLED,
 } from './tracking-hot-store.constants';
+import { IS_WORKER_TIER } from '../../common/process-role';
 
 const SCHEDULER_ID = 'tracking-checkpoint';
-// Only worker-tier nodes drain the hot store (api-only nodes must not register it).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+// Only worker-tier nodes drain the hot store (api/realtime nodes must not register it).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 /**
  * Registers the repeatable checkpoint scan via BullMQ's job scheduler (idempotent by

@@ -7,9 +7,10 @@ import {
   RECUR_QUEUE,
   SCAN_INTERVAL_MS,
 } from './recurring.constants';
+import { IS_WORKER_TIER } from '../common/process-role';
 
-// Only nodes that run the processor should register the scan (api-only nodes must not).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+// Only worker-tier nodes register the scan (api/realtime nodes must not).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 /**
  * Registers the repeatable materialization scan. Uses BullMQ's job scheduler,
