@@ -52,6 +52,14 @@ export default () => ({
     db: parseInt(process.env.REDIS_DB ?? '0', 10),
     tls: process.env.REDIS_TLS === 'true',
 
+    // PUB/SUB DELIVERY MODE for the tracking + support-chat fan-out. 'standard'
+    // (default) = PUBLISH/SUBSCRIBE (today's broadcast, byte-identical). 'sharded'
+    // = SPUBLISH/SSUBSCRIBE (Redis 7.0+) which routes by hash slot so the telemetry
+    // firehose scales across a Redis Cluster instead of hitting every node (§4).
+    // MUST be set identically on the worker (publisher) and api/realtime (subscriber)
+    // tiers — sharded and classic pub/sub do not interoperate.
+    pubsubMode: process.env.REDIS_PUBSUB_MODE ?? 'standard',
+
     // PER-CONCERN endpoint overrides (1M+ topology). Each is OPTIONAL and falls
     // back to the shared REDIS_* above per-field in buildRedisOptions(role). Unset
     // → one Redis for everything (today). Set to peel a concern onto its own

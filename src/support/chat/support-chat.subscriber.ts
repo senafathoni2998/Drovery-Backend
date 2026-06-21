@@ -8,6 +8,14 @@ import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
 import { buildRedisOptions } from '../../config/redis';
+import {
+  PUBSUB_MODE_STANDARD,
+  type PubSubMode,
+  pubSubMessageEvent,
+  pubSubSubscribe,
+  pubSubUnsubscribe,
+  resolvePubSubMode,
+} from '../../common/pubsub/pubsub-transport';
 import { supportChatChannel } from './support-chat.publisher';
 
 /** Frame as published to Redis: an already-shaped {event, data} envelope. */
@@ -33,6 +41,9 @@ export class SupportChatSubscriber implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SupportChatSubscriber.name);
   private sub!: Redis;
   private handler?: ChatHandler;
+  // Defaults to 'standard' so unit tests that inject a mock sub (skipping
+  // onModuleInit) route to subscribe/unsubscribe; onModuleInit reads the real mode.
+  private mode: PubSubMode = PUBSUB_MODE_STANDARD;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -42,6 +53,7 @@ export class SupportChatSubscriber implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit() {
+    this.mode = resolvePubSubMode(this.config);
     this.sub = new Redis({
       ...buildRedisOptions(this.config, 'pubsub'),
       maxRetriesPerRequest: null,
@@ -50,10 +62,19 @@ export class SupportChatSubscriber implements OnModuleInit, OnModuleDestroy {
     this.sub.on('error', (e) =>
       this.logger.warn(`support chat subscriber redis error: ${e.message}`),
     );
-    this.sub.on('message', (channel: string, message: string) =>
-      this.dispatch(channel, message),
+    this.wireMessageListener(this.sub);
+    this.logger.log(`SupportChatSubscriber ready (pubsub mode: ${this.mode})`);
+  }
+
+  /** Registers dispatch on the ONE event matching the active mode: 'smessage'
+   * (sharded) or 'message' (classic) — they're distinct events, so wiring the
+   * wrong one silently receives nothing. Extracted so the mode→event wiring is
+   * unit-testable without a live Redis. */
+  private wireMessageListener(client: Pick<Redis, 'on'>) {
+    client.on(
+      pubSubMessageEvent(this.mode),
+      (channel: string, message: string) => this.dispatch(channel, message),
     );
-    this.logger.log('SupportChatSubscriber ready');
   }
 
   /** Parse a Redis message and forward to the gateway's local fanout. */
@@ -70,15 +91,16 @@ export class SupportChatSubscriber implements OnModuleInit, OnModuleDestroy {
   }
 
   subscribeToTicket(ticketId: string) {
-    this.sub
-      .subscribe(supportChatChannel(ticketId))
-      .catch((e) =>
+    pubSubSubscribe(this.sub, supportChatChannel(ticketId), this.mode).catch(
+      (e: Error) =>
         this.logger.warn(`subscribe ${ticketId} failed: ${e.message}`),
-      );
+    );
   }
 
   unsubscribeFromTicket(ticketId: string) {
-    this.sub.unsubscribe(supportChatChannel(ticketId)).catch(() => undefined);
+    pubSubUnsubscribe(this.sub, supportChatChannel(ticketId), this.mode).catch(
+      () => undefined,
+    );
   }
 
   async onModuleDestroy() {
