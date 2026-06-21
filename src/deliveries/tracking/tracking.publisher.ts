@@ -8,6 +8,12 @@ import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
 import { buildRedisOptions } from '../../config/redis';
+import {
+  PUBSUB_MODE_STANDARD,
+  type PubSubMode,
+  pubSubPublish,
+  resolvePubSubMode,
+} from '../../common/pubsub/pubsub-transport';
 import { PositionCoalescer } from './position-coalescer';
 
 /** Shape published to Redis on every position/status change (matches the
@@ -36,6 +42,9 @@ export const trackingChannel = (deliveryId: string) =>
 export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TrackingPublisher.name);
   private client!: Redis;
+  // Defaults to 'standard' so unit tests that inject a mock client (skipping
+  // onModuleInit) stay byte-identical; onModuleInit reads the real mode from config.
+  private mode: PubSubMode = PUBSUB_MODE_STANDARD;
   // Caps the per-delivery publish rate when POSITION_PUSH_HZ>0; inert (pass-through)
   // by default. Position frames flush on its timer; status transitions go immediately.
   private readonly coalescer = new PositionCoalescer(
@@ -45,6 +54,7 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
+    this.mode = resolvePubSubMode(this.config);
     this.client = new Redis({
       ...buildRedisOptions(this.config, 'pubsub'),
       maxRetriesPerRequest: null,
@@ -53,6 +63,7 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
     this.client.on('error', (e) =>
       this.logger.warn(`tracking publisher redis error: ${e.message}`),
     );
+    this.logger.log(`TrackingPublisher ready (pubsub mode: ${this.mode})`);
   }
 
   async publishUpdate(payload: TrackingUpdatePayload): Promise<void> {
@@ -68,9 +79,11 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
 
   private async doPublish(payload: TrackingUpdatePayload): Promise<void> {
     try {
-      await this.client.publish(
+      await pubSubPublish(
+        this.client,
         trackingChannel(payload.deliveryId),
         JSON.stringify(payload),
+        this.mode,
       );
     } catch (e) {
       this.logger.warn(`publish failed: ${(e as Error).message}`);

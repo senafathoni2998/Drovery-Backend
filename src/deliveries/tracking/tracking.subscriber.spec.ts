@@ -1,3 +1,5 @@
+import { EventEmitter } from 'events';
+
 import { TrackingSubscriber } from './tracking.subscriber';
 import { trackingChannel } from './tracking.publisher';
 
@@ -19,6 +21,22 @@ describe('TrackingSubscriber', () => {
     expect(sub.subscribe).toHaveBeenCalledWith(trackingChannel('d-1'));
     subscriber.unsubscribeFromDelivery('d-1');
     expect(sub.unsubscribe).toHaveBeenCalledWith(trackingChannel('d-1'));
+  });
+
+  it('routes through the sharded S-commands when mode is sharded', () => {
+    (subscriber as any).mode = 'sharded';
+    const ssub = {
+      ssubscribe: jest.fn().mockResolvedValue(1),
+      sunsubscribe: jest.fn().mockResolvedValue(1),
+    };
+    (subscriber as any).sub = ssub;
+
+    subscriber.subscribeToDelivery('d-9');
+    subscriber.unsubscribeFromDelivery('d-9');
+
+    expect(ssub.ssubscribe).toHaveBeenCalledWith(trackingChannel('d-9'));
+    expect(ssub.sunsubscribe).toHaveBeenCalledWith(trackingChannel('d-9'));
+    expect(sub.subscribe).not.toHaveBeenCalled();
   });
 
   it('dispatch() parses the channel id + payload and forwards to the handler', () => {
@@ -44,5 +62,38 @@ describe('TrackingSubscriber', () => {
       subscriber.dispatch('delivery:x:update', '{bad'),
     ).not.toThrow();
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // The most load-bearing line of the sharded seam: the dispatch listener must be
+  // wired on the event matching the mode ('message' classic / 'smessage' sharded).
+  // Wiring the wrong one silently receives nothing in production.
+  describe('wireMessageListener', () => {
+    it('standard mode registers dispatch on "message" only', () => {
+      const spy = jest
+        .spyOn(subscriber, 'dispatch')
+        .mockImplementation(() => undefined);
+      const emitter = new EventEmitter();
+      (subscriber as any).mode = 'standard';
+      (subscriber as any).wireMessageListener(emitter);
+
+      emitter.emit('smessage', trackingChannel('d-1'), '{}'); // wrong event — ignored
+      expect(spy).not.toHaveBeenCalled();
+      emitter.emit('message', trackingChannel('d-1'), '{}');
+      expect(spy).toHaveBeenCalledWith(trackingChannel('d-1'), '{}');
+    });
+
+    it('sharded mode registers dispatch on "smessage" only', () => {
+      const spy = jest
+        .spyOn(subscriber, 'dispatch')
+        .mockImplementation(() => undefined);
+      const emitter = new EventEmitter();
+      (subscriber as any).mode = 'sharded';
+      (subscriber as any).wireMessageListener(emitter);
+
+      emitter.emit('message', trackingChannel('d-1'), '{}'); // wrong event — ignored
+      expect(spy).not.toHaveBeenCalled();
+      emitter.emit('smessage', trackingChannel('d-1'), '{}');
+      expect(spy).toHaveBeenCalledWith(trackingChannel('d-1'), '{}');
+    });
   });
 });
