@@ -23,6 +23,7 @@ import { TrackingGateway } from './tracking/tracking.gateway';
 import { TrackingPublisher } from './tracking/tracking.publisher';
 import { TrackingSubscriber } from './tracking/tracking.subscriber';
 import { TrackingService } from './tracking/tracking.service';
+import { TrackingHotStore } from './tracking/tracking-hot-store';
 import { DroneAuthGuard } from './telemetry/drone-auth.guard';
 import { MqttTelemetrySubscriber } from './telemetry/mqtt-telemetry.subscriber';
 import { MqttCommandAckSubscriber } from './commands/mqtt-command-ack.subscriber';
@@ -64,6 +65,8 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
     RatingService,
     SimulationService,
     TrackingService,
+    // Hot-store for the high-frequency position write (inert unless TRACKING_HOT_STORE=redis).
+    TrackingHotStore,
     // The worker publishes tracking updates to Redis; runs everywhere.
     TrackingPublisher,
     // Live drone telemetry ingest core (transport-agnostic) + its gateway auth.
@@ -89,6 +92,7 @@ const IS_API = process.env.PROCESS_ROLE !== 'worker';
   exports: [
     DeliveriesService,
     TrackingService,
+    TrackingHotStore,
     TrackingPublisher,
     DroneCommandService,
   ],

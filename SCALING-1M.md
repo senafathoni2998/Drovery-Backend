@@ -81,7 +81,7 @@ green), but a later phase **flips a flag / sets an env var** instead of refactor
 
 | Design item | Why not now | Prerequisite |
 |---|---|---|
-| **Tracking hot-store + checkpoint consumer** (§3) | ~2 coupled PRs; the producer flag must *never* be enabled before the consumer exists or it arms the watchdog false-reap | a **monotonic-seq** guard on the position write first (§3.1) |
+| **✅ Tracking hot-store + checkpoint consumer** (§3) — **SHIPPED** | producer + worker checkpoint consumer landed together, default-OFF (`TRACKING_HOT_STORE=redis`); a boot guard (`assertCheckpointSafe`) asserts the checkpoint cadence clears the watchdog window | the **monotonic-seq** guard (§3.1) is still deferred — it ships with the *same* last-write-wins position semantics as today (no regression) |
 | **`PROCESS_ROLE=realtime` tier** (§4) | **NOT** an existing seam — gateways need an HTTP bootstrap (`NestFactory.create` + `WsAdapter`); the worker uses `createApplicationContext` (no HTTP). Needs a *new* `src/realtime.ts` + slim module | the realtime module + a `drovery_ws_open_sockets` gauge |
 | **Pluggable `PubSubTransport` + coalescer** (§4) | the `redis-sharded` path is **not** publish-side-only: both subscribers reverse-parse the id out of the channel string, so they change in lockstep | pass the id through the transport callback instead of slicing the channel |
 | **DB `ShardRouter`** (§2) | **Unbuildable as additive today**: `create()`'s `$transaction` co-commits the delivery with **user-rooted wallet/promo/referral** mutations — a single Prisma tx cannot span two shards, so flipping `shardCount>1` would corrupt wallet balances on the first multi-shard delivery | refactor `create()` balance mutations to an **outbox/saga** (or co-locate users with a home shard) |
@@ -131,6 +131,15 @@ scatter-gather.
 ---
 
 ## 3. Telemetry firehose — the highest-value build
+
+> ✅ **Implemented** (env-gated `TRACKING_HOT_STORE=redis`, default OFF — byte-identical when unset):
+> `TrackingHotStore` (`writePosition` → Redis hot key + dirty set; `readPosition` for the `getTracking`
+> overlay; `drainCheckpoints` SPOP-claims dirty deliveries and batch-upserts them) + a worker-tier
+> checkpoint scan mirroring the watchdog (`upsertJobScheduler`, kill-switch teardown, Redis-coordinated
+> one-tick-across-replicas) + a boot-time `assertCheckpointSafe()`. The dirty-set drain keeps **today's
+> last-write-wins** position semantics (no regression); the monotonic-`seq` guard (§3.1) is a future
+> hardening. Note: this freshens `TrackingService.getTracking`; overlaying the hot position onto the
+> mobile poll path (`DeliveriesService.findOne`'s tracking relation) is a follow-up.
 
 The single chokepoint is `TrackingService.updateTracking()` (a `deliveryTracking.upsert` on the
 primary) — **both** the sim processor and live telemetry funnel through it, and
