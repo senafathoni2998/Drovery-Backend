@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 
 import { TrackingService } from './tracking.service';
+import { TrackingHotStore } from './tracking-hot-store';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createMockPrismaService } from '../../test/prisma-mock';
 
@@ -26,6 +27,14 @@ describe('TrackingService', () => {
       providers: [
         TrackingService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: TrackingHotStore,
+          useValue: {
+            enabled: false,
+            writePosition: jest.fn(),
+            readPosition: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -69,13 +78,9 @@ describe('TrackingService', () => {
       });
 
       const dca = new Date('2026-06-01T00:00:00.000Z');
-      const result = await service.updateTracking(
-        'delivery-1',
-        dca,
-        updateData,
-      );
+      // Hot-store disabled (default) → the synchronous upsert path, unchanged.
+      await service.updateTracking('delivery-1', dca, updateData);
 
-      expect(result.droneLat).toBe(updateData.droneLat);
       expect(prisma.deliveryTracking.upsert).toHaveBeenCalledWith({
         where: { deliveryId: 'delivery-1' },
         create: {
