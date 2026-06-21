@@ -160,4 +160,22 @@ describe('TrackingGateway', () => {
       expect(metrics.wsDroppedFrames.inc).not.toHaveBeenCalled();
     });
   });
+
+  describe('onApplicationShutdown', () => {
+    it('closes every socket with a 1001 going-away (graceful drain)', () => {
+      const a = socket();
+      const b = socket();
+      (gateway as any).server = { clients: new Set([a, b]) };
+
+      gateway.onApplicationShutdown();
+
+      expect(a.close).toHaveBeenCalledWith(1001, 'server draining');
+      expect(b.close).toHaveBeenCalledWith(1001, 'server draining');
+    });
+
+    it('is a no-op when no ws server is attached', () => {
+      (gateway as any).server = undefined;
+      expect(() => gateway.onApplicationShutdown()).not.toThrow();
+    });
+  });
 });
