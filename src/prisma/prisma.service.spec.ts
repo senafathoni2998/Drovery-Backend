@@ -91,6 +91,18 @@ describe('PrismaService', () => {
       }
     });
 
+    it('does NOT build a reader on the realtime tier (PROCESS_ROLE=realtime)', () => {
+      // The realtime tier serves WS only — its ownership re-checks read the primary,
+      // and /api/* reads route to the api tier, so it must not open an idle reader pool.
+      process.env.PROCESS_ROLE = 'realtime';
+      try {
+        const service = new PrismaService();
+        expect((service as any).readerClient).toBeNull();
+      } finally {
+        delete process.env.PROCESS_ROLE;
+      }
+    });
+
     it('routes a successful read to the replica, not the primary', async () => {
       const service = new PrismaService();
       const fn = jest.fn().mockResolvedValue('from-replica');
