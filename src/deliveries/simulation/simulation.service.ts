@@ -1,262 +1,159 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { DeliveryStatus } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
-import { PrismaService } from '../../prisma/prisma.service';
-import { NotificationsService } from '../../notifications/notifications.service';
-import { TrackingService } from '../tracking/tracking.service';
-import { TrackingGateway } from '../tracking/tracking.gateway';
+import {
+  DeliveryCoords,
+  KICKOFF_JOB,
+  POSITION_JOB,
+  POSITION_TICK_COUNT,
+  SIM_QUEUE,
+  STAGE_JOB,
+  STAGES,
+  buildPositionTicks,
+  resolveCoords,
+} from './simulation.constants';
+import { injectTraceCarrier } from '../../common/monitoring/tracing';
 
-interface DeliveryCoords {
-  fromLat: number;
-  fromLng: number;
-  toLat: number;
-  toLng: number;
-}
-
-// Default coordinates (Bandung area — matches frontend mock data)
-const DEFAULT_COORDS: DeliveryCoords = {
-  fromLat: -6.903,
-  fromLng: 107.615,
-  toLat: -6.922,
-  toLng: 107.607,
+const JOB_OPTS = {
+  // Retry transient failures (DB blip, etc.) with backoff. Handlers are
+  // idempotent (deterministic jobIds + monotonic CAS), so retries are safe.
+  attempts: 5,
+  backoff: { type: 'exponential' as const, delay: 1000 },
+  // Time/count-based retention so a burst doesn't evict failure history.
+  removeOnComplete: { age: 3600, count: 1000 },
+  removeOnFail: { age: 24 * 3600, count: 5000 },
 };
 
-// Drone position update interval during movement phases
-const POSITION_UPDATE_MS = 5_000;
+// Bound the producer enqueue so creating a delivery degrades gracefully (instead
+// of hanging) if Redis is unreachable — the BullMQ offline queue retries forever.
+const ENQUEUE_TIMEOUT_MS = 2000;
 
-// Each simulation stage: when it fires, what status it sets, and what it tells the user
-const STAGES: {
-  status: DeliveryStatus;
-  delayMs: number;
-  droneStatus: string;
-  title: string;
-  body: string;
-}[] = [
-  {
-    status: DeliveryStatus.CONFIRMED,
-    delayMs: 10_000, // 10 s after creation
-    droneStatus: 'Delivery confirmed',
-    title: 'Delivery Confirmed',
-    body: 'Your delivery has been confirmed and is being processed.',
-  },
-  {
-    status: DeliveryStatus.DRONE_ASSIGNED,
-    delayMs: 25_000, // 25 s
-    droneStatus: 'Drone assigned',
-    title: 'Drone Assigned',
-    body: 'A drone has been assigned to your delivery.',
-  },
-  {
-    status: DeliveryStatus.PICKUP_IN_PROGRESS,
-    delayMs: 45_000, // 45 s
-    droneStatus: 'On the way to Pickup Location',
-    title: 'Pickup In Progress',
-    body: 'The drone is heading to the pickup location.',
-  },
-  {
-    status: DeliveryStatus.IN_TRANSIT,
-    delayMs: 70_000, // 1 min 10 s
-    droneStatus: 'En route to destination',
-    title: 'Package In Transit',
-    body: 'Your package has been picked up and is on its way!',
-  },
-  {
-    status: DeliveryStatus.DELIVERED,
-    delayMs: 120_000, // 2 min
-    droneStatus: 'Delivered',
-    title: 'Package Delivered',
-    body: 'Your package has been delivered successfully!',
-  },
-];
-
+/**
+ * Schedules a delivery's lifecycle as durable, delayed BullMQ jobs in Redis
+ * (instead of in-process `setTimeout`). This survives restarts and lets any
+ * worker instance advance any delivery — the foundation for horizontal scaling.
+ */
 @Injectable()
-export class SimulationService implements OnModuleDestroy {
+export class SimulationService {
   private readonly logger = new Logger(SimulationService.name);
-  private readonly activeTimers = new Map<string, NodeJS.Timeout[]>();
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly trackingService: TrackingService,
-    private readonly trackingGateway: TrackingGateway,
-    private readonly notificationsService: NotificationsService,
-  ) {}
+  constructor(@InjectQueue(SIM_QUEUE) private readonly queue: Queue) {}
 
-  // ── Public API ────────────────────────────────────────────
-
-  startSimulation(
+  async startSimulation(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     userId: string,
     coords?: Partial<DeliveryCoords>,
-  ) {
-    const c: DeliveryCoords = {
-      fromLat: coords?.fromLat ?? DEFAULT_COORDS.fromLat,
-      fromLng: coords?.fromLng ?? DEFAULT_COORDS.fromLng,
-      toLat: coords?.toLat ?? DEFAULT_COORDS.toLat,
-      toLng: coords?.toLng ?? DEFAULT_COORDS.toLng,
-    };
+  ): Promise<void> {
+    const c = resolveCoords(coords);
+    // Stamp the parent's createdAt onto every job so the worker can write the
+    // composite-FK child rows (deliveries is partitioned) without an extra lookup.
+    const dca = deliveryCreatedAt.toISOString();
 
-    this.logger.log(`Starting delivery simulation: ${deliveryId}`);
-
-    const timers: NodeJS.Timeout[] = [];
-
-    // 1. Schedule every status transition
-    for (const stage of STAGES) {
-      timers.push(
-        setTimeout(() => this.transitionTo(deliveryId, userId, stage, c), stage.delayMs),
-      );
-    }
-
-    // 2. Schedule drone position updates between movement phases
-    //    DRONE_ASSIGNED → PICKUP_IN_PROGRESS  (drone base → pickup)
-    this.schedulePositionUpdates(timers, deliveryId, 25_000, 45_000, {
-      from: { lat: c.fromLat + 0.005, lng: c.fromLng + 0.005 },
-      to: { lat: c.fromLat, lng: c.fromLng },
-    });
-    //    IN_TRANSIT → DELIVERED  (pickup → dropoff)
-    this.schedulePositionUpdates(timers, deliveryId, 70_000, 120_000, {
-      from: { lat: c.fromLat, lng: c.fromLng },
-      to: { lat: c.toLat, lng: c.toLng },
-    });
-
-    this.activeTimers.set(deliveryId, timers);
-  }
-
-  stopSimulation(deliveryId: string) {
-    const timers = this.activeTimers.get(deliveryId);
-    if (!timers) return;
-    timers.forEach(clearTimeout);
-    this.activeTimers.delete(deliveryId);
-    this.logger.log(`Stopped simulation: ${deliveryId}`);
-  }
-
-  onModuleDestroy() {
-    for (const deliveryId of this.activeTimers.keys()) {
-      this.stopSimulation(deliveryId);
-    }
-  }
-
-  // ── Internals ─────────────────────────────────────────────
-
-  private async transitionTo(
-    deliveryId: string,
-    userId: string,
-    stage: (typeof STAGES)[number],
-    coords: DeliveryCoords,
-  ) {
-    try {
-      // Guard: abort if delivery was canceled or deleted
-      const delivery = await this.prisma.delivery.findUnique({
-        where: { id: deliveryId },
-      });
-      if (!delivery || delivery.status === DeliveryStatus.CANCELED) {
-        this.stopSimulation(deliveryId);
-        return;
-      }
-
-      // Update delivery status
-      await this.prisma.delivery.update({
-        where: { id: deliveryId },
-        data: { status: stage.status },
-      });
-
-      // Resolve drone position for this stage
-      const dronePos = this.dronePositionForStage(stage.status, coords);
-
-      // Upsert tracking record
-      await this.trackingService.updateTracking(deliveryId, {
-        droneLat: dronePos?.lat,
-        droneLng: dronePos?.lng,
-        droneStatus: stage.droneStatus,
-        eta:
-          stage.status === DeliveryStatus.DELIVERED
-            ? undefined
-            : new Date(Date.now() + 60_000),
-      });
-
-      // Create user notification
-      await this.notificationsService.create(userId, stage.title, stage.body, {
+    // injectTraceCarrier stamps the active trace context onto the job data (a
+    // no-op pass-through when tracing is off) so the worker continues this trace.
+    const stageJobs = STAGES.map((stage, i) => ({
+      name: STAGE_JOB,
+      data: injectTraceCarrier({
         deliveryId,
-        status: stage.status,
-      });
+        deliveryCreatedAt: dca,
+        userId,
+        coords: c,
+        stageIndex: i,
+      }),
+      opts: {
+        ...JOB_OPTS,
+        delay: stage.delayMs,
+        jobId: `${deliveryId}:stage:${i}`,
+      },
+    }));
 
-      // Broadcast to any WebSocket subscribers
-      this.trackingGateway.broadcastTrackingUpdate(deliveryId, {
+    const positionJobs = buildPositionTicks(c).map((tick, j) => ({
+      name: POSITION_JOB,
+      data: injectTraceCarrier({
         deliveryId,
-        status: stage.status,
-        droneStatus: stage.droneStatus,
-        droneLat: dronePos?.lat,
-        droneLng: dronePos?.lng,
-      });
+        deliveryCreatedAt: dca,
+        lat: tick.lat,
+        lng: tick.lng,
+      }),
+      opts: { ...JOB_OPTS, delay: tick.delay, jobId: `${deliveryId}:pos:${j}` },
+    }));
 
-      this.logger.log(`Delivery ${deliveryId} → ${stage.status}`);
-
-      // Cleanup on final stage
-      if (stage.status === DeliveryStatus.DELIVERED) {
-        this.activeTimers.delete(deliveryId);
-      }
-    } catch (error) {
-      this.logger.error(
-        `Simulation error [${deliveryId}]: ${(error as Error).message}`,
-      );
-    }
-  }
-
-  private dronePositionForStage(
-    status: DeliveryStatus,
-    coords: DeliveryCoords,
-  ): { lat: number; lng: number } | undefined {
-    switch (status) {
-      case DeliveryStatus.DRONE_ASSIGNED:
-        // Drone starts at a "base" near the pickup
-        return { lat: coords.fromLat + 0.005, lng: coords.fromLng + 0.005 };
-      case DeliveryStatus.PICKUP_IN_PROGRESS:
-        return { lat: coords.fromLat, lng: coords.fromLng };
-      case DeliveryStatus.IN_TRANSIT:
-        return { lat: coords.fromLat, lng: coords.fromLng };
-      case DeliveryStatus.DELIVERED:
-        return { lat: coords.toLat, lng: coords.toLng };
-      default:
-        return undefined;
-    }
+    await this.withTimeout(
+      this.queue.addBulk([...stageJobs, ...positionJobs]),
+      ENQUEUE_TIMEOUT_MS,
+      'enqueue simulation',
+    );
+    this.logger.log(
+      `Queued simulation for ${deliveryId} (${stageJobs.length} stages, ${positionJobs.length} ticks)`,
+    );
   }
 
   /**
-   * Linearly interpolates drone position between two points
-   * and emits a tracking update every POSITION_UPDATE_MS.
+   * Defers a delivery's lifecycle: enqueues a SINGLE delayed kickoff job that
+   * fires at `scheduledFor`. When it runs (SimulationProcessor.handleKickoff) it
+   * atomically flips SCHEDULED → PENDING and then calls startSimulation. Same
+   * fail-open + deterministic-jobId contract as startSimulation.
    */
-  private schedulePositionUpdates(
-    timers: NodeJS.Timeout[],
+  async scheduleKickoff(
     deliveryId: string,
-    startMs: number,
-    endMs: number,
-    route: { from: { lat: number; lng: number }; to: { lat: number; lng: number } },
-  ) {
-    const duration = endMs - startMs;
-    const steps = Math.floor(duration / POSITION_UPDATE_MS);
+    deliveryCreatedAt: Date,
+    userId: string,
+    coords: Partial<DeliveryCoords> | undefined,
+    scheduledFor: Date,
+  ): Promise<void> {
+    const c = resolveCoords(coords);
+    const delay = Math.max(0, scheduledFor.getTime() - Date.now());
 
-    for (let i = 1; i < steps; i++) {
-      const progress = i / steps;
-      const lat = route.from.lat + (route.to.lat - route.from.lat) * progress;
-      const lng = route.from.lng + (route.to.lng - route.from.lng) * progress;
-      const delay = startMs + i * POSITION_UPDATE_MS;
+    await this.withTimeout(
+      this.queue.add(
+        KICKOFF_JOB,
+        injectTraceCarrier({
+          deliveryId,
+          deliveryCreatedAt: deliveryCreatedAt.toISOString(),
+          userId,
+          coords: c,
+        }),
+        // NOTE: queue.add() rejects a custom jobId containing ':' ("Custom Id
+        // cannot contain :"), so the kickoff id uses a '-' separator (the
+        // stage/pos ids use ':' but go through addBulk, which tolerates it).
+        { ...JOB_OPTS, delay, jobId: `${deliveryId}-kickoff` },
+      ),
+      ENQUEUE_TIMEOUT_MS,
+      'enqueue kickoff',
+    );
+    this.logger.log(
+      `Scheduled kickoff for ${deliveryId} in ${Math.round(delay / 1000)}s`,
+    );
+  }
 
-      timers.push(
-        setTimeout(async () => {
-          try {
-            await this.trackingService.updateTracking(deliveryId, {
-              droneLat: lat,
-              droneLng: lng,
-            });
-            this.trackingGateway.broadcastTrackingUpdate(deliveryId, {
-              deliveryId,
-              droneLat: lat,
-              droneLng: lng,
-            });
-          } catch {
-            // Position updates are best-effort; errors are non-fatal
-          }
-        }, delay),
+  private withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<T>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(`${label} timed out after ${ms}ms (Redis unreachable?)`),
+          ),
+        ms,
       );
-    }
+    });
+    return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /** Best-effort removal of a delivery's pending jobs (e.g. on cancel) —
+   * including the deferred kickoff job for a still-SCHEDULED delivery. */
+  async stopSimulation(deliveryId: string): Promise<void> {
+    const ids: string[] = [`${deliveryId}-kickoff`];
+    for (let i = 0; i < STAGES.length; i++)
+      ids.push(`${deliveryId}:stage:${i}`);
+    for (let j = 0; j < POSITION_TICK_COUNT; j++)
+      ids.push(`${deliveryId}:pos:${j}`);
+
+    await Promise.all(
+      ids.map((id) => this.queue.remove(id).catch(() => undefined)),
+    );
+    this.logger.log(`Removed pending simulation jobs for ${deliveryId}`);
   }
 }

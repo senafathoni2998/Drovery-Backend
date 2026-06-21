@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
+import { AppNotFoundException } from '../../common/exceptions/app-exception';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -7,21 +8,34 @@ export class TrackingService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getTracking(deliveryId: string) {
-    const tracking = await this.prisma.deliveryTracking.findUnique({
-      where: { deliveryId },
-    });
+    // A tracking poll — lag-tolerant → read replica (falls back to primary).
+    const tracking = await this.prisma.readWithFallback((c) =>
+      c.deliveryTracking.findUnique({
+        where: { deliveryId },
+      }),
+    );
 
     if (!tracking) {
-      throw new NotFoundException(
-        `Tracking data for delivery "${deliveryId}" not found`,
-      );
+      throw new AppNotFoundException('error.delivery.tracking.not_found', {
+        id: deliveryId,
+      });
     }
 
     return tracking;
   }
 
+  /**
+   * Upserts the latest drone position/status snapshot. NOTE: `droneStatus` is a
+   * human label persisted ALREADY-LOCALIZED to the delivery owner's locale at the
+   * time of the event (a point-in-time snapshot, like the persisted notification
+   * rows + the support auto-ack) — it is NOT re-translated on read, so if the
+   * owner switches locale mid-delivery the label stays in the prior language until
+   * the next event writes it. The discrete `status` enum on the Delivery row is the
+   * locale-independent source of truth a client can map to its own label.
+   */
   async updateTracking(
     deliveryId: string,
+    deliveryCreatedAt: Date,
     data: {
       droneLat?: number;
       droneLng?: number;
@@ -33,6 +47,7 @@ export class TrackingService {
       where: { deliveryId },
       create: {
         deliveryId,
+        deliveryCreatedAt,
         droneLat: data.droneLat,
         droneLng: data.droneLng,
         droneStatus: data.droneStatus,

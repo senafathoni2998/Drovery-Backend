@@ -27,14 +27,14 @@ describe('PricingController', () => {
   });
 
   describe('estimate', () => {
-    it('should delegate to pricingService.estimate', () => {
+    it('should delegate to pricingService.estimate', async () => {
       const dto = {
         packageSize: 'Medium',
         packageWeight: 2,
         packageTypes: ['electronics', 'fragile'],
       };
 
-      const result = controller.estimate(dto as any);
+      const result = await controller.estimate(dto as any);
 
       expect(pricingService.estimate).toHaveBeenCalledWith(dto);
       expect(result.total).toBe(18);

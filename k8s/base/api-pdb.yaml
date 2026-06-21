@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: drovery-api
+spec:
+  # Keep at least one api pod serving during node drains/upgrades. Must stay
+  # BELOW the running replica count or voluntary evictions wedge — keep api
+  # replicas >= 2 wherever this PDB is active. Prod overlay can raise to 50%.
+  minAvailable: 1
+  selector:
+    matchLabels: { app: drovery, role: api }

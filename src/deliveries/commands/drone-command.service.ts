@@ -1,0 +1,391 @@
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  DroneCommand,
+  DroneCommandStatus,
+  DroneCommandType,
+  Prisma,
+  TrackingSource,
+} from '@prisma/client';
+
+import { commandTopic } from '../../mqtt/mqtt.constants';
+import { MqttService } from '../../mqtt/mqtt.service';
+
+import {
+  AppConflictException,
+  AppForbiddenException,
+  AppNotFoundException,
+  AppUnprocessableEntityException,
+} from '../../common/exceptions/app-exception';
+import { MetricsService } from '../../metrics/metrics.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveriesService } from '../deliveries.service';
+import { IssueCommandDto } from '../../admin/dto/admin.dto';
+import {
+  COMMAND_TTL_MS,
+  COMMAND_TYPE_DEFAULT_REASON,
+  COMMAND_TYPE_TO_LEGAL_STATUSES,
+  MAX_COMMANDS_PER_DELIVERY,
+} from './command.constants';
+
+/** What the (mock) drone sees on a poll — the operator-audit fields are omitted. */
+export interface DroneCommandView {
+  id: string;
+  deliveryId: string;
+  droneId: string;
+  type: DroneCommandType;
+  reason: DroneCommand['reason'];
+  status: DroneCommandStatus;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+/**
+ * The backend -> drone command outbox (P3 follow-on). An ADMIN issues a command;
+ * the (mock) drone polls + acks it over the existing /ingest transport; the ack is
+ * the SOLE trigger that drives the delivery, via the existing single-winner CAS
+ * transitions (beginReturnToBase / failExceptional). The command row is a durable
+ * audit/outbox, NOT a second source of truth — the Delivery row stays authoritative.
+ */
+@Injectable()
+export class DroneCommandService {
+  private readonly logger = new Logger(DroneCommandService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly deliveries: DeliveriesService,
+    private readonly metrics: MetricsService,
+    // Optional: present only when MqttModule is wired (it's @Global, but @Optional keeps
+    // the service constructible in unit specs that don't provide it). Inert in MOCK mode.
+    @Optional() private readonly mqtt?: MqttService,
+  ) {}
+
+  // ── Operator side (ADMIN) ─────────────────────────────────────────────────
+
+  /** Issue a PENDING command. Does NOT touch the delivery — the ack does. */
+  async issue(
+    adminId: string,
+    deliveryId: string,
+    dto: IssueCommandDto,
+  ): Promise<DroneCommand> {
+    const delivery = await this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        trackingSource: true,
+        assignedDroneId: true,
+      },
+    });
+    if (!delivery)
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
+    if (delivery.trackingSource !== TrackingSource.LIVE) {
+      // No real drone drives a SIMULATED delivery — there is nothing to command.
+      throw new AppUnprocessableEntityException('error.command.live_only');
+    }
+    if (!delivery.assignedDroneId) {
+      throw new AppConflictException('error.command.no_drone');
+    }
+    const legal = COMMAND_TYPE_TO_LEGAL_STATUSES[dto.type];
+    if (!legal.includes(delivery.status)) {
+      // Fail fast; the ack-time CAS is still the authoritative guard.
+      throw new AppConflictException('error.command.illegal_for_status', {
+        type: dto.type,
+        status: delivery.status,
+      });
+    }
+    const reason = dto.reason ?? COMMAND_TYPE_DEFAULT_REASON[dto.type];
+
+    // The partial-unique index only bounds OPEN commands; cap total rows per
+    // delivery so repeated issue→expire/reject cycles can't grow the table without
+    // bound (the open-slot 409 below still guards the common case).
+    const total = await this.prisma.droneCommand.count({
+      where: { deliveryId },
+    });
+    if (total >= MAX_COMMANDS_PER_DELIVERY) {
+      throw new AppConflictException('error.command.limit_reached');
+    }
+
+    try {
+      const command = await this.prisma.droneCommand.create({
+        data: {
+          deliveryId,
+          deliveryCreatedAt: delivery.createdAt,
+          droneId: delivery.assignedDroneId,
+          type: dto.type,
+          reason,
+          issuedByUserId: adminId,
+          expiresAt: new Date(Date.now() + COMMAND_TTL_MS),
+        },
+      });
+      this.metrics.droneCommandsTotal.inc({ type: dto.type, result: 'issued' });
+      this.logger.log(
+        `command ${command.id} ${dto.type} issued by admin ${adminId} for delivery ${deliveryId} (reason ${reason})`,
+      );
+      // Best-effort PUSH to the drone over MQTT (a latency win vs the HTTP poll). Fail-open:
+      // the DB outbox row + the HTTP poll remain the durable fallback, and it's a no-op when
+      // MQTT is disabled. Post-commit, outside any transaction; a publish error (or a
+      // throwing client) must never fail an otherwise-successful issue.
+      try {
+        this.mqtt?.publish(commandTopic(command.droneId), {
+          id: command.id,
+          deliveryId: command.deliveryId,
+          droneId: command.droneId,
+          type: command.type,
+          reason: command.reason,
+          expiresAt: command.expiresAt,
+          createdAt: command.createdAt,
+        });
+      } catch (e) {
+        this.logger.warn(`MQTT command push failed: ${(e as Error).message}`);
+      }
+      return command;
+    } catch (e) {
+      // The partial-unique index (one open command per delivery) → P2002 → 409.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new AppConflictException('error.command.already_pending');
+      }
+      throw e;
+    }
+  }
+
+  /** Admin audit history for a delivery (newest first). */
+  async listForDelivery(deliveryId: string): Promise<DroneCommand[]> {
+    const exists = await this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
+      select: { id: true },
+    });
+    if (!exists)
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
+    return this.prisma.droneCommand.findMany({
+      where: { deliveryId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // ── Drone side (DroneAuthGuard) ───────────────────────────────────────────
+
+  /**
+   * The drone polls its queue. Returns the OLDEST open (PENDING|FETCHED) command
+   * for this drone, transitioning a PENDING one to FETCHED. Re-polling before ack
+   * returns the SAME FETCHED row (at-least-once redelivery). Expired commands are
+   * never handed out.
+   */
+  async fetchPending(
+    droneId: string,
+  ): Promise<{ command: DroneCommandView | null }> {
+    const now = new Date();
+    const command = await this.prisma.droneCommand.findFirst({
+      where: {
+        droneId,
+        status: {
+          in: [DroneCommandStatus.PENDING, DroneCommandStatus.FETCHED],
+        },
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        delivery: { select: { trackingSource: true, assignedDroneId: true } },
+      },
+    });
+    if (!command) return { command: null };
+
+    // Ownership (defense-in-depth; mirrors telemetry): the delivery must still be
+    // LIVE and bound to THIS drone. A stranger key with a wrong droneId never
+    // matches the filter above and lands here as an empty queue.
+    if (
+      command.delivery.trackingSource !== TrackingSource.LIVE ||
+      command.delivery.assignedDroneId !== droneId
+    ) {
+      return { command: null };
+    }
+
+    if (command.status === DroneCommandStatus.PENDING) {
+      const { count } = await this.prisma.droneCommand.updateMany({
+        where: { id: command.id, status: DroneCommandStatus.PENDING },
+        data: { status: DroneCommandStatus.FETCHED, fetchedAt: now },
+      });
+      if (count > 0) {
+        this.metrics.droneCommandsTotal.inc({
+          type: command.type,
+          result: 'fetched',
+        });
+      } else {
+        // Lost the PENDING→FETCHED CAS to a sibling poll OR a concurrent watchdog
+        // expiry sweep. Re-read the truth rather than reporting an assumed FETCHED:
+        // if it's no longer FETCHED (e.g. EXPIRED), hand the drone nothing.
+        const fresh = await this.prisma.droneCommand.findFirst({
+          where: { id: command.id },
+          select: { status: true },
+        });
+        if (fresh?.status !== DroneCommandStatus.FETCHED)
+          return { command: null };
+      }
+    }
+
+    return { command: this.toView(command) };
+  }
+
+  /**
+   * The drone acknowledges a command. accepted=true (default) drives the delivery
+   * via the mapped existing transition; accepted=false records a refusal. The claim
+   * CAS (FETCHED → terminal) is the single-winner gate, so a duplicate/replayed ack
+   * 409s and never re-fires the transition.
+   */
+  async ack(
+    commandId: string,
+    droneId: string,
+    accepted: boolean,
+    note?: string,
+  ): Promise<{
+    id: string;
+    status: DroneCommandStatus;
+    appliedTransition: boolean;
+  }> {
+    // `drone_commands` is partitioned (composite PK), and `commandId` is a raw URL param
+    // with no deliveryCreatedAt in scope → findFirst (the uuid id matches at most one row).
+    // The full row it returns carries deliveryCreatedAt for the composite-key updates below.
+    const command = await this.prisma.droneCommand.findFirst({
+      where: { id: commandId },
+      include: {
+        delivery: { select: { trackingSource: true, assignedDroneId: true } },
+      },
+    });
+    if (!command) throw new AppNotFoundException('error.command.not_found');
+
+    if (
+      command.droneId !== droneId ||
+      command.delivery.trackingSource !== TrackingSource.LIVE ||
+      command.delivery.assignedDroneId !== droneId
+    ) {
+      throw new AppForbiddenException('error.command.drone_not_assigned');
+    }
+
+    // An expired-but-still-FETCHED command must never execute late.
+    if (command.expiresAt.getTime() <= Date.now()) {
+      const { count } = await this.prisma.droneCommand.updateMany({
+        where: {
+          id: commandId,
+          status: {
+            in: [DroneCommandStatus.PENDING, DroneCommandStatus.FETCHED],
+          },
+        },
+        data: { status: DroneCommandStatus.EXPIRED },
+      });
+      // Count this lazy expiry under the real type (the watchdog sweep counts the
+      // never-polled-again ones); gated so a concurrent sweep/ack can't double-count.
+      if (count > 0) {
+        this.metrics.droneCommandsTotal.inc({
+          type: command.type,
+          result: 'expired',
+        });
+      }
+      throw new AppConflictException('error.command.expired');
+    }
+
+    const accept = accepted !== false; // default true
+    const claimStatus = accept
+      ? DroneCommandStatus.ACKED
+      : DroneCommandStatus.REJECTED;
+
+    // Single-winner claim: only the first ack moves FETCHED → terminal.
+    const { count } = await this.prisma.droneCommand.updateMany({
+      where: { id: commandId, status: DroneCommandStatus.FETCHED },
+      data: {
+        status: claimStatus,
+        ackedAt: new Date(),
+        resultNote: note ?? null,
+      },
+    });
+    if (count === 0) {
+      throw new AppConflictException('error.command.not_awaiting_ack');
+    }
+
+    let appliedTransition = false;
+    let finalStatus: DroneCommandStatus = claimStatus;
+
+    if (accept) {
+      // Drive the delivery via the EXISTING transition (idempotent CAS). It no-ops
+      // (returns false) if telemetry/watchdog already moved the row — then this
+      // command becomes a REJECTED no-op rather than a misleading ACKED.
+      appliedTransition =
+        command.type === DroneCommandType.RETURN_TO_BASE
+          ? await this.deliveries.beginReturnToBase(
+              command.deliveryId,
+              command.reason,
+            )
+          : await this.deliveries.failExceptional(
+              command.deliveryId,
+              command.reason,
+            );
+
+      if (appliedTransition) {
+        await this.prisma.droneCommand.update({
+          where: {
+            id_deliveryCreatedAt: {
+              id: commandId,
+              deliveryCreatedAt: command.deliveryCreatedAt,
+            },
+          },
+          data: { appliedTransition: true },
+        });
+      } else {
+        finalStatus = DroneCommandStatus.REJECTED;
+        await this.prisma.droneCommand.update({
+          where: {
+            id_deliveryCreatedAt: {
+              id: commandId,
+              deliveryCreatedAt: command.deliveryCreatedAt,
+            },
+          },
+          data: {
+            status: DroneCommandStatus.REJECTED,
+            resultNote: note ?? 'delivery no longer in a commandable state',
+          },
+        });
+      }
+    }
+
+    // Distinguish a genuine drone REFUSAL (accepted=false) from an accepted ack
+    // whose transition no-op'd because the delivery already moved (superseded) —
+    // collapsing them would blind an operator to actual fleet refusals.
+    const result = !accept
+      ? 'rejected'
+      : appliedTransition
+        ? 'acked'
+        : 'superseded';
+    this.metrics.droneCommandsTotal.inc({ type: command.type, result });
+    this.metrics.droneCommandTimeToAck.observe(
+      { type: command.type, result },
+      (Date.now() - command.createdAt.getTime()) / 1000,
+    );
+    this.logger.log(
+      `command ${commandId} ${command.type} acked accepted=${accept} appliedTransition=${appliedTransition} for delivery ${command.deliveryId}`,
+    );
+
+    return { id: commandId, status: finalStatus, appliedTransition };
+  }
+
+  private toView(command: DroneCommand): DroneCommandView {
+    return {
+      id: command.id,
+      deliveryId: command.deliveryId,
+      droneId: command.droneId,
+      type: command.type,
+      reason: command.reason,
+      status:
+        command.status === DroneCommandStatus.PENDING
+          ? DroneCommandStatus.FETCHED // reflect the transition we just made
+          : command.status,
+      expiresAt: command.expiresAt,
+      createdAt: command.createdAt,
+    };
+  }
+}

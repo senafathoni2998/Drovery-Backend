@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drovery-worker
+  labels: { app: drovery, role: worker }
+spec:
+  # KEDA owns scaling (worker-scaledobject.yaml). Do NOT attach a CPU HPA here —
+  # two autoscalers on one Deployment fight over the replica count.
+  replicas: 1
+  selector:
+    matchLabels: { app: drovery, role: worker }
+  template:
+    metadata:
+      labels: { app: drovery, role: worker }
+      annotations:
+        # Worker has no Express + no global prefix — it serves /metrics at root on 9091.
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: /metrics
+        prometheus.io/port: '9091'
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      # Longer than the api: let in-flight BullMQ jobs finish on SIGTERM before SIGKILL.
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: worker
+          image: drovery-backend:latest
+          command: ['node', 'dist/src/worker']
+          ports:
+            - { containerPort: 9091, name: metrics }
+          env:
+            - { name: PROCESS_ROLE, value: worker } # runs the SimulationProcessor
+          envFrom:
+            - configMapRef: { name: drovery-config }
+            - secretRef: { name: drovery-secrets }
+          # NO httpGet probes: the worker is a Nest application context with no HTTP
+          # server on :3000 — an httpGet /api/v1/health probe would always fail and
+          # drive it into CrashLoopBackOff. A cheap exec startupProbe catches a hung
+          # boot; the metrics port is for scraping, not health. (worker.ts exits
+          # non-zero on boot failure, so the kubelet restarts a dead process anyway.)
+          startupProbe:
+            exec:
+              command: ['sh', '-c', 'pgrep -f "dist/src/worker" >/dev/null']
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: '1', memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ['ALL'] }

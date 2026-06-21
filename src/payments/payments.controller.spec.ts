@@ -10,6 +10,8 @@ describe('PaymentsController', () => {
     addPaymentMethod: jest.Mock;
     remove: jest.Mock;
     setDefault: jest.Mock;
+    createSetupSession: jest.Mock;
+    syncCards: jest.Mock;
   };
 
   const userId = 'user-1';
@@ -21,6 +23,10 @@ describe('PaymentsController', () => {
       addPaymentMethod: jest.fn().mockResolvedValue(mockPm),
       remove: jest.fn().mockResolvedValue({ success: true }),
       setDefault: jest.fn().mockResolvedValue({ ...mockPm, isDefault: true }),
+      createSetupSession: jest
+        .fn()
+        .mockResolvedValue({ setupIntentClientSecret: 'seti', mock: true }),
+      syncCards: jest.fn().mockResolvedValue([mockPm]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -29,6 +35,20 @@ describe('PaymentsController', () => {
     }).compile();
 
     controller = module.get<PaymentsController>(PaymentsController);
+  });
+
+  describe('setup-intent & sync', () => {
+    it('createSetupIntent delegates to paymentsService.createSetupSession', async () => {
+      const result = await controller.createSetupIntent(userId);
+      expect(paymentsService.createSetupSession).toHaveBeenCalledWith(userId);
+      expect(result).toMatchObject({ mock: true });
+    });
+
+    it('sync delegates to paymentsService.syncCards', async () => {
+      const result = await controller.sync(userId);
+      expect(paymentsService.syncCards).toHaveBeenCalledWith(userId);
+      expect(result).toEqual([mockPm]);
+    });
   });
 
   describe('findAll', () => {
@@ -42,11 +62,19 @@ describe('PaymentsController', () => {
 
   describe('addPaymentMethod', () => {
     it('should delegate to paymentsService.addPaymentMethod', async () => {
-      const dto = { network: 'Visa', last4: '4242', holderName: 'John', expiry: '12/28' };
+      const dto = {
+        network: 'Visa',
+        last4: '4242',
+        holderName: 'John',
+        expiry: '12/28',
+      };
 
       const result = await controller.addPaymentMethod(userId, dto);
 
-      expect(paymentsService.addPaymentMethod).toHaveBeenCalledWith(userId, dto);
+      expect(paymentsService.addPaymentMethod).toHaveBeenCalledWith(
+        userId,
+        dto,
+      );
       expect(result).toEqual(mockPm);
     });
   });
@@ -65,7 +93,7 @@ describe('PaymentsController', () => {
       const result = await controller.setDefault(userId, 'pm-1');
 
       expect(paymentsService.setDefault).toHaveBeenCalledWith(userId, 'pm-1');
-      expect(result.isDefault).toBe(true);
+      expect(result?.isDefault).toBe(true);
     });
   });
 });

@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: drovery
+
+resources:
+  - namespace.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - api-ingress.yaml
+  - api-pdb.yaml
+  - api-hpa.yaml
+  - worker-deployment.yaml
+  - worker-scaledobject.yaml
+  - migrate-job.yaml
+
+# Non-secret config. The name gets a content hash so a change rolls the pods.
+configMapGenerator:
+  - name: drovery-config
+    literals:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_PREFIX=api/v1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_POOL_MAX=10
+      - SIM_WORKER_CONCURRENCY=10
+      - GEOCODING_PROVIDER=nominatim
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9091
+
+# Sensitive values. Overlays replace this generator (local: real dev values;
+# prod: External Secrets / Sealed Secrets — do not commit real secrets).
+secretGenerator:
+  - name: drovery-secrets
+    envs:
+      - secrets.env.example

@@ -22,8 +22,12 @@ describe('WorkflowsController', () => {
       getWorkflow: jest.fn().mockReturnValue(mockWorkflow),
       completeStep: jest.fn().mockResolvedValue({ id: 'c-1', stepId: 's-1' }),
       getCompletedSteps: jest.fn().mockResolvedValue([]),
-      generateQrPayload: jest.fn().mockReturnValue('{"deliveryId":"d-1","timestamp":123}'),
-      validateQrPayload: jest.fn().mockReturnValue({ valid: true, deliveryId: 'd-1' }),
+      generateQrPayload: jest
+        .fn()
+        .mockReturnValue('{"deliveryId":"d-1","timestamp":123}'),
+      validateQrPayload: jest
+        .fn()
+        .mockReturnValue({ valid: true, deliveryId: 'd-1' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -67,7 +71,10 @@ describe('WorkflowsController', () => {
     it('should delegate to workflowsService.getCompletedSteps', async () => {
       const result = await controller.getCompletedSteps('d-1', 'load-package');
 
-      expect(workflowsService.getCompletedSteps).toHaveBeenCalledWith('d-1', 'load-package');
+      expect(workflowsService.getCompletedSteps).toHaveBeenCalledWith(
+        'd-1',
+        'load-package',
+      );
       expect(result).toEqual([]);
     });
   });
@@ -77,13 +84,17 @@ describe('WorkflowsController', () => {
       const result = controller.generateQrPayload('d-1');
 
       expect(workflowsService.generateQrPayload).toHaveBeenCalledWith('d-1');
-      expect(result).toEqual({ payload: '{"deliveryId":"d-1","timestamp":123}' });
+      expect(result).toEqual({
+        payload: '{"deliveryId":"d-1","timestamp":123}',
+      });
     });
   });
 
   describe('validateQrPayload', () => {
     it('should delegate to workflowsService.validateQrPayload', () => {
-      const result = controller.validateQrPayload('{"deliveryId":"d-1","timestamp":123}');
+      const result = controller.validateQrPayload(
+        '{"deliveryId":"d-1","timestamp":123}',
+      );
 
       expect(workflowsService.validateQrPayload).toHaveBeenCalledWith(
         '{"deliveryId":"d-1","timestamp":123}',

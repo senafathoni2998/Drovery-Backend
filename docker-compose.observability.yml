@@ -1,0 +1,41 @@
+# Local observability stack (Prometheus + Grafana), provisioned with the Drovery
+# dashboards + SLO alert rules. Profile-gated so the default `docker compose up`
+# stays lean. Bring it up alongside the app stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+#     --profile observability up -d
+#
+# Then: Prometheus http://localhost:9090 (targets + alerts), Grafana
+# http://localhost:3001 (admin/admin) → the provisioned Drovery dashboards.
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ['observability']
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - '9090:9090'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ['observability']
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - '3001:3000'
+    restart: unless-stopped
+
+volumes:
+  promdata:
+  grafanadata:

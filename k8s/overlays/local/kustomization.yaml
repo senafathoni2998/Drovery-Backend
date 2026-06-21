@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# Load the locally-built image into kind first:
+#   docker build -t drovery-backend:ci .
+#   kind load docker-image drovery-backend:ci
+images:
+  - name: drovery-backend
+    newTag: ci
+
+# Strong-but-throwaway LOCAL secrets so the prod-mode boot guard is satisfied.
+secretGenerator:
+  - name: drovery-secrets
+    behavior: replace
+    envs:
+      - secrets.local.env
+
+patches:
+  - target: { kind: HorizontalPodAutoscaler, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/maxReplicas, value: 4 }
+  - target: { kind: Ingress, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/rules/0/host, value: api.drovery.local }
+
+# NOTE: this overlay assumes Postgres, PgBouncer, and Redis run in-cluster
+# (deploy the Bitnami charts or your own manifests) OR point DATABASE_URL /
+# REDIS_HOST at host-reachable services. The app pods will stay NotReady until
+# those dependencies resolve (correct behaviour, but easy to misdiagnose).

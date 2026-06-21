@@ -1,0 +1,37 @@
+# One-shot schema migration. Runs `prisma migrate deploy` (NO seed in prod) and
+# exits. Ordered ahead of the api/worker rollout via Helm/Argo hooks; under plain
+# kubectl, gate with `kubectl wait --for=condition=complete job/drovery-migrate`
+# before applying the Deployments (see k8s/README.md).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drovery-migrate
+  annotations:
+    # Effective only under Helm/ArgoCD; inert under plain `kubectl apply -k`.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: '-5'
+    helm.sh/hook-delete-policy: before-hook-creation
+    argocd.argoproj.io/hook: PreSync
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      containers:
+        - name: migrate
+          image: drovery-backend:latest
+          command: ['sh', '-c', 'npx prisma migrate deploy'] # seed excluded in prod
+          env:
+            # Migrations hit Postgres DIRECTLY — DDL + Prisma's session-scoped
+            # advisory locks break through PgBouncer transaction pooling.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: drovery-secrets, key: DATABASE_URL_DIRECT }
+          envFrom:
+            - configMapRef: { name: drovery-config }

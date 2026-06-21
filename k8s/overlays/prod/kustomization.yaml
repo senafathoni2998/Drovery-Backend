@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+images:
+  - name: drovery-backend
+    newName: ghcr.io/your-org/drovery-backend
+    newTag: v0.0.1 # pin to an immutable digest in real prod
+
+patches:
+  - target: { kind: HorizontalPodAutoscaler, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/minReplicas, value: 3 }
+      - { op: replace, path: /spec/maxReplicas, value: 20 }
+  - target: { kind: PodDisruptionBudget, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/minAvailable, value: 50% }
+  - target: { kind: Ingress, name: drovery-api }
+    patch: |-
+      - { op: replace, path: /spec/rules/0/host, value: api.drovery.com }
+
+# SECRETS: do NOT add a secretGenerator with committed values here. In real prod
+# the drovery-secrets Secret is created out of band by External Secrets Operator
+# / Sealed Secrets / a cloud secret manager. To wire that up, drop the base
+# secretGenerator (it ships placeholder values) and set
+# `generatorOptions: { disableNameSuffixHash: true }` so the Deployments can
+# reference the externally-managed Secret by its stable name `drovery-secrets`.
+# Also enable etcd encryption at rest — K8s Secrets are only base64-encoded.

@@ -1,12 +1,14 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 import { PACKAGE_SIZES, PACKAGE_TYPES } from '../../common/constants';
@@ -50,6 +52,19 @@ export class CreateDeliveryDto {
   @IsNotEmpty()
   pickupTime: string;
 
+  // Optional promo code applied to the price at checkout (validated + redeemed
+  // atomically with delivery creation).
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  promoCode?: string;
+
+  // Apply available wallet credits to the price (server-computed amount: as much
+  // as the post-promo total, capped at the balance).
+  @IsOptional()
+  @IsBoolean()
+  useCredits?: boolean;
+
   @IsOptional()
   @IsNumber()
   fromLat?: number;
@@ -65,4 +80,18 @@ export class CreateDeliveryDto {
   @IsOptional()
   @IsNumber()
   toLng?: number;
+
+  // Who drives this delivery's lifecycle. Omitted/SIMULATED (default) runs the
+  // in-memory simulation as before; LIVE starts no simulation and is driven
+  // entirely by real drone telemetry via /ingest/telemetry.
+  @IsOptional()
+  @IsIn(['SIMULATED', 'LIVE'])
+  trackingSource?: 'SIMULATED' | 'LIVE';
+
+  // The drone bound to a LIVE delivery (telemetry must report this id). Defaults
+  // to a deterministic id derived from the tracking id when omitted.
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  droneId?: string;
 }

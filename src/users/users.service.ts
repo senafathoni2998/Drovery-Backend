@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppNotFoundException } from '../common/exceptions/app-exception';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto } from './dto';
 
@@ -12,7 +13,7 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new AppNotFoundException('error.user.not_found');
     }
 
     return user;
@@ -32,31 +33,35 @@ export class UsersService {
     // Ensure the user exists before querying stats
     await this.getProfile(userId);
 
-    const [total, active, completed] = await Promise.all([
-      this.prisma.delivery.count({
-        where: { userId },
-      }),
-      this.prisma.delivery.count({
-        where: {
-          userId,
-          status: {
-            in: [
-              'PENDING',
-              'CONFIRMED',
-              'DRONE_ASSIGNED',
-              'PICKUP_IN_PROGRESS',
-              'IN_TRANSIT',
-            ],
+    // Dashboard stats — lag-tolerant → read replica (falls back to primary).
+    const [total, active, completed] = await this.prisma.readWithFallback((c) =>
+      Promise.all([
+        c.delivery.count({
+          where: { userId },
+        }),
+        c.delivery.count({
+          where: {
+            userId,
+            status: {
+              in: [
+                'PENDING',
+                'CONFIRMED',
+                'DRONE_ASSIGNED',
+                'PICKUP_IN_PROGRESS',
+                'IN_TRANSIT',
+                'AWAITING_HANDOFF',
+              ],
+            },
           },
-        },
-      }),
-      this.prisma.delivery.count({
-        where: {
-          userId,
-          status: 'DELIVERED',
-        },
-      }),
-    ]);
+        }),
+        c.delivery.count({
+          where: {
+            userId,
+            status: 'DELIVERED',
+          },
+        }),
+      ]),
+    );
 
     return { total, active, completed };
   }

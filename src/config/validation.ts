@@ -29,5 +29,25 @@ export function validate(config: Record<string, unknown>) {
     throw new Error(errors.toString());
   }
 
+  // In production, refuse to boot with a weak/default JWT secret.
+  if (config.NODE_ENV === 'production') {
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET'] as const) {
+      const raw = config[key];
+      const value = typeof raw === 'string' ? raw : '';
+      if (value.length < 24 || /change|example|xxxx|placeholder/i.test(value)) {
+        throw new Error(
+          `${key} is weak or a placeholder — set a strong (>=24 char) secret in production`,
+        );
+      }
+    }
+
+    // The load-test throttle bypass must NEVER be live in production.
+    if (config.LOADTEST_BYPASS_THROTTLE === 'true') {
+      throw new Error(
+        'LOADTEST_BYPASS_THROTTLE must not be set in production — it disables rate limiting',
+      );
+    }
+  }
+
   return validated;
 }

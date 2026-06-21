@@ -14,7 +14,7 @@ async function main() {
 
   const user = await prisma.user.upsert({
     where: { email: 'demo@drovery.com' },
-    update: {},
+    update: { emailVerified: true, emailVerifiedAt: new Date() },
     create: {
       email: 'demo@drovery.com',
       name: 'Sena',
@@ -22,10 +22,28 @@ async function main() {
       address:
         'Jalan Ahmad Yani 1 No. 77 RT 12 RW 13, Tanjung Duren, Jakarta',
       passwordHash,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
     },
   });
 
   console.log(`Created user: ${user.email}`);
+
+  // Admin user for the admin/agent API (role set out-of-band, never via signup).
+  const adminHash = await bcrypt.hash('admin123', 10);
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@drovery.com' },
+    update: { role: 'ADMIN', emailVerified: true },
+    create: {
+      email: 'admin@drovery.com',
+      name: 'Drovery Admin',
+      passwordHash: adminHash,
+      role: 'ADMIN',
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
+    },
+  });
+  console.log(`Created admin: ${admin.email}`);
 
   // Create sample deliveries
   const deliveries = [
@@ -116,12 +134,23 @@ async function main() {
   ];
 
   for (const delivery of deliveries) {
-    await prisma.delivery.upsert({
+    // `deliveries` is partitioned (composite PK) so trackingId is no longer a
+    // unique-where; idempotent find-or-create, and the trackingId-registry row
+    // (which the service create() writes) must be created here too since the seed
+    // bypasses the service.
+    const existing = await prisma.delivery.findFirst({
       where: { trackingId: delivery.trackingId },
-      update: {},
-      create: {
-        ...delivery,
-        userId: user.id,
+      select: { id: true },
+    });
+    if (existing) continue;
+    const created = await prisma.delivery.create({
+      data: { ...delivery, userId: user.id },
+    });
+    await prisma.trackingIdRegistry.create({
+      data: {
+        trackingId: created.trackingId,
+        deliveryId: created.id,
+        deliveryCreatedAt: created.createdAt,
       },
     });
   }
@@ -154,6 +183,40 @@ async function main() {
   });
 
   console.log('Created payment methods');
+
+  // Demo promo codes (mirror prisma/migrations/*_add_promo_codes/migration.sql —
+  // the migration is the source of truth; these upserts re-assert for local seeds).
+  await prisma.promoCode.upsert({
+    where: { code: 'WELCOME10' },
+    update: {},
+    create: {
+      code: 'WELCOME10',
+      description: '10% off your first delivery (up to $5)',
+      discountType: 'PERCENT',
+      discountValue: 10,
+      minOrderTotal: 0,
+      maxDiscount: 5,
+      active: true,
+      maxRedemptions: 1000,
+      perUserLimit: 1,
+    },
+  });
+  await prisma.promoCode.upsert({
+    where: { code: 'DRONE5' },
+    update: {},
+    create: {
+      code: 'DRONE5',
+      description: '$5 off orders of $15 or more',
+      discountType: 'FIXED',
+      discountValue: 5,
+      minOrderTotal: 15,
+      active: true,
+      maxRedemptions: 500,
+      perUserLimit: 1,
+    },
+  });
+  console.log('Created promo codes');
+
   console.log('Seeding complete!');
 }
 

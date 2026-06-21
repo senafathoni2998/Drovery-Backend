@@ -1,0 +1,58 @@
+# Load-test overlay — layer ON TOP of the base stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
+#     --build --scale api=3 --scale worker=3
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+#     run --rm -e VUS=50 -e HOLD=60s k6
+#
+# It (1) fronts the scaled `api` replicas with an nginx round-robin LB (the base binds api
+# to a host port, which can't be shared across replicas — `!reset []` clears it so scaling
+# works), and (2) runs k6 as a container (no host install). The API runs in a NON-production
+# env with LOADTEST_BYPASS_THROTTLE=true so the per-IP rate limiter doesn't cap throughput
+# to one IP and MASK horizontal scaling (the LoadTestThrottlerGuard hard-disables the bypass
+# in NODE_ENV=production). See loadtest/README.md.
+
+services:
+  api:
+    ports: !reset [] # front with the LB instead; no host-port conflict when scaling.
+    environment:
+      NODE_ENV: staging # non-prod → the throttle bypass below is allowed.
+      LOADTEST_BYPASS_THROTTLE: 'true'
+
+  lb:
+    image: nginx:1.27-alpine
+    depends_on:
+      - api
+    volumes:
+      - ./loadtest/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      # Host port is only for ad-hoc curl (k6 hits lb:80 INTERNALLY, not this). Overridable
+      # to dodge a host conflict: LB_PORT=9090 docker compose ... up. Default 8088.
+      - '${LB_PORT:-8088}:80'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:80/api/v1/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  k6:
+    image: grafana/k6:latest
+    profiles: ['load'] # only runs on explicit `run k6` / `--profile load up`, not by default.
+    depends_on:
+      lb:
+        condition: service_healthy
+    volumes:
+      - ./loadtest:/scripts:ro
+    environment:
+      BASE_URL: http://lb
+      VUS: ${VUS:-30}
+      RAMP: ${RAMP:-20s}
+      HOLD: ${HOLD:-40s}
+      # Pure-I/O scenario selection (run.sh overrides the command to pick the script and
+      # forwards these too). SCENARIO=auth → scenario.js; io|read → scenario-io.js.
+      SCENARIO: ${SCENARIO:-auth}
+      POOL: ${POOL:-50}
+      SEED_DELIVERIES: ${SEED_DELIVERIES:-1}
+    # Default command runs the auth journey for a bare `compose run k6`; run.sh replaces it
+    # with `run /scripts/scenario-io.js` for the io/read scenarios.
+    command: ['run', '/scripts/scenario.js']

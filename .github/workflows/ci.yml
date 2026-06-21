@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build + typecheck + unit tests, with real Postgres + Redis so the
+  # migrations are validated against a live database.
+  # ------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: drovery_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drovery_test?schema=public
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      # Strong-enough-to-boot CI-only secrets (the prod guard rejects weak ones).
+      JWT_SECRET: ci_access_secret_0123456789abcdef
+      JWT_REFRESH_SECRET: ci_refresh_secret_0123456789abcdef
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations (validates migration history)
+        run: npx prisma migrate deploy
+
+      # Partitioning durability gate: the partitioned tables (notifications) diverge
+      # from Prisma's model view only via the deliberate composite-PK change, which
+      # diffs CLEAN. A non-empty diff means a schema/migration change is trying to
+      # un-partition a table (or a `db push`/`db pull` mangled the schema) — fail the
+      # build. Runs AFTER migrate deploy so it compares the live DB to schema.prisma.
+      - name: Prisma drift check (schema ⇔ DB must match)
+        run: npm run prisma:drift-check
+
+      - name: Lint (non-blocking until the no-unsafe-any cleanup lands)
+        run: npx eslint "src/**/*.ts"
+        continue-on-error: true
+
+      - name: Build (compiles + typechecks)
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  # ------------------------------------------------------------------
+  # Build the production Docker image to validate the Dockerfile
+  # (prisma generate + nest build inside the container).
+  # ------------------------------------------------------------------
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: drovery-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

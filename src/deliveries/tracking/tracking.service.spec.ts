@@ -58,8 +58,8 @@ describe('TrackingService', () => {
   describe('updateTracking', () => {
     it('should upsert tracking data', async () => {
       const updateData = {
-        droneLat: -6.910,
-        droneLng: 107.610,
+        droneLat: -6.91,
+        droneLng: 107.61,
         droneStatus: 'In transit',
         eta: new Date(),
       };
@@ -68,13 +68,19 @@ describe('TrackingService', () => {
         ...updateData,
       });
 
-      const result = await service.updateTracking('delivery-1', updateData);
+      const dca = new Date('2026-06-01T00:00:00.000Z');
+      const result = await service.updateTracking(
+        'delivery-1',
+        dca,
+        updateData,
+      );
 
       expect(result.droneLat).toBe(updateData.droneLat);
       expect(prisma.deliveryTracking.upsert).toHaveBeenCalledWith({
         where: { deliveryId: 'delivery-1' },
         create: {
           deliveryId: 'delivery-1',
+          deliveryCreatedAt: dca,
           ...updateData,
         },
         update: updateData,

@@ -1,0 +1,41 @@
+name: Deploy to VPS
+
+# CD to the VPS: SSH in and `docker compose pull && up -d` the published images. MANUAL by
+# default (click "Run workflow" after a release) so a human gates each prod deploy — flip the
+# trigger to `push: { tags: ['v*'] }` below for fully-automatic deploy-on-release.
+#
+# Prereqs:
+#  • The VPS is already bootstrapped once per DEPLOY.md (repo cloned, .env set, first `up`).
+#  • Repo secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY (a private key whose public half is in the
+#    VPS user's authorized_keys), VPS_PATH (the drovery-backend dir on the VPS).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy (latest, a vX.Y.Z, or a sha-<short>)'
+        default: latest
+        required: true
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH → pull + restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd "${{ secrets.VPS_PATH }}"
+            export DOCKER_REGISTRY=senaahmad2998
+            export TAG="${{ inputs.tag }}"
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+            $COMPOSE pull
+            $COMPOSE up -d
+            $COMPOSE ps

@@ -9,6 +9,11 @@ describe('AuthController', () => {
     signup: jest.Mock;
     login: jest.Mock;
     refreshTokens: jest.Mock;
+    forgotPassword: jest.Mock;
+    resetPassword: jest.Mock;
+    verifyEmail: jest.Mock;
+    resendVerification: jest.Mock;
+    logout: jest.Mock;
   };
 
   const mockAuthResult = {
@@ -25,6 +30,11 @@ describe('AuthController', () => {
         accessToken: 'new-access',
         refreshToken: 'new-refresh',
       }),
+      forgotPassword: jest.fn().mockResolvedValue({ success: true }),
+      resetPassword: jest.fn().mockResolvedValue({ success: true }),
+      verifyEmail: jest.fn().mockResolvedValue({ success: true }),
+      resendVerification: jest.fn().mockResolvedValue({ success: true }),
+      logout: jest.fn().mockResolvedValue({ success: true }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -39,9 +49,10 @@ describe('AuthController', () => {
     it('should delegate to authService.signup', async () => {
       const dto = { name: 'John', email: 'john@test.com', password: 'pass123' };
 
-      const result = await controller.signup(dto);
+      const result = await controller.signup(dto, 'id-ID');
 
-      expect(authService.signup).toHaveBeenCalledWith(dto);
+      // The controller parses Accept-Language → a supported Locale ('id').
+      expect(authService.signup).toHaveBeenCalledWith(dto, 'id');
       expect(result).toEqual(mockAuthResult);
     });
   });
@@ -58,14 +69,74 @@ describe('AuthController', () => {
   });
 
   describe('refresh', () => {
-    it('should delegate to authService.refreshTokens', async () => {
+    it('should delegate the user id + refresh token to authService.refreshTokens', async () => {
       const result = await controller.refresh(
         { refreshToken: 'old-token' },
         { sub: 'user-1', email: 'john@test.com' },
       );
 
-      expect(authService.refreshTokens).toHaveBeenCalledWith('user-1');
+      expect(authService.refreshTokens).toHaveBeenCalledWith(
+        'user-1',
+        'old-token',
+      );
       expect(result.accessToken).toBe('new-access');
+    });
+  });
+
+  describe('logout', () => {
+    it('should delegate the refresh token to authService.logout', async () => {
+      const result = await controller.logout({ refreshToken: 'old-token' });
+
+      expect(authService.logout).toHaveBeenCalledWith('old-token');
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('forgotPassword', () => {
+    it('should delegate the email to authService.forgotPassword', async () => {
+      const result = await controller.forgotPassword(
+        { email: 'john@test.com' },
+        'en-US',
+      );
+
+      expect(authService.forgotPassword).toHaveBeenCalledWith(
+        'john@test.com',
+        'en',
+      );
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('should delegate token + newPassword to authService.resetPassword', async () => {
+      const result = await controller.resetPassword({
+        token: 'tok',
+        newPassword: 'newpass123',
+      });
+
+      expect(authService.resetPassword).toHaveBeenCalledWith(
+        'tok',
+        'newpass123',
+      );
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('should delegate the token to authService.verifyEmail', async () => {
+      const result = await controller.verifyEmail({ token: 'tok' });
+
+      expect(authService.verifyEmail).toHaveBeenCalledWith('tok');
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('should delegate the user id to authService.resendVerification', async () => {
+      const result = await controller.resendVerification('user-1');
+
+      expect(authService.resendVerification).toHaveBeenCalledWith('user-1');
+      expect(result).toEqual({ success: true });
     });
   });
 });

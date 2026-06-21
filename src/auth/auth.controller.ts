@@ -1,37 +1,109 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
-import { Public } from '../common/decorators/public.decorator';
+import { parseLocale } from '../i18n/accept-language';
+import { AuthTokensDto } from './dto/auth-tokens.dto';
+import { AuthSuccessResponseDto } from './dto/auth-success-response.dto';
+import { PublicApi } from '../common/decorators/public-api.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
-import { LoginDto, RefreshTokenDto, SignupDto } from './dto';
+import {
+  ForgotPasswordDto,
+  LoginDto,
+  RefreshTokenDto,
+  ResetPasswordDto,
+  SignupDto,
+  VerifyEmailDto,
+} from './dto';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 
+// Tighter limit on auth endpoints (brute-force / abuse protection): 10 / 60s per IP.
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Public()
+  @PublicApi()
+  @ApiCreatedResponse({ type: AuthTokensDto })
   @Post('signup')
-  signup(@Body() dto: SignupDto) {
-    return this.authService.signup(dto);
+  signup(
+    @Body() dto: SignupDto,
+    @Headers('accept-language') acceptLanguage?: string,
+  ) {
+    // Best-effort default locale from the browser/app; the user can change it later.
+    return this.authService.signup(dto, parseLocale(acceptLanguage));
   }
 
-  @Public()
+  @PublicApi()
+  @ApiOkResponse({ type: AuthTokensDto })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
 
-  @Public()
+  @PublicApi()
+  @ApiOkResponse({ type: AuthTokensDto })
   @UseGuards(JwtRefreshGuard)
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(
-    @Body() _dto: RefreshTokenDto,
-    @CurrentUser() user: JwtPayload,
+  refresh(@Body() dto: RefreshTokenDto, @CurrentUser() user: JwtPayload) {
+    return this.authService.refreshTokens(user.sub, dto.refreshToken);
+  }
+
+  @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  logout(@Body() dto: RefreshTokenDto) {
+    return this.authService.logout(dto.refreshToken);
+  }
+
+  @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+    @Headers('accept-language') acceptLanguage?: string,
   ) {
-    return this.authService.refreshTokens(user.sub);
+    // Locale from the header ONLY (anonymous flow — never reveals account existence).
+    return this.authService.forgotPassword(
+      dto.email,
+      parseLocale(acceptLanguage),
+    );
+  }
+
+  @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
+  }
+
+  @PublicApi()
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @ApiOkResponse({ type: AuthSuccessResponseDto })
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  resendVerification(@CurrentUser('sub') userId: string) {
+    return this.authService.resendVerification(userId);
   }
 }

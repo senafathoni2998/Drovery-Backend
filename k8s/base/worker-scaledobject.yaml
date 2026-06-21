@@ -1,0 +1,56 @@
+# KEDA scales the worker on BullMQ queue DEPTH, read from Prometheus.
+#
+# Why Prometheus and not KEDA's native redis scaler: BullMQ keeps DELAYED jobs in
+# a sorted set (bull:delivery-simulation:delayed) and only WAITING jobs in a list
+# (bull:delivery-simulation:wait). KEDA's redis "listLength" scaler does LLEN on
+# the list and is blind to the delayed backlog — which is the majority of this
+# queue. The app's drovery_queue_jobs gauge sums the real pending work instead.
+#
+# KEDA creates and OWNS the HPA "keda-hpa-drovery-worker" for this Deployment —
+# do NOT also define an HPA targeting drovery-worker.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: drovery-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: drovery-worker
+  pollingInterval: 15 # re-query Prometheus every 15s (default 30)
+  cooldownPeriod: 120 # only governs scale-to/from-zero; inert at minReplicaCount>=1
+  minReplicaCount: 1 # keep one warm worker so deliveries start draining immediately
+  maxReplicaCount: 20
+  fallback:
+    # If Prometheus is unreachable failureThreshold times, hold a safe replica count.
+    failureThreshold: 3
+    replicas: 3
+  advanced:
+    restoreToOriginalReplicaCount: true
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          selectPolicy: Max
+          policies:
+            - { type: Pods, value: 4, periodSeconds: 15 }
+            - { type: Percent, value: 100, periodSeconds: 15 }
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          selectPolicy: Max
+          policies:
+            - { type: Percent, value: 50, periodSeconds: 60 }
+  triggers:
+    - type: prometheus
+      name: queue_backlog
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        threshold: '50' # pending jobs PER replica; desired = ceil(backlog/threshold)
+        activationThreshold: '1' # do not activate the scaler until backlog > 1
+        ignoreNullValues: 'true' # empty Prometheus result = 0, not an error
+        # max(), NOT sum(): every replica exports the same queue-global gauge, so
+        # sum() over N pods would multiply the backlog by the pod count. The queue
+        # label must match the SIM_QUEUE constant the app emits.
+        query: |-
+          max(drovery_queue_jobs{queue="delivery-simulation", state="waiting"})
+          + max(drovery_queue_jobs{queue="delivery-simulation", state="delayed"})

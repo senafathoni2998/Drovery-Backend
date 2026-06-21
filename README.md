@@ -1,6 +1,65 @@
 # Drovery Backend
 
+[![CI](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/ci.yml)
+[![Publish image](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/publish.yml/badge.svg)](https://github.com/senafathoni2998/Drovery-Backend/actions/workflows/publish.yml)
+
 A drone delivery platform API built with [NestJS](https://nestjs.com), [Prisma](https://prisma.io), and PostgreSQL.
+
+## Drovery — system overview
+
+Drovery is a full-stack drone-delivery platform: customers book and **watch a drone fly their
+package in real time**, operators oversee the fleet, and the system is engineered — and
+measured — for **100k+ users**. It spans three repositories:
+
+| Repository | Role | Stack | Scale |
+|---|---|---|---|
+| **drovery-backend** (this repo) | API · realtime · background workers | NestJS 11 · Prisma 7 · PostgreSQL 16 · Redis/BullMQ | 28 modules · 96 endpoints · 25 models · 610 tests |
+| [**drovery-mobile**](https://github.com/senafathoni2998/drovery-mobile) | customer app | Expo / React Native 0.81 · TypeScript | live tracking · handoff OTP · 280 tests |
+| [**drovery-admin**](https://github.com/senafathoni2998/Drovery-Admin-Frontend) | operator & support console | Vite · React 19 · MUI 7 · Redux Toolkit | 5 sections · live support · 65 tests · CI |
+
+```
+  Mobile (Expo/RN) ─┐                              ┌─► PgBouncer ─► PostgreSQL (primary + read replicas)
+  Admin (React/MUI) ┼─► nginx LB ─► API ×N ────────┤        RANGE-partitioned hot tables (notifications,
+  Drone (HTTP/MQTT) ┘   (stateless)  │  WS gateways │        deliveries + graph) · CI drift gate
+                                     │              └─► Redis  (queue · cache · pub/sub · rate-limit)
+                                     └─► Worker ×M ──┘  lifecycle · watchdog · partition maint · push
+   one image, role = PROCESS_ROLE        (BullMQ)       HPA scales api on CPU · KEDA scales worker on queue depth
+```
+
+### Engineering highlights
+
+- **One tracking core, two producers.** A delivery is `SIMULATED` or `LIVE`; both drive the
+  *same* monotonic compare-and-set tracking pipeline — so a real drone is just another
+  producer over `POST /ingest/telemetry` (or MQTT). The whole live path is demoable with **no
+  hardware**, and a self-healing **watchdog** reaps a drone that goes silent.
+- **Stateless + horizontally scalable.** The delivery lifecycle runs as durable BullMQ jobs
+  on a separate worker tier (survives restarts); real-time **tracking + support chat** scale
+  across replicas over WebSockets + Redis pub/sub (worker publishes, any API node fans out).
+- **PostgreSQL RANGE partitioning** of the hot tables — `notifications` *and* the full delivery
+  graph (`deliveries` + 8 children) — with **no `pg_partman`/`pg_cron`**: self-discovering
+  plpgsql maintenance + retention, composite-FK fan-out solved, drift gated in CI.
+- **Operated like production:** PgBouncer pooling · env-gated read replicas · K8s + HPA/KEDA ·
+  OpenTelemetry tracing (one `traceId` across api→queue→worker→DB) · Prometheus + Grafana +
+  SLO alerts (as code) · Sentry · OpenAPI/Swagger · bidirectional drone commands · en/id i18n.
+
+### Built for scale — and measured
+
+A containerized cluster (`docker compose` → nginx LB over scaled api/worker → PgBouncer →
+Postgres) plus a [capacity model](./loadtest/CAPACITY-MODEL.md) turn "designed for 100k" into
+numbers: a 50-VU run drove **4,344 requests with 0 failures / 100% checks**, the per-node
+sweep showed throughput scaling (api 1→2→3 ≈ 45→78→84 req/s until a shared tier knees), and the
+model projects **1 api + 1 worker node serve 100k DAU at the SLO** — the PgBouncer connection
+budget (~95 api nodes) is the eventual ceiling. The lone latency wall is cost-12 bcrypt on
+signup — the textbook CPU-bound case horizontal scaling fixes.
+
+> **Deeper dives:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) (the 100k scaling design, section by
+> section) · [`INTEGRATION.md`](./INTEGRATION.md) (mobile↔backend contract) ·
+> [`loadtest/`](./loadtest) (the cluster harness + capacity model) ·
+> [`prisma/PARTITIONING.md`](./prisma/PARTITIONING.md) (the partitioning runbook).
+
+---
+
+> **Companion app:** this API is consumed by the **drovery-mobile** Expo / React Native app (sibling repo at `../drovery-mobile`). For the full mobile↔backend contract — endpoint map, auth/token lifecycle, response envelope, and how to point the app at this server — see **[INTEGRATION.md](./INTEGRATION.md)**.
 
 ---
 
@@ -32,6 +91,7 @@ Make sure the following are installed on your machine before starting:
 | [Node.js](https://nodejs.org) | >= 20.x | Use [nvm](https://github.com/nvm-sh/nvm) to manage versions |
 | [npm](https://npmjs.com) | >= 10.x | Comes bundled with Node.js |
 | [PostgreSQL](https://postgresql.org) | >= 15.x | Running locally or via Docker |
+| [Redis](https://redis.io) | >= 6.x | **Required** — backs the BullMQ delivery-simulation queue (`REDIS_HOST`/`REDIS_PORT`). e.g. `redis-server --port 6379` |
 | [Git](https://git-scm.com) | any | To clone the repo |
 
 **Optional but recommended:**
@@ -309,7 +369,9 @@ All routes are prefixed with `/api/v1`. Routes marked **Public** do not require 
 |--------|-------------|
 | `npm run start` | Start the server |
 | `npm run start:dev` | Start with hot reload (development) |
-| `npm run start:prod` | Start compiled production build |
+| `npm run start:prod` | Start compiled production build (API) |
+| `npm run worker` | Start the BullMQ queue worker (dev, watch) |
+| `npm run worker:prod` | Start the compiled queue worker (no HTTP) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run lint` | Lint and auto-fix source files |
 | `npm run format` | Format files with Prettier |
@@ -333,7 +395,8 @@ NestJS is written in TypeScript. Node.js cannot run TypeScript directly, so the 
 | Mode | How it runs TypeScript | Use for |
 |------|----------------------|---------|
 | `start:dev` | Compiled in-memory on every file change | Local development only |
-| `start:prod` | Runs pre-compiled `dist/main.js` | Production |
+| `start:prod` | Runs pre-compiled `dist/src/main.js` | Production (API) |
+| `worker` / `worker:prod` | Runs the BullMQ queue consumer (no HTTP) | Production (worker tier) |
 
 ---
 
@@ -402,7 +465,16 @@ This compiles all TypeScript from `src/` into JavaScript in `dist/`. You only ne
 npm run start:prod
 ```
 
-This runs `node dist/main` directly — no TypeScript compiler involved, minimal memory usage, fast startup.
+This runs `node dist/src/main` directly — no TypeScript compiler involved, minimal memory usage, fast startup.
+
+> **Worker tier.** The delivery simulation runs on a Redis/BullMQ queue. By default the API process also consumes jobs (single-process). To scale, run dedicated workers and tell the API not to consume:
+> ```bash
+> # API instances (enqueue only)
+> PROCESS_ROLE=api npm run start:prod
+> # one or more worker instances (consume jobs; no HTTP)
+> npm run worker:prod
+> ```
+> `SIM_WORKER_CONCURRENCY` (default 10) tunes per-worker parallelism. **Redis must be running** for either to boot.
 
 ---
 
@@ -431,7 +503,9 @@ npm install -g pm2
 **Start the app with PM2:**
 
 ```bash
-pm2 start dist/main.js --name drovery-api
+pm2 start dist/src/main.js --name drovery-api
+# and a worker process (queue consumer):
+pm2 start dist/src/worker.js --name drovery-worker
 ```
 
 **Useful PM2 commands:**
@@ -447,41 +521,47 @@ pm2 save                  # save current process list for startup
 
 ---
 
-### Minimal Dockerfile (optional)
+### Docker (full stack)
 
-If you use Docker, here is a production-ready multi-stage Dockerfile:
+A production multi-stage `Dockerfile` and a `docker-compose.yml` for the whole
+topology ship with the repo. One image runs any role (api / worker / migrate) —
+the role is chosen by the command + `PROCESS_ROLE`.
 
-```dockerfile
-# ---- Build stage ----
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run prisma:generate
-RUN npm run build
+```bash
+# Build + run the full stack: postgres + pgbouncer + redis + migrate + api + worker
+docker compose up --build
 
-# ---- Production stage ----
-FROM node:20-alpine AS production
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY prisma ./prisma
-
-ENV NODE_ENV=production
-
-EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+# Scale the API and worker tiers independently (they're stateless)
+docker compose up --build --scale api=2 --scale worker=3
 ```
 
-Build and run the image:
+The compose stack demonstrates the production scaling topology:
+- **api** (`PROCESS_ROLE=api`) — enqueue-only, never processes jobs.
+- **worker** — drains the BullMQ queue; scales separately from the API.
+- **pgbouncer** — transaction-pooling tier in front of Postgres, so the API/worker
+  tiers can scale out without exhausting Postgres `max_connections`.
+- **redis** — queue + cache + the shared rate-limit counter (so the limit holds
+  across every API replica, not per-instance).
+- **migrate** — one-shot `prisma migrate deploy` + seed (runs directly against
+  Postgres, bypassing the pooler), then exits.
+
+> The api/worker boot in `NODE_ENV=production` to exercise the real prod path
+> (JSON logs + the weak-secret boot guard). The JWT secrets in `docker-compose.yml`
+> are strong-enough-to-boot **local** values — never reuse them anywhere real.
+
+Build just the image:
 
 ```bash
 docker build -t drovery-api .
 docker run -p 3000:3000 --env-file .env drovery-api
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every PR:
+**install → prisma generate → migrate deploy (against a live Postgres) → build
+→ unit tests**, plus a job that **builds the Docker image** to validate the
+Dockerfile. Lint runs as a non-blocking step pending the `no-unsafe-any` cleanup.
 
 ---
 

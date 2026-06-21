@@ -8,47 +8,223 @@ datasource db {
 
 // ==================== USER ====================
 
+enum Role {
+  USER
+  AGENT // support agent — support inbox only
+  ADMIN // full operator access
+}
+
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  name         String
-  phone        String?
-  address      String?
-  bio          String?
-  avatarUrl    String?
-  passwordHash String
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String
+  phone           String?
+  address         String?
+  bio             String?
+  avatarUrl       String?
+  passwordHash     String
+  emailVerified    Boolean   @default(false)
+  emailVerifiedAt  DateTime?
+  stripeCustomerId String?
+
+  // Coarse role for the admin/agent API (consumers are USER). Set out-of-band
+  // (seed / promote endpoint), never via signup. Resolved fresh by RolesGuard.
+  role Role @default(USER)
+
+  // BCP-47 base language for server-emitted user-facing content (notifications,
+  // emails, support). A plain string (not an enum) so the set extends without a
+  // migration; I18nService normalizes any unknown value to the default ('en').
+  locale String @default("en")
+
+  // Wallet credits (dollars; denormalized authoritative balance, ledger is the
+  // audit trail). A DB CHECK (creditBalance >= 0) backstops the spend CAS.
+  creditBalance Float   @default(0)
+  // The user's own shareable referral code (nullable for pre-existing rows;
+  // backfilled in the migration, lazily generated on read if still null).
+  referralCode  String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  deliveries     Delivery[]
-  paymentMethods PaymentMethod[]
-  devices        Device[]
-  notifications  Notification[]
+  deliveries              Delivery[]
+  paymentMethods          PaymentMethod[]
+  devices                 Device[]
+  notifications           Notification[]
+  supportTickets          SupportTicket[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  refreshTokens           RefreshToken[]
+  savedAddresses          SavedAddress[]
+  deliveryRatings         DeliveryRating[]
+  notificationPreference  NotificationPreference?
+  supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
+  recurringDeliveries     RecurringDelivery[]
+  promoRedemptions        PromoRedemption[]
+  walletTransactions      WalletTransaction[]
+  referralsMade           Referral[] @relation("ReferralReferrer")
+  referralReceived        Referral?  @relation("ReferralReferee")
+  favorites               Favorite[]
+  droneCommandsIssued     DroneCommand[] @relation("droneCommandsIssued")
 
   @@map("users")
+}
+
+model NotificationPreference {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  pushEnabled     Boolean @default(true)
+  deliveryUpdates Boolean @default(true)
+  promotions      Boolean @default(true)
+  // Quiet-hours window as hours [start, end), evaluated in the configured
+  // service timezone (NOTIFICATIONS_TZ, default Asia/Jakarta); null = disabled.
+  quietHoursStart Int?
+  quietHoursEnd   Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_preferences")
+}
+
+model SavedAddress {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String
+  address   String
+  lat       Float?
+  lng       Float?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, isDefault])
+  @@map("saved_addresses")
+}
+
+// ==================== AUTH ====================
+
+model PasswordResetToken {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model RefreshToken {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 // ==================== DELIVERY ====================
 
 enum DeliveryStatus {
+  SCHEDULED // future pickup window; the lifecycle is deferred until then
   PENDING
   CONFIRMED
   DRONE_ASSIGNED
   PICKUP_IN_PROGRESS
   IN_TRANSIT
+  AWAITING_HANDOFF
   DELIVERED
   CANCELED
+  // Exception outcomes — BRANCHES off the happy path, deliberately OUTSIDE
+  // STATUS_ORDER (simulation.constants.ts) so the monotonic forward CAS can never
+  // enter them and a terminal can't be resurrected. RETURNING is transient (drone
+  // flying the package home; the marker keeps moving); the other two are terminal.
+  RETURNING
+  DELIVERY_FAILED
+  RETURNED_TO_BASE
 }
 
+// Why a delivery failed / aborted. Stored on Delivery.failureReason (nullable) so
+// the outcome is explainable rather than a CANCELED catch-all. Drone/service-fault
+// reasons refund the customer; RECIPIENT_UNAVAILABLE (no-show / handoff lock) does not.
+enum DeliveryFailureReason {
+  RECIPIENT_UNAVAILABLE
+  WEATHER_ABORT
+  UNSAFE_DROP_ZONE
+  MECHANICAL
+  ADMIN_ABORT
+  OTHER
+}
+
+// Who drives a delivery's lifecycle + position. SIMULATED (default) = the
+// in-memory BullMQ simulation; LIVE = real drone telemetry ingested via
+// /ingest/telemetry. The two are interchangeable producers of the same tracking
+// contract and never both drive one delivery (the choice is fixed at create()).
+enum TrackingSource {
+  SIMULATED
+  LIVE
+}
+
+// PARTITIONED TABLE — `deliveries` is PostgreSQL RANGE(createdAt)-partitioned by month
+// (migration 20260619xxxxxx_partition_deliveries; child DDL owned by the partition_*
+// routines + the partition-maintenance scheduler, NOT Prisma). The PK is composite
+// `@@id([id, createdAt])` (id-first). `prisma db push`/`db pull` are FORBIDDEN here
+// (migrations only). trackingId is no longer a single-column unique (a partitioned table
+// can't enforce it) — global uniqueness lives in the non-partitioned TrackingIdRegistry,
+// so `findUnique/update/delete({ where: { id } })` is gone (use findFirst / the id_createdAt
+// composite / updateMany). Every child relation references the composite PK via a
+// `deliveryCreatedAt` column. See prisma/PARTITIONING.md.
 model Delivery {
-  id         String @id @default(uuid())
-  trackingId String @unique
+  id         String @default(uuid())
+  trackingId String
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   status DeliveryStatus @default(PENDING)
+
+  // SIMULATED (default) → the in-memory simulation drives the lifecycle.
+  // LIVE → real drone telemetry drives it; create() starts no simulation.
+  trackingSource TrackingSource @default(SIMULATED)
+  // The drone bound to a LIVE delivery; telemetry whose droneId doesn't match is
+  // rejected, so a stranger gateway can't drive a delivery it isn't assigned to.
+  assignedDroneId String?
+
+  // Set when the delivery ends as RETURNING/DELIVERY_FAILED/RETURNED_TO_BASE;
+  // null on the happy path. Drives the failure comms + the refund decision.
+  failureReason DeliveryFailureReason?
 
   fromAddress String
   toAddress   String
@@ -65,29 +241,210 @@ model Delivery {
 
   pickupDate        DateTime
   pickupTime        String
+  // When the deferred lifecycle should kick off (UTC instant derived from
+  // pickupDate + pickupTime in the service tz). Null for immediate deliveries.
+  scheduledFor      DateTime?
   estimatedDelivery DateTime?
   estimatedPrice    Float
+
+  // Recipient handoff OTP: SHA-256 of the 6-digit code (plaintext returned once
+  // on create, never persisted). attempts lock the code after MAX tries.
+  handoffCodeHash    String?
+  handoffAttempts    Int       @default(0)
+  handoffConfirmedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tracking      DeliveryTracking?
-  workflowSteps WorkflowStepCompletion[]
-  payment       Payment?
+  tracking         DeliveryTracking?
+  workflowSteps    WorkflowStepCompletion[]
+  payment          Payment?
+  proofOfDelivery  ProofOfDelivery?
+  rating           DeliveryRating?
+  commands         DroneCommand[]
+  trackingRegistry TrackingIdRegistry?
 
+  @@id([id, createdAt])
   @@index([userId])
   @@index([status])
   @@index([trackingId])
   @@map("deliveries")
 }
 
+// Global uniqueness for the public `trackingId` handle. A partitioned `deliveries`
+// can't enforce UNIQUE(trackingId) (it omits the partition key), so the registry —
+// a small NON-partitioned table — holds it: create() inserts here in the same tx, so a
+// duplicate 8-char slice throws P2002 on this PK and the existing collision-retry fires;
+// findByTrackingId resolves trackingId → (deliveryId, deliveryCreatedAt) → composite-PK fetch.
+model TrackingIdRegistry {
+  trackingId        String   @id
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
+  createdAt         DateTime @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+
+  @@unique([deliveryId, deliveryCreatedAt])
+  @@map("tracking_id_registry")
+}
+
+// Backend -> drone command OUTBOX. An ADMIN issues a PENDING command; the (mock)
+// drone polls + acks it over the same /ingest transport telemetry uses. The ack
+// is the SOLE trigger that drives the delivery transition (via the existing
+// beginReturnToBase / failExceptional single-winner CAS) — issuing/fetching never
+// mutate the delivery. A thin audit/outbox, NOT a second source of truth: the
+// Delivery row stays authoritative. At most ONE open (PENDING|FETCHED) command per
+// delivery is enforced by a partial unique index (added in the migration; Prisma
+// can't express the WHERE) so two admins racing collapse to a DB-level 409.
+model DroneCommand {
+  // `drone_commands` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) → composite PK.
+  id         String @default(uuid())
+  deliveryId        String
+  deliveryCreatedAt DateTime
+  delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+
+  // Denormalized from delivery.assignedDroneId at issue; the poll/ack ownership
+  // second-factor (mirrors telemetry's assignedDroneId === droneId check).
+  droneId String
+
+  type   DroneCommandType
+  // Resolved at issue (defaulted by type), carried into the transition on ack so
+  // the audit row records exactly what reason the delivery will be stamped with.
+  reason DeliveryFailureReason
+  status DroneCommandStatus @default(PENDING)
+
+  // Audit: the admin who issued it. Nullable + SetNull so deleting that admin
+  // never cascades away the audit row.
+  issuedByUserId String?
+  issuedBy       User?   @relation("droneCommandsIssued", fields: [issuedByUserId], references: [id], onDelete: SetNull)
+
+  // Did THIS ack win the delivery CAS (count > 0)? false when telemetry/watchdog
+  // already moved the row to the same/terminal state.
+  appliedTransition Boolean @default(false)
+  resultNote        String? @db.VarChar(200)
+
+  expiresAt DateTime // issuedAt + COMMAND_TTL_MS; a command unacked past this never executes
+  fetchedAt DateTime? // first poll that handed it to the drone
+  ackedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([id, deliveryCreatedAt])
+  @@index([droneId, status]) // hot poll predicate: one drone's open queue
+  @@index([deliveryId])
+  @@map("drone_commands")
+}
+
+enum DroneCommandType {
+  RETURN_TO_BASE
+  ABORT
+}
+
+enum DroneCommandStatus {
+  PENDING
+  FETCHED
+  ACKED
+  REJECTED
+  EXPIRED
+}
+
+enum RecurrenceFreq {
+  DAILY
+  WEEKLY
+}
+
+// A user-defined repeating delivery. A materialization worker advances `nextRunAt`
+// and calls DeliveriesService.create() for each occurrence, so every instance
+// flows through the normal serviceability/pricing/payment/handoff/scheduling path.
+model RecurringDelivery {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Recurrence rule (all wall-clock parts interpreted in the service tz).
+  freq       RecurrenceFreq
+  daysOfWeek Int[]    @default([]) // WEEKLY only; 0=Sun..6=Sat. Empty for DAILY.
+  timeOfDay  String // "HH:MM" 24h
+  startDate  DateTime // inclusive lower bound (first occurrence is on/after this)
+  endDate    DateTime? // inclusive upper bound; null = open-ended
+  active     Boolean  @default(true) // pause/resume
+
+  // Cursor (the CAS target): next occurrence we still owe a Delivery for; null once exhausted.
+  nextRunAt          DateTime?
+  lastMaterializedAt DateTime?
+  lastDeliveryId     String? // provenance only; intentionally NO FK (keeps Delivery untouched)
+
+  // Delivery template — a snapshot of CreateDeliveryDto minus pickupDate
+  // (pickupTime is `timeOfDay`).
+  fromAddress   String
+  toAddress     String
+  fromLat       Float?
+  fromLng       Float?
+  toLat         Float?
+  toLng         Float?
+  receiver      String
+  packages      String
+  packageSize   String
+  packageWeight Float
+  packageTypes  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([active, nextRunAt]) // hot scan predicate
+  @@map("recurring_deliveries")
+}
+
+model DeliveryRating {
+  id         String   @id @default(uuid())
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
+  delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stars   Int // 1–5
+  comment String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([deliveryId, deliveryCreatedAt])
+  @@index([userId])
+  @@map("delivery_ratings")
+}
+
+// ==================== PROOF OF DELIVERY ====================
+
+model ProofOfDelivery {
+  id         String @id @default(uuid())
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
+
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+
+  photoUrl      String
+  recipientName String?
+  lat           Float?
+  lng           Float?
+  notes         String?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([deliveryId, deliveryCreatedAt])
+  @@map("proof_of_delivery")
+}
+
 // ==================== TRACKING ====================
 
 model DeliveryTracking {
   id         String @id @default(uuid())
-  deliveryId String @unique
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   droneLat    Float?
   droneLng    Float?
@@ -97,22 +454,27 @@ model DeliveryTracking {
 
   updatedAt DateTime @updatedAt
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@map("delivery_tracking")
 }
 
 // ==================== WORKFLOW ====================
 
 model WorkflowStepCompletion {
-  id         String @id @default(uuid())
-  deliveryId String
-  workflowId String
-  stepId     String
+  // `workflow_step_completions` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) →
+  // composite PK, and the uniqueness rule must include the partition key.
+  id         String @default(uuid())
+  deliveryId        String
+  deliveryCreatedAt DateTime
+  workflowId        String
+  stepId            String
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   completedAt DateTime @default(now())
 
-  @@unique([deliveryId, workflowId, stepId])
+  @@id([id, deliveryCreatedAt])
+  @@unique([deliveryId, workflowId, stepId, deliveryCreatedAt])
   @@map("workflow_step_completions")
 }
 
@@ -147,9 +509,10 @@ model PaymentMethod {
 
 model Payment {
   id         String @id @default(uuid())
-  deliveryId String @unique
+  deliveryId        String   @unique
+  deliveryCreatedAt DateTime
 
-  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  delivery Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
 
   stripePaymentIntentId String?
   amount                Float
@@ -158,7 +521,219 @@ model Payment {
 
   createdAt DateTime @default(now())
 
+  @@unique([deliveryId, deliveryCreatedAt])
   @@map("payments")
+}
+
+// ==================== PROMO CODES ====================
+// NOTE: no admin CRUD surface yet — codes are reference data seeded via the
+// migration (and prisma/seed.ts). Admin management is deferred.
+
+enum PromoDiscountType {
+  PERCENT
+  FIXED
+}
+
+enum PromoRedemptionStatus {
+  REDEEMED
+  RELEASED // cancelled delivery → slot returned, row kept for audit
+}
+
+model PromoCode {
+  id            String            @id @default(uuid())
+  code          String            @unique // stored UPPERCASE; lookups uppercase+trim
+  description   String?
+  discountType  PromoDiscountType
+  discountValue Float // PERCENT: whole percent (0<v<=100); FIXED: dollars (>0)
+  minOrderTotal Float             @default(0) // min PRE-discount total to qualify; 0 = no gate
+  maxDiscount   Float? // caps the discount in $ (mainly PERCENT); null = uncapped
+  startsAt      DateTime? // null = active since forever
+  endsAt        DateTime? // null = never expires (half-open: now >= endsAt is expired)
+  active        Boolean           @default(true) // kill switch independent of the window
+
+  maxRedemptions Int? // GLOBAL cap; null = unlimited
+  timesRedeemed  Int  @default(0) // conditional-increment CAS target
+  perUserLimit   Int  @default(1) // only =1 is race-safely enforced (partial unique index)
+
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  redemptions PromoRedemption[]
+
+  @@map("promo_codes")
+}
+
+model PromoRedemption {
+  id          String    @id @default(uuid())
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Provenance only — no FK to Delivery (keeps the Delivery model untouched,
+  // like RecurringDelivery.lastDeliveryId).
+  deliveryId  String    @unique
+
+  discountAmount Float // audit: $ discount applied
+  originalTotal  Float // audit: pre-discount total
+  finalTotal     Float // audit: charged total (== Stripe amount)
+
+  status     PromoRedemptionStatus @default(REDEEMED)
+  redeemedAt DateTime              @default(now())
+  releasedAt DateTime?
+
+  // A PARTIAL unique index (promoCodeId,userId) WHERE status='REDEEMED' enforces
+  // the per-user limit (=1) race-free; it is hand-added in migration.sql because
+  // Prisma can't express a partial unique. (Do NOT add @@unique here — a full
+  // unique would block cancel-then-reapply.)
+  @@index([promoCodeId])
+  @@index([userId])
+  @@map("promo_redemptions")
+}
+
+// ==================== FAVORITES ====================
+
+// A saved delivery template for quick reorder (snapshot of a delivery's params,
+// minus the pickup window).
+model Favorite {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label         String
+  fromAddress   String
+  toAddress     String
+  fromLat       Float?
+  fromLng       Float?
+  toLat         Float?
+  toLng         Float?
+  receiver      String
+  packages      String
+  packageSize   String
+  packageWeight Float
+  packageTypes  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("favorites")
+}
+
+// ==================== WALLET & REFERRALS ====================
+
+enum WalletTxnType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTxnReason {
+  REFERRAL_REWARD // minted to the referrer
+  REFEREE_REWARD // minted to the referred user
+  CHECKOUT_SPEND // credits applied to a delivery
+  CHECKOUT_REFUND // credits returned when a delivery is canceled
+}
+
+// Append-only ledger; one row per balance delta. `amount` is a positive
+// magnitude (sign carried by `type`); `balanceAfter` snapshots the post-apply
+// balance for reconciliation. `idempotencyKey` makes reward/refund writes
+// exactly-once.
+model WalletTransaction {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type         WalletTxnType
+  reason       WalletTxnReason
+  amount       Float
+  balanceAfter Float
+
+  deliveryId     String? // provenance only (no FK — keeps Delivery untouched)
+  referralId     String?
+  idempotencyKey String? @unique // e.g. refund:<deliveryId>, referral-referrer:<refId>
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("wallet_transactions")
+}
+
+enum ReferralStatus {
+  PENDING // linked at signup; reward not yet earned
+  REWARDED // referee hit the milestone; both parties credited
+}
+
+// One row per referrer→referee pair; the exactly-once reward gate. A user can be
+// the referee of at most one referral (refereeId @unique).
+model Referral {
+  id         String @id @default(uuid())
+  referrerId String
+  referrer   User   @relation("ReferralReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  refereeId  String @unique
+  referee    User   @relation("ReferralReferee", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  status         ReferralStatus @default(PENDING)
+  referrerReward Float? // audit: $ minted to the referrer
+  refereeReward  Float? // audit: $ minted to the referee
+  rewardedAt     DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@index([referrerId])
+  @@map("referrals")
+}
+
+// ==================== SUPPORT ====================
+
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id     String @id @default(uuid())
+  userId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The opening message (kept for backward-compat with the mobile ticket list);
+  // the full thread lives in `messages`, seeded from this on create.
+  message String
+  status  SupportTicketStatus @default(OPEN)
+
+  messages      SupportChatMessage[]
+  // Recency of the latest message — orders the user's ticket list (active first).
+  lastMessageAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("support_tickets")
+}
+
+enum SupportChatSenderRole {
+  USER
+  AGENT // reserved for the future human-agent surface (no producer today)
+  SYSTEM // automated replies (e.g. the auto-acknowledgement)
+}
+
+model SupportChatMessage {
+  id       String        @id @default(uuid())
+  ticketId String
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  senderRole SupportChatSenderRole @default(USER)
+  // The author for USER messages; null for AGENT/SYSTEM. SetNull (not Cascade)
+  // so deleting a user preserves the readable thread.
+  senderUserId String?
+  senderUser   User?   @relation("supportChatMessages", fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  content String @db.VarChar(2000)
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+  @@map("support_chat_messages")
 }
 
 // ==================== NOTIFICATIONS ====================
@@ -178,8 +753,18 @@ model Device {
   @@map("devices")
 }
 
+// PARTITIONED TABLE — `notifications` is PostgreSQL RANGE(createdAt)-partitioned by
+// month (raw-SQL migration 20260616120000_partition_notifications; child DDL is owned
+// by the `notifications_*` plpgsql routines + the partition-maintenance scheduler, NOT
+// Prisma). A range-partitioned table requires the partition key in every key, so the
+// PK is composite `@@id([id, createdAt])` (id-first so a bare-id lookup still uses each
+// child's PK index). `prisma db push` AND `prisma db pull` are FORBIDDEN here (migrations
+// only — push recreates it as a plain table, pull can't represent PARTITION BY); see
+// prisma/PARTITIONING.md. id is still a unique uuid in practice, but is no longer a
+// single-column unique — so `findUnique/update/delete({ where: { id } })` is gone;
+// scope writes by (id, userId) via updateMany instead (see NotificationsService).
 model Notification {
-  id     String @id @default(uuid())
+  id     String @default(uuid())
   userId String
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -191,6 +776,7 @@ model Notification {
 
   createdAt DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([userId, read])
   @@map("notifications")
 }

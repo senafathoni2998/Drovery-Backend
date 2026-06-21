@@ -13,6 +13,7 @@ describe('DeliveriesController', () => {
     getActive: jest.Mock;
     getRecent: jest.Mock;
     cancel: jest.Mock;
+    confirmHandoff: jest.Mock;
   };
 
   const userId = 'user-1';
@@ -21,12 +22,19 @@ describe('DeliveriesController', () => {
   beforeEach(async () => {
     deliveriesService = {
       create: jest.fn().mockResolvedValue(mockDelivery),
-      findAll: jest.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
+      findAll: jest
+        .fn()
+        .mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
       findOne: jest.fn().mockResolvedValue(mockDelivery),
       findByTrackingId: jest.fn().mockResolvedValue(mockDelivery),
       getActive: jest.fn().mockResolvedValue([mockDelivery]),
       getRecent: jest.fn().mockResolvedValue([]),
-      cancel: jest.fn().mockResolvedValue({ ...mockDelivery, status: 'CANCELED' }),
+      cancel: jest
+        .fn()
+        .mockResolvedValue({ ...mockDelivery, status: 'CANCELED' }),
+      confirmHandoff: jest
+        .fn()
+        .mockResolvedValue({ ...mockDelivery, status: 'DELIVERED' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -78,10 +86,13 @@ describe('DeliveriesController', () => {
   });
 
   describe('findByTrackingId', () => {
-    it('should delegate to deliveriesService.findByTrackingId', async () => {
-      const result = await controller.findByTrackingId('ABC123');
+    it('should delegate to deliveriesService.findByTrackingId with the user id', async () => {
+      const result = await controller.findByTrackingId(userId, 'ABC123');
 
-      expect(deliveriesService.findByTrackingId).toHaveBeenCalledWith('ABC123');
+      expect(deliveriesService.findByTrackingId).toHaveBeenCalledWith(
+        userId,
+        'ABC123',
+      );
       expect(result).toEqual(mockDelivery);
     });
   });
@@ -90,7 +101,10 @@ describe('DeliveriesController', () => {
     it('should delegate to deliveriesService.findOne', async () => {
       const result = await controller.findOne(userId, 'delivery-1');
 
-      expect(deliveriesService.findOne).toHaveBeenCalledWith(userId, 'delivery-1');
+      expect(deliveriesService.findOne).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+      );
       expect(result).toEqual(mockDelivery);
     });
   });
@@ -99,8 +113,26 @@ describe('DeliveriesController', () => {
     it('should delegate to deliveriesService.cancel', async () => {
       const result = await controller.cancel(userId, 'delivery-1');
 
-      expect(deliveriesService.cancel).toHaveBeenCalledWith(userId, 'delivery-1');
+      expect(deliveriesService.cancel).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+      );
       expect(result.status).toBe('CANCELED');
+    });
+  });
+
+  describe('confirmHandoff', () => {
+    it('should delegate to deliveriesService.confirmHandoff with the code', async () => {
+      const result = await controller.confirmHandoff(userId, 'delivery-1', {
+        code: '123456',
+      });
+
+      expect(deliveriesService.confirmHandoff).toHaveBeenCalledWith(
+        userId,
+        'delivery-1',
+        '123456',
+      );
+      expect(result.status).toBe('DELIVERED');
     });
   });
 });

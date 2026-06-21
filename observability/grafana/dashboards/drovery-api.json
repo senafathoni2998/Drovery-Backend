@@ -1,0 +1,101 @@
+{
+  "uid": "drovery-api",
+  "title": "Drovery — API",
+  "tags": ["drovery"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate by route (req/s)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(drovery_http_requests_total[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "5xx error rate (SLO < 2%)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(drovery_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(drovery_http_requests_total[5m]))",
+          "legendFormat": "5xx ratio"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Latency p99 by route (s, SLO < 1s)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(drovery_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "WebSocket connections (tracking + support)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(drovery_ws_connections)", "legendFormat": "tracking" },
+        { "expr": "sum(drovery_ws_support_connections)", "legendFormat": "support" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Event-loop p99 lag (s)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "drovery_nodejs_eventloop_lag_p99_seconds{tier=\"api\"}",
+          "legendFormat": "api"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Readiness 503s (/health/ready)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum(rate(drovery_http_requests_total{route=~\".*/health/ready\", status=\"503\"}[5m]))",
+          "legendFormat": "ready 503/s"
+        }
+      ]
+    }
+  ]
+}

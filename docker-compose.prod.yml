@@ -1,0 +1,88 @@
+# Production overlay — run the FULL Drovery system on a single VPS behind Caddy (automatic
+# HTTPS). Layer it ON TOP of the base stack. See DEPLOY.md for the full guide.
+#
+#   # Build on the VPS (clone drovery-backend + drovery-admin as siblings):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+#   # Or pull pre-built images from Docker Hub (set DOCKER_REGISTRY=<your-dockerhub-user>):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Requires a .env (copy .env.prod.example): DOMAIN, strong JWT_SECRET / JWT_REFRESH_SECRET,
+# and POSTGRES_PASSWORD. Caddy routes: WebSocket upgrades + /api/* → api; everything else →
+# the admin SPA. So it's single-origin (no CORS) and the admin image needs no per-domain build.
+
+services:
+  postgres:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  pgbouncer:
+    restart: unless-stopped
+    environment:
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  redis:
+    restart: unless-stopped
+
+  mosquitto:
+    restart: unless-stopped
+
+  # One-shot: migrate + seed (idempotent; seeds the demo accounts — see DEPLOY.md). Reuses the
+  # backend image so it isn't built/pulled twice.
+  migrate:
+    image: ${DOCKER_REGISTRY:-drovery}/drovery-backend:${TAG:-latest}
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/drovery?schema=public
+
+  api:
+    image: ${DOCKER_REGISTRY:-drovery}/drovery-backend:${TAG:-latest}
+    build: .
+    restart: unless-stopped
+    ports: !reset [] # fronted by Caddy — no host port
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/drovery?schema=public
+      JWT_SECRET: ${JWT_SECRET:?set a strong JWT_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set a strong JWT_REFRESH_SECRET in .env}
+      # Same-origin admin needs no CORS; set this only if you serve the console on another host.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+
+  worker:
+    image: ${DOCKER_REGISTRY:-drovery}/drovery-backend:${TAG:-latest}
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/drovery?schema=public
+      JWT_SECRET: ${JWT_SECRET:?set a strong JWT_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set a strong JWT_REFRESH_SECRET in .env}
+
+  # The operator/support console (drovery-admin). Built from the sibling repo, or pulled.
+  admin:
+    image: ${DOCKER_REGISTRY:-drovery}/drovery-admin:${TAG:-latest}
+    build:
+      context: ../drovery-admin
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  # Edge: automatic HTTPS + routing. Holds the only public ports.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - admin
+      - api
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN (e.g. drovery.example.com) in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
