@@ -192,6 +192,55 @@ describe('NotificationsService', () => {
 
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('chunks the fan-out to <=100 messages per Expo request', async () => {
+      prisma.notification.create.mockResolvedValue(mockNotification);
+      prisma.device.findMany.mockResolvedValue(
+        Array.from({ length: 150 }, (_, i) => ({
+          pushToken: `ExponentPushToken[${i}]`,
+          platform: 'ios',
+        })),
+      );
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+      (global as any).fetch = fetchMock;
+
+      await service.create(userId, 'Title', 'Body');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // 150 tokens → two requests (100 + 50), never one oversized request.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toHaveLength(100);
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toHaveLength(50);
+    });
+
+    it('reaps tokens Expo reports as DeviceNotRegistered', async () => {
+      prisma.notification.create.mockResolvedValue(mockNotification);
+      prisma.device.findMany.mockResolvedValue([
+        { pushToken: 'ExponentPushToken[live]', platform: 'ios' },
+        { pushToken: 'ExponentPushToken[dead]', platform: 'android' },
+      ]);
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { status: 'ok', id: 'r1' },
+            { status: 'error', details: { error: 'DeviceNotRegistered' } },
+          ],
+        }),
+      });
+      (global as any).fetch = fetchMock;
+      prisma.device.deleteMany.mockResolvedValue({ count: 1 });
+
+      await service.create(userId, 'Title', 'Body');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The dead token is deleted; the live one is left alone.
+      expect(prisma.device.deleteMany).toHaveBeenCalledWith({
+        where: { userId, pushToken: { in: ['ExponentPushToken[dead]'] } },
+      });
+    });
   });
 
   describe('getUnreadCount', () => {
