@@ -9,6 +9,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDeviceDto, UpdateNotificationPreferencesDto } from './dto';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+// Expo HARD-rejects a push request carrying more than 100 messages — chunk to it.
+const EXPO_PUSH_CHUNK_SIZE = 100;
 
 export type NotificationCategory = 'delivery' | 'promotion' | 'system';
 
@@ -246,17 +248,16 @@ export class NotificationsService {
           where: { userId },
         })) ?? [];
 
-      const messages = devices
+      const tokens = devices
         .map((d) => d.pushToken)
         .filter(
-          (token) =>
+          (token): token is string =>
             typeof token === 'string' &&
             (token.startsWith('ExponentPushToken') ||
               token.startsWith('ExpoPushToken')),
-        )
-        .map((to) => ({ to, title, body, data, sound: 'default' as const }));
+        );
 
-      if (messages.length === 0) return;
+      if (tokens.length === 0) return;
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -267,18 +268,91 @@ export class NotificationsService {
         headers['Authorization'] = `Bearer ${accessToken}`;
       }
 
-      const res = await fetch(EXPO_PUSH_URL, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(messages),
-      });
+      // Tokens Expo reports as permanently invalid (DeviceNotRegistered) — reaped
+      // after the sends so dead tokens don't accumulate and inflate every future
+      // fan-out (and grow the devices table unbounded).
+      const deadTokens: string[] = [];
 
-      if (!res.ok) {
-        this.logger.warn(`Expo push request failed with status ${res.status}`);
+      // Expo caps a single request at 100 messages → send in chunks.
+      for (let i = 0; i < tokens.length; i += EXPO_PUSH_CHUNK_SIZE) {
+        const chunk = tokens.slice(i, i + EXPO_PUSH_CHUNK_SIZE);
+        const messages = chunk.map((to) => ({
+          to,
+          title,
+          body,
+          data,
+          sound: 'default' as const,
+        }));
+
+        const res = await fetch(EXPO_PUSH_URL, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(messages),
+        });
+
+        if (!res.ok) {
+          this.logger.warn(
+            `Expo push request failed with status ${res.status}`,
+          );
+          continue;
+        }
+
+        // Each ticket maps positionally to the message sent. A DeviceNotRegistered
+        // ticket means that token is dead — collect it for reaping.
+        const tickets = await this.parseExpoTickets(res);
+        tickets.forEach((ticket, j) => {
+          if (
+            ticket?.status === 'error' &&
+            ticket?.details?.error === 'DeviceNotRegistered' &&
+            chunk[j]
+          ) {
+            deadTokens.push(chunk[j]);
+          }
+        });
+      }
+
+      if (deadTokens.length > 0) {
+        await this.reapDeadDevices(userId, deadTokens);
       }
     } catch (error) {
       this.logger.warn(
         `Push send failed for user ${userId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /** Parses Expo's `{ data: ticket[] }` response; tolerant of a non-JSON/empty body. */
+  private async parseExpoTickets(
+    res: Response,
+  ): Promise<Array<{ status?: string; details?: { error?: string } }>> {
+    try {
+      if (typeof res.json !== 'function') return [];
+      const json = (await res.json()) as {
+        data?: Array<{ status?: string; details?: { error?: string } }>;
+      };
+      return Array.isArray(json?.data) ? json.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Deletes push tokens Expo reported as permanently invalid (idempotent, never throws). */
+  private async reapDeadDevices(
+    userId: string,
+    tokens: string[],
+  ): Promise<void> {
+    try {
+      const { count } = await this.prisma.device.deleteMany({
+        where: { userId, pushToken: { in: tokens } },
+      });
+      if (count > 0) {
+        this.logger.log(
+          `Reaped ${count} dead push token(s) (DeviceNotRegistered) for user ${userId}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to reap dead push tokens for user ${userId}: ${(error as Error).message}`,
       );
     }
   }
