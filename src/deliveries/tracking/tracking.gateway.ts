@@ -12,6 +12,7 @@ import { IncomingMessage } from 'http';
 import { Server, WebSocket } from 'ws';
 
 import { MetricsService } from '../../metrics/metrics.service';
+import { WS_MAX_BUFFERED_BYTES } from './realtime.constants';
 import { DeliveriesService } from '../deliveries.service';
 import { TrackingUpdatePayload } from './tracking.publisher';
 import { TrackingSubscriber } from './tracking.subscriber';
@@ -143,9 +144,21 @@ export class TrackingGateway
     const clients = this.subscriptions.get(deliveryId);
     if (!clients || clients.size === 0) return;
     const message = JSON.stringify({ event: 'tracking:update', data });
+    // A STATUS transition is NEVER dropped: it's recoverable only via a poll, and a
+    // terminal status FREEZES position so no later frame supersedes it. Only the
+    // position stream is lossy (the next frame supersedes a dropped one) — mirrors the
+    // coalescer's never-coalesce-status split.
+    const isStatusFrame = data.status !== undefined;
     for (const client of clients) {
       try {
-        if (client.readyState === WebSocket.OPEN) client.send(message);
+        if (client.readyState !== WebSocket.OPEN) continue;
+        // Backpressure: drop a POSITION frame to a socket whose send buffer is already
+        // backed up (a slow client), rather than growing it unbounded toward an OOM.
+        if (!isStatusFrame && client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+          this.metrics?.wsDroppedFrames.inc();
+          continue;
+        }
+        client.send(message);
       } catch (e) {
         this.logger.warn(`broadcast failed: ${(e as Error).message}`);
       }

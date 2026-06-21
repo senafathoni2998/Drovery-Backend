@@ -42,6 +42,9 @@ export class MetricsService {
   readonly httpTotal: Counter<string>;
   readonly wsConnections: Gauge<string>;
   readonly wsSupportConnections: Gauge<string>;
+  // Tracking frames DROPPED to a slow socket (send buffer over the backpressure
+  // watermark) — a non-zero rate flags slow clients / a fan-out node under pressure.
+  readonly wsDroppedFrames: Counter<string>;
   // Stuck-delivery watchdog (worker tier): reap counter + heartbeat gauges so the
   // safety reaper is observable/alertable — a silent scheduler/processor death is
   // otherwise invisible. last-scan drives `time() - gauge > N`; scheduler-registered
@@ -99,6 +102,12 @@ export class MetricsService {
     this.wsConnections = new Gauge({
       name: 'drovery_ws_connections',
       help: 'Currently connected tracking WebSocket clients',
+      registers: [this.registry],
+    });
+
+    this.wsDroppedFrames = new Counter({
+      name: 'drovery_ws_dropped_frames_total',
+      help: 'Tracking frames dropped to a slow socket (backpressure watermark)',
       registers: [this.registry],
     });
 
