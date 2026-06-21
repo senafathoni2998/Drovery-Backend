@@ -1,3 +1,25 @@
+/**
+ * Reads a per-concern Redis endpoint from `<PREFIX>_HOST/_PORT/_PASSWORD/_DB/_TLS`.
+ * Returns undefined for any field not set so buildRedisOptions() falls back to the
+ * shared REDIS_* values — i.e. setting only REDIS_PUBSUB_HOST moves the host and
+ * inherits the shared auth/TLS. Returns {} when nothing is set (all fall back).
+ */
+function redisRoleEnv(prefix: string) {
+  const host = process.env[`${prefix}_HOST`];
+  const portRaw = process.env[`${prefix}_PORT`];
+  return {
+    host: host || undefined,
+    port: portRaw ? parseInt(portRaw, 10) : undefined,
+    password: process.env[`${prefix}_PASSWORD`] || undefined,
+    db: process.env[`${prefix}_DB`]
+      ? parseInt(process.env[`${prefix}_DB`] as string, 10)
+      : undefined,
+    tls: process.env[`${prefix}_TLS`]
+      ? process.env[`${prefix}_TLS`] === 'true'
+      : undefined,
+  };
+}
+
 export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   apiPrefix: process.env.API_PREFIX ?? 'api/v1',
@@ -29,6 +51,17 @@ export default () => ({
     password: process.env.REDIS_PASSWORD || undefined,
     db: parseInt(process.env.REDIS_DB ?? '0', 10),
     tls: process.env.REDIS_TLS === 'true',
+
+    // PER-CONCERN endpoint overrides (1M+ topology). Each is OPTIONAL and falls
+    // back to the shared REDIS_* above per-field in buildRedisOptions(role). Unset
+    // → one Redis for everything (today). Set to peel a concern onto its own
+    // instance / Redis Cluster: the throttler (highest RPS) and pub/sub (telemetry
+    // fan-out — does NOT shard in Cluster, needs its own instance(s) or a broker)
+    // are the first two to split.
+    queue: redisRoleEnv('REDIS_QUEUE'),
+    cache: redisRoleEnv('REDIS_CACHE'),
+    pubsub: redisRoleEnv('REDIS_PUBSUB'),
+    throttle: redisRoleEnv('REDIS_THROTTLE'),
   },
 
   stripe: {
