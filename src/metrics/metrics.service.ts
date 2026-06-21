@@ -73,6 +73,16 @@ export class MetricsService {
   // gauge is the authoritative retention-lag signal (oldest non-DEFAULT child age).
   readonly partitionMaintenanceFailures: Counter<string>;
   readonly partitionOldestLeafAgeMonths: Gauge<string>;
+  // Transactional outbox (worker tier): the dispatcher applies user-rooted side effects
+  // (Stage-1: the referral reward) asynchronously, so a stalled/poison dispatcher is real
+  // money silently owed. processed-total (by event_type + result) makes throughput + the
+  // duplicate/error mix observable; the pending gauge is the backlog-age signal; the failed
+  // gauge alerts on poison events (replay-safe FAILED>0); scheduler-registered mirrors the
+  // watchdog so a silent dispatcher death is visible.
+  readonly outboxProcessedTotal: Counter<string>;
+  readonly outboxPending: Gauge<string>;
+  readonly outboxFailed: Gauge<string>;
+  readonly outboxSchedulerRegistered: Gauge<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -214,6 +224,31 @@ export class MetricsService {
       name: 'drovery_partition_oldest_leaf_age_months',
       help: 'Age in months of the oldest non-DEFAULT child partition (retention-lag signal; alert if > PARTITION_RETAIN_MONTHS when retention is enabled)',
       labelNames: ['table'],
+      registers: [this.registry],
+    });
+
+    this.outboxProcessedTotal = new Counter({
+      name: 'drovery_outbox_processed_total',
+      help: 'Outbox events dispatched, by event_type and result (processed | duplicate | error)',
+      labelNames: ['event_type', 'result'],
+      registers: [this.registry],
+    });
+
+    this.outboxPending = new Gauge({
+      name: 'drovery_outbox_pending',
+      help: 'Outbox events currently PENDING (backlog; alert on sustained growth / age)',
+      registers: [this.registry],
+    });
+
+    this.outboxFailed = new Gauge({
+      name: 'drovery_outbox_failed',
+      help: 'Outbox events parked FAILED — exhausted attempts; replay-safe (alert if >0)',
+      registers: [this.registry],
+    });
+
+    this.outboxSchedulerRegistered = new Gauge({
+      name: 'drovery_outbox_scheduler_registered',
+      help: '1 when this replica registered the outbox dispatcher repeatable scheduler',
       registers: [this.registry],
     });
 
