@@ -4,6 +4,10 @@ This document is the plan to take Drovery from "works on one laptop" to **100k+ 
 It is grounded in the current code: each section names the real blocker in this repo,
 why it breaks at scale, and the concrete fix.
 
+> **Scaling past 100k?** The plan for the next 10× — to **1,000,000+** users, and the new ceilings
+> that only appear there (single-primary writes, the position-telemetry firehose, single-Redis,
+> WS fan-out, geo-sharding) — is in **[`SCALING-1M.md`](SCALING-1M.md)**.
+
 > TL;DR — the four **hard blockers** this plan opened with are now all **RESOLVED** (this doc
 > records the journey; each section's status markers are current):
 > 1. ✅ **In-memory delivery simulation** (`setTimeout`) → durable BullMQ jobs on a standalone worker tier (§1).
