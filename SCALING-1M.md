@@ -84,7 +84,7 @@ green), but a later phase **flips a flag / sets an env var** instead of refactor
 | **✅ Tracking hot-store + checkpoint consumer** (§3) — **SHIPPED** | producer + worker checkpoint consumer landed together, default-OFF (`TRACKING_HOT_STORE=redis`); a boot guard (`assertCheckpointSafe`) asserts the checkpoint cadence clears the watchdog window | the **monotonic-seq** guard (§3.1) is still deferred — it ships with the *same* last-write-wins position semantics as today (no regression) |
 | **✅ `PROCESS_ROLE=realtime` tier** (§4) — **SHIPPED** | done NOT via a fragile slim module but a centralized role taxonomy (`src/common/process-role.ts`: `IS_WORKER_TIER`/`IS_HTTP_TIER`/`IS_INGEST_TIER`): `realtime` boots `main.ts` (HTTP + `WsAdapter`) and runs **only** the WS gateways — worker processors + MQTT ingest are gated off; the Ingress routes the WS upgrade here, `/api/*` to the api tier. k8s deployment/service/ingress + a KEDA `ScaledObject` on `drovery_ws_connections`. Additive — api/worker/dev are byte-identical; boot-smoked per role. | — |
 | **✅ Position coalescer + WS backpressure** (§4) — **SHIPPED** | `POSITION_PUSH_HZ` caps the per-delivery publish rate (default off); `WS_MAX_BUFFERED_BYTES` drops a *position* frame to a backed-up socket. **Status transitions are never coalesced or dropped** (both the publisher and the gateway honor this). | — |
-| **Pluggable `PubSubTransport` (sharded bus)** (§4) — deferred | the `redis-sharded` path is **not** publish-side-only: both subscribers reverse-parse the id out of the channel string, so they change in lockstep | pass the id through the transport callback instead of slicing the channel |
+| **✅ Sharded pub/sub transport** (§4) — **SHIPPED** | `REDIS_PUBSUB_MODE=sharded` flips the tracking + support-chat fan-out from `PUBLISH/SUBSCRIBE` to `SPUBLISH/SSUBSCRIBE` (Redis 7.0+) via a thin `src/common/pubsub/pubsub-transport.ts` seam — both publisher classes and both subscriber classes read the mode once at connect time. Default `standard` = byte-identical to today. Routes by hash slot so the firehose partitions across a Redis Cluster instead of broadcasting to every node. Fail-safe: any non-`'sharded'` value stays standard. Additive; boot-smoked per role. | the **Redis Cluster client** itself (`new Redis.Cluster(...)`) is the remaining follow-up — sharded mode is correct on a standalone Redis 7+ (one shard owns every slot) but only *distributes* once the clients are cluster-aware; both tiers must set the env identically |
 | **DB `ShardRouter`** (§2) | **Unbuildable as additive today**: `create()`'s `$transaction` co-commits the delivery with **user-rooted wallet/promo/referral** mutations — a single Prisma tx cannot span two shards, so flipping `shardCount>1` would corrupt wallet balances on the first multi-shard delivery | refactor `create()` balance mutations to an **outbox/saga** (or co-locate users with a home shard) |
 | **Firehose hardening** (§6) | two *existing* correctness gaps, independent of sharding | see §6 — do these **before** any sharding |
 
@@ -200,17 +200,18 @@ Two independent, additive fixes.
    socket-holding nodes (every scale-down mass-disconnects clients). Dedicated Ingress path, long
    `proxy-read-timeout` (≥ 3600s), graceful drain, and a **per-socket `bufferedAmount` watermark** so a
    slow client can't balloon node memory.
-2. **Pluggable `PubSubTransport`** behind the centralized `publishUpdate()` / `subscribeToDelivery()`
-   seam, `REALTIME_BUS=redis|redis-sharded|nats|kafka` (default `redis` = today, byte-identical).
-   `redis-sharded` routes via the shipped `shardedTrackingChannel` so a node subscribes only the
-   partitions it holds sockets for — turning `O(msgs × all-nodes)` broadcast into `O(msgs ×
-   nodes-holding-that-partition)`. **Honesty:** classic *and* clustered Redis pub/sub broadcast
-   cluster-wide, so this needs `SSUBSCRIBE`/per-partition channels or a real broker — **not** a bigger
-   Redis. **Blast-radius note:** both subscribers reverse-parse the id out of the channel string
-   (`channel.slice('delivery:'.length, -':update'.length)`), so a sharded `s3:delivery:<id>:update`
-   breaks the slice — the `dispatch()` reverse-parse in `tracking.subscriber.ts` **and**
-   `support-chat.subscriber.ts` must change in lockstep (cleanest: pass the id through the transport
-   callback). Add a **position coalescer** (`POSITION_PUSH_HZ`, default off = pass-through): keep only
+2. **✅ Sharded pub/sub transport — SHIPPED.** A thin seam (`src/common/pubsub/pubsub-transport.ts`)
+   flips the tracking + support-chat fan-out from `PUBLISH/SUBSCRIBE` to `SPUBLISH/SSUBSCRIBE`
+   (Redis 7.0+) under `REDIS_PUBSUB_MODE=sharded` (default `standard` = today, byte-identical). Sharded
+   pub/sub routes by the channel's hash slot, so a message reaches only the node owning that slot
+   instead of broadcasting to every node — turning `O(msgs × all-nodes)` into `O(msgs ×
+   node-owning-the-slot)`. **Honesty:** this is correct on a *standalone* Redis 7+ but only
+   *distributes* once a `Redis.Cluster` client is wired (the remaining follow-up); both tiers must set
+   the env identically (sharded `SPUBLISH` is delivered only to `SSUBSCRIBE`, never to classic
+   `SUBSCRIBE`). **Blast-radius note (resolved):** the subscribers still reverse-parse the id from the
+   channel string in `dispatch()`, but that string is delivered intact by the `smessage` event too, so
+   the parse is mode-agnostic and needed no lockstep change — only the subscribe/publish verbs + the
+   listened event switch by mode. Add a **position coalescer** (`POSITION_PUSH_HZ`, default off = pass-through): keep only
    the latest position per delivery, flush at a fixed Hz, but **flush `status` frames immediately**
    (never coalesce a discrete transition) — caps bus + per-socket frame rate independent of a 10 Hz
    live drone (~36× egress cut to 1 Hz).
@@ -292,7 +293,7 @@ the hot region).
 |---|---|---|
 | **0 — today** | ≤100k | **No new state-tier work.** Land the inert seams (shard-key, Redis split + wiring, both capacity models — *this PR*) so later phases flip a flag, not refactor under load. Plus the **firehose hardening** (§6) — it's independent of scale and only gets worse with replicas. |
 | **1** | 100k→300k | The **live-telemetry inflection**: ship the **tracking hot-store** (§3) OFF-by-default, enable in a canary (with the seq guard + the `CHECKPOINT_INTERVAL_MS < WATCHDOG_SILENCE_MS` hard test). **Peel `throttle` then `pubsub`** onto dedicated Redis. Add round-robin read replicas. |
-| **2** | 300k→1M | **Carve out the `realtime` tier** (§4, new bootstrap + KEDA-on-sockets). Ship the **coalescer + backpressure** guard. Flip `PubSubTransport` to `redis-sharded` (or a broker). Add cache-aside. Adopt **shard-prefixed trackingIds** so the public-id format migrates *before* sharding. |
+| **2** | 300k→1M | **Carve out the `realtime` tier** (§4, new bootstrap + KEDA-on-sockets). Ship the **coalescer + backpressure** guard. Flip `REDIS_PUBSUB_MODE=sharded` (and wire the Redis Cluster client) or move to a broker. Add cache-aside. Adopt **shard-prefixed trackingIds** so the public-id format migrates *before* sharding. |
 | **3** | 1M→multi-M | Only once the hot-store-relieved primary approaches its ceiling: **resolve the `create()` cross-shard tx** (outbox/saga), then flip `ShardRouter` to `shardCount>1` (one PgBouncer per shard, per-shard partition maintenance). Stand up **CDC → warehouse** for cross-shard reporting. **Regionalize only if residency requires it.** |
 
 ---
