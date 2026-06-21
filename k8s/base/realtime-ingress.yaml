@@ -1,0 +1,32 @@
+# Routes the WebSocket upgrade to the realtime tier with a long read timeout (idle
+# tracking sockets). The api Ingress keeps /api/* (a more specific prefix wins in
+# nginx-ingress), so HTTP stays on the api tier and only the WS paths land here.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: drovery-realtime
+  annotations:
+    # WS sockets are long-lived + mostly idle — a short read timeout would kill them.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.drovery.local # overlay patches to the real host
+      http:
+        paths:
+          # Support-chat WS.
+          - path: /ws/support
+            pathType: Prefix
+            backend:
+              service:
+                name: drovery-realtime
+                port: { name: http }
+          # Tracking WS attaches at the ROOT (ws://host/?token=). Least-specific prefix,
+          # so /api/v1 (api Ingress) still wins for HTTP; everything else → realtime.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: drovery-realtime
+                port: { name: http }

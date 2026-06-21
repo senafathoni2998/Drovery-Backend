@@ -1,0 +1,12 @@
+# Bound VOLUNTARY disruptions (node drain, cluster-autoscaler scale-in, rolling node
+# upgrade) so the scheduler can't evict every realtime pod at once and mass-disconnect
+# all sockets — the HPA behavior block governs KEDA scaling, NOT node-level evictions.
+# maxUnavailable (not minAvailable) scales sensibly with the KEDA-driven replica count.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: drovery-realtime
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: drovery, role: realtime }
