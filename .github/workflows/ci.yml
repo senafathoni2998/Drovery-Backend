@@ -75,6 +75,11 @@ jobs:
       - name: Build (compiles + typechecks)
         run: npm run build
 
+      - name: Capacity models smoke (keep the 1M+ projections from rotting)
+        run: |
+          node loadtest/capacity-model-1m.mjs > /dev/null
+          node loadtest/capacity-model-multiregion.mjs > /dev/null
+
       - name: Unit tests
         run: npm test
 
