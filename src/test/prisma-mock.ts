@@ -27,6 +27,7 @@ type MockPrismaService = {
     | 'favorite'
     | 'droneCommand'
     | 'trackingIdRegistry'
+    | 'webhookEvent'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -102,6 +103,7 @@ export function createMockPrismaService(): MockPrismaService {
     favorite: createModelMock(),
     droneCommand: createModelMock(),
     trackingIdRegistry: createModelMock(),
+    webhookEvent: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
   };
