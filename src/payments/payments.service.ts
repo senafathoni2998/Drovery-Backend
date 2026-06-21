@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PaymentStatus } from '@prisma/client';
+import { PaymentStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -9,6 +9,35 @@ import {
 } from '../common/exceptions/app-exception';
 import { StripeService, StripeEvent } from '../stripe/stripe.service';
 import { AddPaymentMethodDto } from './dto';
+
+/** Stripe event type → the PaymentStatus it represents. */
+const WEBHOOK_STATUS: Record<string, PaymentStatus> = {
+  'payment_intent.succeeded': PaymentStatus.COMPLETED,
+  'payment_intent.payment_failed': PaymentStatus.FAILED,
+  'payment_intent.processing': PaymentStatus.PROCESSING,
+  'payment_intent.canceled': PaymentStatus.FAILED,
+};
+
+/**
+ * Monotonic webhook CAS: the prior statuses a target may legally advance FROM.
+ * Stripe delivers webhooks AT-LEAST-ONCE and can REORDER them, so a blind status
+ * write would regress a payment — a stale `processing` after `succeeded`, or a
+ * redelivered `payment_failed` after the charge COMPLETED (which could wrongly
+ * trigger a refund). Restricting the UPDATE's WHERE to these prior states makes any
+ * such event a 0-row no-op. A success wins even over a prior FAILED (a retried
+ * intent); a failure never overwrites a COMPLETED or REFUNDED payment.
+ */
+const ADVANCE_FROM: Record<PaymentStatus, PaymentStatus[]> = {
+  [PaymentStatus.PENDING]: [],
+  [PaymentStatus.PROCESSING]: [PaymentStatus.PENDING],
+  [PaymentStatus.COMPLETED]: [
+    PaymentStatus.PENDING,
+    PaymentStatus.PROCESSING,
+    PaymentStatus.FAILED,
+  ],
+  [PaymentStatus.FAILED]: [PaymentStatus.PENDING, PaymentStatus.PROCESSING],
+  [PaymentStatus.REFUNDED]: [], // only the refund flow sets REFUNDED — never a webhook
+};
 
 @Injectable()
 export class PaymentsService {
@@ -163,31 +192,78 @@ export class PaymentsService {
   }
 
   /**
-   * Applies a verified Stripe webhook event to the matching Payment row.
+   * Applies a verified Stripe webhook event to the matching Payment row —
+   * IDEMPOTENTLY (deduped on the event id) and MONOTONICALLY (never regresses a
+   * payment), because Stripe delivers at-least-once and can reorder events.
    */
   async handleWebhookEvent(event: StripeEvent) {
+    const eventId = event?.id;
     const intentId = event?.data?.object?.id;
     if (!intentId) return { received: true };
 
-    const statusByType: Record<string, PaymentStatus> = {
-      'payment_intent.succeeded': PaymentStatus.COMPLETED,
-      'payment_intent.payment_failed': PaymentStatus.FAILED,
-      'payment_intent.processing': PaymentStatus.PROCESSING,
-      'payment_intent.canceled': PaymentStatus.FAILED,
-    };
+    const target = WEBHOOK_STATUS[event.type];
 
-    const status = statusByType[event.type];
-    if (status) {
-      const result = await this.prisma.payment.updateMany({
-        where: { stripePaymentIntentId: intentId },
-        data: { status },
-      });
-      this.logger.log(
-        `Webhook ${event.type} → ${result.count} payment(s) set to ${status}`,
-      );
+    // The status write only touches rows currently in an allowed PRIOR status, so a
+    // stale, duplicate, or out-of-order event matches 0 rows and is a safe no-op.
+    const applyStatus = (
+      client: Pick<PrismaService, 'payment'>,
+    ): Promise<{ count: number }> =>
+      target
+        ? client.payment.updateMany({
+            where: {
+              stripePaymentIntentId: intentId,
+              status: { in: ADVANCE_FROM[target] },
+            },
+            data: { status: target },
+          })
+        : Promise.resolve({ count: 0 });
+
+    // With an event id (always present on real Stripe events) record it for
+    // idempotency in the SAME transaction as the status write — so the event is
+    // marked processed only once the update commits, and a crash between the two
+    // re-processes on Stripe's redelivery instead of silently dropping the update.
+    if (eventId) {
+      try {
+        const { count } = await this.prisma.$transaction(async (tx) => {
+          await tx.webhookEvent.create({
+            data: { id: eventId, type: event.type },
+          });
+          return applyStatus(tx);
+        });
+        this.logWebhook(event.type, target, count);
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === 'P2002'
+        ) {
+          // The event id already exists → a redelivery. Acknowledge and skip.
+          this.logger.log(
+            `Webhook ${event.type} (${eventId}) already processed — skipped`,
+          );
+          return { received: true, duplicate: true };
+        }
+        throw e;
+      }
+      return { received: true };
     }
 
+    // No event id (mock / local): the monotonic guard alone still makes the write safe.
+    const { count } = await applyStatus(this.prisma);
+    this.logWebhook(event.type, target, count);
     return { received: true };
+  }
+
+  private logWebhook(
+    type: string,
+    target: PaymentStatus | undefined,
+    count: number,
+  ) {
+    if (!target) return;
+    this.logger.log(
+      `Webhook ${type} → ${count} payment(s) ${
+        count ? `set to ${target}` : 'unchanged (stale/duplicate)'
+      }`,
+    );
   }
 
   private mapIntentStatus(stripeStatus: string): PaymentStatus {

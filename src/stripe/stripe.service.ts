@@ -11,6 +11,10 @@ export interface PaymentIntentResult {
 }
 
 export interface StripeEvent {
+  // The Stripe event id (evt_…). Present on real events; used for webhook
+  // idempotency (a redelivered event has the same id). Optional so the mock /
+  // local path, which may not carry one, still type-checks.
+  id?: string;
   type: string;
   data: { object: Record<string, any> };
 }
