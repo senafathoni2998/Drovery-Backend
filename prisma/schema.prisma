@@ -525,6 +525,19 @@ model Payment {
   @@map("payments")
 }
 
+// Stripe webhook idempotency ledger. Stripe delivers webhooks AT-LEAST-ONCE and can
+// reorder them, so the event id (evt_…) is the PK: a redelivered event collides
+// (P2002) and is skipped, making the handler effectively-once. Recorded in the SAME
+// transaction as the payment-status write so a crash between the two re-processes on
+// Stripe's retry. Non-partitioned (low volume — one row per distinct event).
+model WebhookEvent {
+  id        String   @id // the Stripe event id (evt_…)
+  type      String
+  createdAt DateTime @default(now())
+
+  @@map("webhook_events")
+}
+
 // ==================== PROMO CODES ====================
 // NOTE: no admin CRUD surface yet — codes are reference data seeded via the
 // migration (and prisma/seed.ts). Admin management is deferred.
