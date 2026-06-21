@@ -139,8 +139,9 @@ scatter-gather.
 > checkpoint scan mirroring the watchdog (`upsertJobScheduler`, kill-switch teardown, Redis-coordinated
 > one-tick-across-replicas) + a boot-time `assertCheckpointSafe()`. The dirty-set drain keeps **today's
 > last-write-wins** position semantics (no regression); the monotonic-`seq` guard (§3.1) is a future
-> hardening. Note: this freshens `TrackingService.getTracking`; overlaying the hot position onto the
-> mobile poll path (`DeliveriesService.findOne`'s tracking relation) is a follow-up.
+> hardening. The hot position is overlaid onto **both** read paths — `TrackingService.getTracking` and
+> the mobile poll `DeliveriesService.findOne` (`@Optional` `TrackingHotStore`, no-op when off) — so a
+> poll (the WS-down fallback) reflects the live drone within ms rather than at the checkpoint cadence.
 
 The single chokepoint is `TrackingService.updateTracking()` (a `deliveryTracking.upsert` on the
 primary) — **both** the sim processor and live telemetry funnel through it, and
