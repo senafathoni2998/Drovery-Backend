@@ -1,0 +1,57 @@
+# KEDA scales the realtime tier on the CONCURRENT WS SOCKET count (drovery_ws_connections),
+# read from Prometheus — NOT CPU. Long-lived tracking sockets are mostly idle (≈1 frame/5s),
+# so a CPU HPA is blind to the real FD/event-loop/memory ceiling, and a create-RPS spike must
+# not churn socket-holding nodes (every scale-down mass-disconnects clients). Mirrors
+# worker-scaledobject. KEDA owns the HPA "keda-hpa-drovery-realtime" — do NOT also define one.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: drovery-realtime
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: drovery-realtime
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1 # keep one warm node so reconnects always land somewhere
+  maxReplicaCount: 50
+  fallback:
+    failureThreshold: 3
+    replicas: 3
+  advanced:
+    # FALSE on a socket tier: if the ScaledObject is deleted/reconciled, KEDA must NOT
+    # snap the Deployment back to its baseline replicas (that would mass-disconnect every
+    # client at once). Leave the current scaled-out count in place.
+    restoreToOriginalReplicaCount: false
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          selectPolicy: Max
+          policies:
+            - { type: Pods, value: 4, periodSeconds: 30 }
+        scaleDown:
+          # Conservative: each scale-down mass-disconnects sockets (clients reconnect with
+          # jittered backoff), so drain ONE pod at a time over a long window.
+          stabilizationWindowSeconds: 600
+          selectPolicy: Max
+          policies:
+            - { type: Pods, value: 1, periodSeconds: 120 }
+  triggers:
+    - type: prometheus
+      name: ws_sockets
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        threshold: '20000' # sockets PER replica; desired = ceil(total / threshold). Pin
+        # this to a measured sockets-per-node knee (a ws soak test), not a guess.
+        activationThreshold: '1'
+        ignoreNullValues: 'true'
+        # Count BOTH socket types the realtime tier holds: tracking (drovery_ws_connections)
+        # AND support chat (drovery_ws_support_connections) — both gateways run here and share
+        # the FD/heap/event-loop budget, so scaling on tracking alone would be blind to a
+        # support surge. Once the realtime tier owns the WS upgrade (Ingress), api/worker pods
+        # report 0 sockets, so the bare sums ARE the realtime totals. (Both gauges are
+        # unlabeled; if api ever held sockets, relabel the pod `role` and filter for precision.)
+        query: |-
+          sum(drovery_ws_connections) + sum(drovery_ws_support_connections)

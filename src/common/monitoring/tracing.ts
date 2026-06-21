@@ -79,7 +79,11 @@ function start(): void {
     otelApi = require('@opentelemetry/api');
 
     const serviceName =
-      process.env.PROCESS_ROLE === 'worker' ? 'drovery-worker' : 'drovery-api';
+      process.env.PROCESS_ROLE === 'worker'
+        ? 'drovery-worker'
+        : process.env.PROCESS_ROLE === 'realtime'
+          ? 'drovery-realtime'
+          : 'drovery-api';
     const ratio = clampRatio(process.env.OTEL_TRACES_SAMPLER_ARG);
 
     // Console exporter for local/hardware-free verification; OTLP-HTTP to a real

@@ -8,6 +8,7 @@ import {
   TRACKING_CHECKPOINT_QUEUE,
   assertCheckpointSafe,
 } from './tracking-hot-store.constants';
+import { IS_WORKER_TIER } from '../../common/process-role';
 
 // Fail the boot LOUD (on any tier) if the hot-store is enabled with an unsafe
 // checkpoint cadence — checkpoint lag past the watchdog silence window would
@@ -19,7 +20,7 @@ assertCheckpointSafe();
 // tear-down-when-disabled paths; the processor so any job a prior enabled deploy left
 // in Redis still drains. TrackingHotStore (the producer/reader) is provided by
 // DeliveriesModule and runs everywhere.
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 @Module({
   imports: [

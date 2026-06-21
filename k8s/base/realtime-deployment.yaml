@@ -1,0 +1,75 @@
+# The REALTIME tier (SCALING-1M.md §4): boots the same image with PROCESS_ROLE=realtime
+# so it runs ONLY the WS gateways + Redis subscribers — no worker processors, no ingest.
+# It holds the long-lived tracking/support sockets, which a CPU HPA can't size (idle
+# sockets burn little CPU), so KEDA scales it on the live socket count instead (see
+# realtime-scaledobject.yaml). The Ingress routes the WS upgrade here; /api/* stays on api.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drovery-realtime
+  labels: { app: drovery, role: realtime }
+spec:
+  replicas: 3 # baseline FLOOR (matches the KEDA fallback) — even a hard SO restore/delete
+  # never drops the socket fleet to a single pod. KEDA owns the count above this once running.
+  selector:
+    matchLabels: { app: drovery, role: realtime }
+  template:
+    metadata:
+      labels: { app: drovery, role: realtime }
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: /api/v1/metrics
+        prometheus.io/port: '3000'
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001 # matches the Dockerfile's "nodejs" user
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      # Long drain: thousands of long-lived WS clients must be let go gracefully (they
+      # reconnect with jittered backoff). Must exceed the preStop sleep + app drain.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: realtime
+          image: drovery-backend:latest # overlay sets the real tag
+          command: ['node', 'dist/src/main']
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            # WS gateways ONLY — no worker processors, no MQTT/telemetry ingest.
+            - { name: PROCESS_ROLE, value: realtime }
+            # GC before the kernel OOM-kills the pod: V8's default old-space ceiling is
+            # sized to host RAM, not the cgroup limit, so cap it with headroom under 1Gi.
+            # (Pin the real sockets-per-pod via a ws soak test before trusting the KEDA
+            # threshold against this limit.)
+            - { name: NODE_OPTIONS, value: '--max-old-space-size=768' }
+          envFrom:
+            - configMapRef: { name: drovery-config }
+            - secretRef: { name: drovery-secrets }
+          startupProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet: { path: /api/v1/health/ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Longer preStop than api: give in-flight sockets a moment after deregistration.
+          lifecycle:
+            preStop: { exec: { command: ['sh', '-c', 'sleep 10'] } }
+          resources:
+            # Memory-weighted, NOT cpu: each socket costs heap + an FD, but idle sockets
+            # use little CPU. cpu request stays small (KEDA, not CPU, drives scaling).
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: 500m, memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ['ALL'] }

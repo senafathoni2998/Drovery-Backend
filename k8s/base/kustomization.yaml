@@ -11,6 +11,11 @@ resources:
   - api-hpa.yaml
   - worker-deployment.yaml
   - worker-scaledobject.yaml
+  - realtime-deployment.yaml
+  - realtime-service.yaml
+  - realtime-scaledobject.yaml
+  - realtime-ingress.yaml
+  - realtime-pdb.yaml
   - migrate-job.yaml
 
 # Non-secret config. The name gets a content hash so a change rolls the pods.

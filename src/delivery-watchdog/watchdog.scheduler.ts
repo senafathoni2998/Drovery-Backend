@@ -9,11 +9,12 @@ import {
   WATCHDOG_QUEUE,
   WATCHDOG_SCAN_INTERVAL_MS,
 } from './watchdog.constants';
+import { IS_WORKER_TIER } from '../common/process-role';
 
 const SCHEDULER_ID = 'watchdog-reap';
 
-// Only worker-tier nodes run the reaper (api-only nodes must not register it).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+// Only worker-tier nodes run the reaper (api/realtime nodes must not register it).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 /**
  * Registers the repeatable reap scan. Uses BullMQ's job scheduler (idempotent by

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Logger,
+  OnApplicationShutdown,
   OnModuleInit,
   Optional,
 } from '@nestjs/common';
@@ -49,7 +50,11 @@ interface AuthedSocket extends WebSocket {
  */
 @WebSocketGateway({ path: '/ws/support' })
 export class SupportChatGateway
-  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
+  implements
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleInit,
+    OnApplicationShutdown
 {
   @WebSocketServer()
   server: Server;
@@ -106,6 +111,21 @@ export class SupportChatGateway
       }
     }
     if (client.userId) this.metrics?.wsSupportConnections.dec();
+  }
+
+  /**
+   * Graceful drain on SIGTERM — mirrors TrackingGateway. Send each socket a 1001
+   * "going away" close so clients reconnect cleanly instead of seeing a 1006 abnormal
+   * closure + a thundering-herd reconnect. Best-effort.
+   */
+  onApplicationShutdown() {
+    try {
+      for (const client of this.server?.clients ?? []) {
+        client.close(1001, 'server draining');
+      }
+    } catch (e) {
+      this.logger.warn(`support socket drain failed: ${(e as Error).message}`);
+    }
   }
 
   @SubscribeMessage('subscribe')

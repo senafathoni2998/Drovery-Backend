@@ -9,11 +9,12 @@ import {
   PARTITION_QUEUE,
   PARTITION_SCAN_INTERVAL_MS,
 } from './partition.constants';
+import { IS_WORKER_TIER } from '../common/process-role';
 
 const SCHEDULER_ID = 'partition-maintain';
 
-// Only worker-tier nodes run the maintenance sweep (api-only nodes must not register it).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+// Only worker-tier nodes run the maintenance sweep (api/realtime nodes must not).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 /**
  * Registers the repeatable partition-maintenance scan via BullMQ's job scheduler

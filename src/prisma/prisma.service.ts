@@ -34,13 +34,19 @@ export class PrismaService
     const pool = new Pool({ connectionString: process.env.DATABASE_URL, max });
     super({ adapter: new PrismaPg(pool as any), omit: READER_OMIT });
 
-    // Only the API tier serves the lag-tolerant reads — the worker routes none
-    // (it drives CAS writes + direct primary reads), so it must not build/connect a
-    // reader it would never use (the shared configMap/secret puts the replica URL on
-    // both pods). Mirrors the IS_API convention in deliveries.module.ts.
+    // Only the tiers that issue lag-tolerant reads build the reader: api + dev. The
+    // worker (CAS writes + primary reads) and the realtime tier (WS only — its ownership
+    // re-checks read the PRIMARY, and /api/* reads route to the api tier) route none, so
+    // they must not open a reader pool they'd never use (the shared configMap/secret puts
+    // the replica URL on every pod). Mirrors the IS_INGEST_TIER split in deliveries.module.
     const replicaUrl = process.env.DATABASE_REPLICA_URL;
-    const isApiTier = process.env.PROCESS_ROLE !== 'worker';
-    if (replicaUrl && isApiTier) {
+    // Read at CONSTRUCTION (so it's testable per-process-role). Same taxonomy as
+    // IS_INGEST_TIER in common/process-role.ts (api + dev), but inline because the
+    // module-level constant is fixed at import and tests vary PROCESS_ROLE at runtime.
+    const isReaderTier =
+      process.env.PROCESS_ROLE !== 'worker' &&
+      process.env.PROCESS_ROLE !== 'realtime';
+    if (replicaUrl && isReaderTier) {
       // Separate pool/budget for the replica (default to the primary's max; tune
       // DATABASE_REPLICA_POOL_MAX down for the API, or front the replica with its
       // own PgBouncer, so the replica's max_connections isn't exhausted at scale).

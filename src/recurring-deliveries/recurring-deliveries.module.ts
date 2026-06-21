@@ -8,10 +8,10 @@ import { RecurringDeliveriesService } from './recurring-deliveries.service';
 import { RecurringMaterializer } from './recurring.materializer';
 import { RecurringProcessor } from './recurring.processor';
 import { RecurringScheduler } from './recurring.scheduler';
+import { IS_WORKER_TIER } from '../common/process-role';
 
-// The materialization processor + scan scheduler run wherever the queue is
-// drained (NOT api-only nodes).
-const RUN_PROCESSOR = process.env.PROCESS_ROLE !== 'api';
+// The materialization processor + scan scheduler run on the worker tier (NOT api/realtime).
+const RUN_PROCESSOR = IS_WORKER_TIER;
 
 @Module({
   imports: [
