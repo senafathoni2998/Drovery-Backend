@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
 import { buildRedisOptions } from '../../config/redis';
+import { PositionCoalescer } from './position-coalescer';
 
 /** Shape published to Redis on every position/status change (matches the
  * fields the worker computed before — no contract change for clients). */
@@ -35,6 +36,11 @@ export const trackingChannel = (deliveryId: string) =>
 export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TrackingPublisher.name);
   private client!: Redis;
+  // Caps the per-delivery publish rate when POSITION_PUSH_HZ>0; inert (pass-through)
+  // by default. Position frames flush on its timer; status transitions go immediately.
+  private readonly coalescer = new PositionCoalescer(
+    (p) => void this.doPublish(p),
+  );
 
   constructor(private readonly config: ConfigService) {}
 
@@ -50,6 +56,17 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
   }
 
   async publishUpdate(payload: TrackingUpdatePayload): Promise<void> {
+    // Coalescing ON → route through the rate-limiting buffer (fire-and-forget, as the
+    // timer flush can't be awaited). OFF (default) → publish synchronously, awaited,
+    // byte-identical to before.
+    if (this.coalescer.active) {
+      this.coalescer.submit(payload);
+      return;
+    }
+    await this.doPublish(payload);
+  }
+
+  private async doPublish(payload: TrackingUpdatePayload): Promise<void> {
     try {
       await this.client.publish(
         trackingChannel(payload.deliveryId),
@@ -61,6 +78,7 @@ export class TrackingPublisher implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.coalescer.stop();
     await this.client?.quit().catch(() => undefined);
   }
 }
