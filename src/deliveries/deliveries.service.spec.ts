@@ -19,6 +19,7 @@ import { ServiceabilityService } from '../serviceability/serviceability.service'
 import { ProofService } from './proof/proof.service';
 import { SimulationService } from './simulation/simulation.service';
 import { TrackingPublisher } from './tracking/tracking.publisher';
+import { TrackingHotStore } from './tracking/tracking-hot-store';
 import { PromoService } from '../promo/promo.service';
 import { WalletService } from '../wallet/wallet.service';
 import { createMockPrismaService } from '../test/prisma-mock';
@@ -59,6 +60,7 @@ describe('DeliveriesService', () => {
   };
   let notificationsService: { create: jest.Mock };
   let trackingPublisher: { publishUpdate: jest.Mock };
+  let trackingHotStore: { enabled: boolean; readPosition: jest.Mock };
 
   const userId = 'user-1';
 
@@ -134,6 +136,7 @@ describe('DeliveriesService', () => {
     trackingPublisher = {
       publishUpdate: jest.fn().mockResolvedValue(undefined),
     };
+    trackingHotStore = { enabled: false, readPosition: jest.fn() };
     // Default: no pending referral (keeps the no-promo path a plain create).
     prisma.referral.findFirst.mockResolvedValue(null);
 
@@ -151,6 +154,7 @@ describe('DeliveriesService', () => {
         { provide: WalletService, useValue: walletService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: TrackingPublisher, useValue: trackingPublisher },
+        { provide: TrackingHotStore, useValue: trackingHotStore },
         { provide: I18nService, useValue: new I18nService() },
       ],
     }).compile();
@@ -676,6 +680,46 @@ describe('DeliveriesService', () => {
           rating: true,
         },
       });
+    });
+
+    it('overlays the live hot-store position onto the poll when the hot-store is on', async () => {
+      trackingHotStore.enabled = true;
+      trackingHotStore.readPosition.mockResolvedValue({
+        droneLat: -6.9,
+        droneLng: 107.6,
+        droneStatus: 'En route',
+      });
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        tracking: {
+          deliveryId: 'delivery-1',
+          droneLat: 0,
+          droneLng: 0,
+          eta: null,
+        },
+        workflowSteps: [],
+        payment: null,
+      });
+
+      const result = await service.findOne(userId, 'delivery-1');
+
+      // The checkpointed (stale) 0,0 is overlaid with the live Redis position.
+      expect(result.tracking!.droneLat).toBe(-6.9);
+      expect(result.tracking!.droneLng).toBe(107.6);
+      expect(result.tracking!.droneStatus).toBe('En route');
+      expect(trackingHotStore.readPosition).toHaveBeenCalledWith('delivery-1');
+    });
+
+    it('does NOT touch the hot-store when it is disabled (default)', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        tracking: { deliveryId: 'delivery-1', droneLat: 1, droneLng: 2 },
+      });
+
+      const result = await service.findOne(userId, 'delivery-1');
+
+      expect(result.tracking!.droneLat).toBe(1); // unchanged
+      expect(trackingHotStore.readPosition).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException if delivery not found', async () => {
