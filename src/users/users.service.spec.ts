@@ -3,11 +3,13 @@ import { NotFoundException } from '@nestjs/common';
 
 import { UsersService } from './users.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../cache/cache.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 
 describe('UsersService', () => {
   let service: UsersService;
   let prisma: ReturnType<typeof createMockPrismaService>;
+  let cache: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
 
   const mockUser = {
     id: 'user-1',
@@ -23,9 +25,14 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
+    cache = { get: jest.fn(), set: jest.fn(), del: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [UsersService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        UsersService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: CacheService, useValue: cache },
+      ],
     }).compile();
 
     service = module.get<UsersService>(UsersService);
@@ -44,7 +51,22 @@ describe('UsersService', () => {
       expect(result).toEqual(mockUser);
       expect(prisma.user.findUnique).toHaveBeenCalledWith({
         where: { id: 'user-1' },
+        omit: { passwordHash: true },
       });
+      expect(cache.set).toHaveBeenCalledWith(
+        'user:profile:user-1',
+        mockUser,
+        60,
+      );
+    });
+
+    it('returns the cached profile without hitting the DB on a cache hit', async () => {
+      cache.get.mockResolvedValue({ id: 'user-1', name: 'Cached' });
+
+      const result = await service.getProfile('user-1');
+
+      expect(result).toEqual({ id: 'user-1', name: 'Cached' });
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException if user not found', async () => {
@@ -70,6 +92,8 @@ describe('UsersService', () => {
         where: { id: 'user-1' },
         data: updateDto,
       });
+      // The cached profile is invalidated so the next GET /users/me is fresh.
+      expect(cache.del).toHaveBeenCalledWith('user:profile:user-1');
     });
 
     it('should throw NotFoundException if user does not exist', async () => {
