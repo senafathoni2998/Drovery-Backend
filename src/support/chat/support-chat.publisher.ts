@@ -8,6 +8,12 @@ import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
 import { buildRedisOptions } from '../../config/redis';
+import {
+  PUBSUB_MODE_STANDARD,
+  type PubSubMode,
+  pubSubPublish,
+  resolvePubSubMode,
+} from '../../common/pubsub/pubsub-transport';
 
 export type SupportChatSenderRole = 'USER' | 'AGENT' | 'SYSTEM';
 
@@ -63,10 +69,14 @@ export const supportChatChannel = (ticketId: string) =>
 export class SupportChatPublisher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SupportChatPublisher.name);
   private client!: Redis;
+  // Defaults to 'standard' so unit tests that inject a mock client (skipping
+  // onModuleInit) stay byte-identical; onModuleInit reads the real mode from config.
+  private mode: PubSubMode = PUBSUB_MODE_STANDARD;
 
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
+    this.mode = resolvePubSubMode(this.config);
     this.client = new Redis({
       ...buildRedisOptions(this.config, 'pubsub'),
       maxRetriesPerRequest: null,
@@ -75,13 +85,16 @@ export class SupportChatPublisher implements OnModuleInit, OnModuleDestroy {
     this.client.on('error', (e) =>
       this.logger.warn(`support chat publisher redis error: ${e.message}`),
     );
+    this.logger.log(`SupportChatPublisher ready (pubsub mode: ${this.mode})`);
   }
 
   async publishMessage(payload: SupportChatMessagePayload): Promise<void> {
     try {
-      await this.client.publish(
+      await pubSubPublish(
+        this.client,
         supportChatChannel(payload.ticketId),
         JSON.stringify({ event: 'message:new', data: payload }),
+        this.mode,
       );
     } catch (e) {
       this.logger.warn(`support chat publish failed: ${(e as Error).message}`);
