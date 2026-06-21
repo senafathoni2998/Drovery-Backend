@@ -11,7 +11,10 @@ describe('TrackingGateway', () => {
     subscribeToDelivery: jest.Mock;
     unsubscribeFromDelivery: jest.Mock;
   };
-  let metrics: { wsConnections: { inc: jest.Mock; dec: jest.Mock } };
+  let metrics: {
+    wsConnections: { inc: jest.Mock; dec: jest.Mock };
+    wsDroppedFrames: { inc: jest.Mock };
+  };
 
   beforeEach(() => {
     jwt = { verifyAsync: jest.fn() };
@@ -21,7 +24,10 @@ describe('TrackingGateway', () => {
       subscribeToDelivery: jest.fn(),
       unsubscribeFromDelivery: jest.fn(),
     };
-    metrics = { wsConnections: { inc: jest.fn(), dec: jest.fn() } };
+    metrics = {
+      wsConnections: { inc: jest.fn(), dec: jest.fn() },
+      wsDroppedFrames: { inc: jest.fn() },
+    };
     gateway = new TrackingGateway(
       jwt as any,
       { get: jest.fn().mockReturnValue('secret') } as any,
@@ -123,6 +129,35 @@ describe('TrackingGateway', () => {
       expect(() =>
         gateway.deliverToLocalClients('nobody', { deliveryId: 'nobody' }),
       ).not.toThrow();
+    });
+
+    it('drops a POSITION frame to a backed-up (slow) socket', async () => {
+      deliveries.findOne.mockResolvedValue({ id: 'd-1' });
+      const slow = socket();
+      slow.userId = 'u-1';
+      slow.bufferedAmount = 2 * 1024 * 1024; // over the 1 MiB watermark
+      await gateway.handleSubscribe(slow, { deliveryId: 'd-1' });
+
+      gateway.deliverToLocalClients('d-1', { deliveryId: 'd-1', droneLat: 9 });
+
+      expect(slow.send).not.toHaveBeenCalled();
+      expect(metrics.wsDroppedFrames.inc).toHaveBeenCalled();
+    });
+
+    it('always sends a STATUS transition, even to a backed-up socket', async () => {
+      deliveries.findOne.mockResolvedValue({ id: 'd-1' });
+      const slow = socket();
+      slow.userId = 'u-1';
+      slow.bufferedAmount = 2 * 1024 * 1024;
+      await gateway.handleSubscribe(slow, { deliveryId: 'd-1' });
+
+      gateway.deliverToLocalClients('d-1', {
+        deliveryId: 'd-1',
+        status: 'DELIVERED',
+      });
+
+      expect(slow.send).toHaveBeenCalled();
+      expect(metrics.wsDroppedFrames.inc).not.toHaveBeenCalled();
     });
   });
 });
