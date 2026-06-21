@@ -6,6 +6,7 @@ import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StripeService } from '../stripe/stripe.service';
 import { createMockPrismaService } from '../test/prisma-mock';
+import { Prisma } from '@prisma/client';
 
 describe('PaymentsService', () => {
   let service: PaymentsService;
@@ -259,7 +260,7 @@ describe('PaymentsService', () => {
   });
 
   describe('handleWebhookEvent', () => {
-    it('marks the payment COMPLETED on payment_intent.succeeded', async () => {
+    it('marks the payment COMPLETED on payment_intent.succeeded (monotonic where)', async () => {
       prisma.payment.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.handleWebhookEvent({
@@ -267,14 +268,19 @@ describe('PaymentsService', () => {
         data: { object: { id: 'pi_123' } },
       });
 
+      // COMPLETED may advance from PENDING/PROCESSING/FAILED (a success is authoritative),
+      // so the WHERE carries the monotonic guard — it can't regress a REFUNDED payment.
       expect(prisma.payment.updateMany).toHaveBeenCalledWith({
-        where: { stripePaymentIntentId: 'pi_123' },
+        where: {
+          stripePaymentIntentId: 'pi_123',
+          status: { in: ['PENDING', 'PROCESSING', 'FAILED'] },
+        },
         data: { status: 'COMPLETED' },
       });
       expect(result).toEqual({ received: true });
     });
 
-    it('marks the payment FAILED on payment_intent.payment_failed', async () => {
+    it('marks the payment FAILED on payment_intent.payment_failed (never from a terminal state)', async () => {
       prisma.payment.updateMany.mockResolvedValue({ count: 1 });
 
       await service.handleWebhookEvent({
@@ -282,10 +288,35 @@ describe('PaymentsService', () => {
         data: { object: { id: 'pi_123' } },
       });
 
+      // FAILED may advance only from PENDING/PROCESSING — so a redelivered failure can
+      // NEVER overwrite a COMPLETED payment (the erroneous-refund regression).
       expect(prisma.payment.updateMany).toHaveBeenCalledWith({
-        where: { stripePaymentIntentId: 'pi_123' },
+        where: {
+          stripePaymentIntentId: 'pi_123',
+          status: { in: ['PENDING', 'PROCESSING'] },
+        },
         data: { status: 'FAILED' },
       });
+    });
+
+    it('does NOT regress a payment when a stale `processing` arrives out of order', async () => {
+      // PROCESSING may advance only from PENDING; a COMPLETED row isn't in that set →
+      // 0 rows match → no-op (the marker for this is the guarded WHERE + count 0).
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await service.handleWebhookEvent({
+        type: 'payment_intent.processing',
+        data: { object: { id: 'pi_123' } },
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          stripePaymentIntentId: 'pi_123',
+          status: { in: ['PENDING'] },
+        },
+        data: { status: 'PROCESSING' },
+      });
+      expect(result).toEqual({ received: true });
     });
 
     it('ignores unrelated event types', async () => {
@@ -296,6 +327,35 @@ describe('PaymentsService', () => {
 
       expect(prisma.payment.updateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ received: true });
+    });
+
+    it('is idempotent — dedupes a redelivered event by id and skips the second write', async () => {
+      // 1st insert succeeds; the redelivery collides on the event-id PK (P2002).
+      prisma.webhookEvent.create
+        .mockResolvedValueOnce({ id: 'evt_1' })
+        .mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('duplicate event', {
+            code: 'P2002',
+            clientVersion: 'test',
+          }),
+        );
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      const event = {
+        id: 'evt_1',
+        type: 'payment_intent.succeeded',
+        data: { object: { id: 'pi_123' } },
+      };
+      const first = await service.handleWebhookEvent(event);
+      const second = await service.handleWebhookEvent(event);
+
+      expect(first).toEqual({ received: true });
+      expect(second).toEqual({ received: true, duplicate: true });
+      // The event id is recorded, and the status write ran exactly ONCE.
+      expect(prisma.webhookEvent.create).toHaveBeenCalledWith({
+        data: { id: 'evt_1', type: 'payment_intent.succeeded' },
+      });
+      expect(prisma.payment.updateMany).toHaveBeenCalledTimes(1);
     });
   });
 
