@@ -36,6 +36,17 @@ export class CacheService {
     }
   }
 
+  /** Invalidates a cached key (fail-open). */
+  async del(key: string): Promise<void> {
+    try {
+      await this.redis.del(key);
+    } catch (error) {
+      this.logger.warn(
+        `cache del failed [${key}]: ${(error as Error).message}`,
+      );
+    }
+  }
+
   /** Liveness check for the Redis connection (used by readiness probes). */
   async ping(): Promise<boolean> {
     try {
