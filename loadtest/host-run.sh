@@ -46,7 +46,11 @@ for i in $(seq 1 40); do
   sleep 1
 done
 
-env "${FLAGS[@]}" node loadtest/host-driver.mjs
+# SCENARIO=ws drives the realtime fan-out path (WS clients on a sim firehose); default = the
+# HTTP create→list→poll journey.
+DRIVER="loadtest/host-driver.mjs"
+[ "${SCENARIO:-http}" = "ws" ] && DRIVER="loadtest/host-ws-driver.mjs"
+env "${FLAGS[@]}" node "$DRIVER"
 RC=$?
 echo "(api/worker logs: /tmp/hostlt-api.log /tmp/hostlt-worker.log)"
 exit $RC
