@@ -124,6 +124,17 @@ export class DeliveriesService {
 
   async create(userId: string, dto: CreateDeliveryDto) {
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
+    // Pre-generate the delivery's id (the Phase-3 §2 Stage-A1 keystone). Today this is
+    // byte-identical to the DB `@default(uuid())` — the row just gets an explicit id —
+    // but minting it HERE makes every money idempotency key (`debit:<id>`, the promo
+    // redemption's `deliveryId`, `refund:<id>`) knowable BEFORE the row exists, which is
+    // the prerequisite for the debit-first saga (A2) that moves the charge-gating
+    // wallet/promo writes out of this (future cross-shard) transaction. Generated ONCE,
+    // so it stays stable across the trackingId-collision retry loop (only trackingId
+    // regenerates) — a re-run can never mint a second id and double-debit. createdAt
+    // stays DB-authoritative (no app-clock partition-boundary risk); the money keys need
+    // only the id.
+    const deliveryId = uuidv4();
 
     // Resolve pickup/dropoff coordinates so the drone can fly a real route.
     // Uses client-provided coords when present; otherwise geocodes the
@@ -211,6 +222,7 @@ export class DeliveriesService {
     const handoffCode = this.generateHandoffCode();
 
     const deliveryData = {
+      id: deliveryId,
       trackingId,
       userId,
       status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,

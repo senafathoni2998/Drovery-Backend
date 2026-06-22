@@ -188,6 +188,32 @@ describe('DeliveriesService', () => {
       expect((result as any).id).toBe(mockDelivery.id);
     });
 
+    // Phase-3 §2 Stage-A1 keystone: the delivery id is pre-generated ONCE (the money
+    // idempotency keys derive from it) and stays stable across the trackingId retry loop —
+    // a re-run must NOT mint a second id (that would double-debit in the A2 saga). Vary
+    // uuid per call so a per-attempt regeneration would be observable, and snapshot the id
+    // at call time (deliveryData is mutated in place, so capture the value, not the ref).
+    it('mints the delivery id once and reuses it across the trackingId retry loop', async () => {
+      const uuidMod = require('uuid') as { v4: () => string };
+      const spy = jest.spyOn(uuidMod, 'v4');
+      let i = 0;
+      spy.mockImplementation(() => `id-${i++}`);
+      const seenIds: string[] = [];
+      prisma.delivery.create.mockImplementation((args: any) => {
+        seenIds.push(args.data.id as string);
+        return seenIds.length === 1
+          ? Promise.reject(trackingCollision())
+          : Promise.resolve(mockDelivery);
+      });
+
+      await service.create(userId, createDto);
+
+      expect(seenIds).toHaveLength(2);
+      expect(seenIds[0]).toBeTruthy();
+      expect(seenIds[0]).toBe(seenIds[1]); // same id on both attempts — minted once
+      spy.mockRestore();
+    });
+
     it('does NOT retry a non-trackingId unique violation (rethrows)', async () => {
       const other = new Prisma.PrismaClientKnownRequestError('dup', {
         code: 'P2002',
