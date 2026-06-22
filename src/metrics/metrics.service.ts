@@ -83,6 +83,13 @@ export class MetricsService {
   readonly outboxPending: Gauge<string>;
   readonly outboxFailed: Gauge<string>;
   readonly outboxSchedulerRegistered: Gauge<string>;
+  // Orphaned-reservation janitor (worker tier; debit-first saga safety net). A non-zero
+  // reaped-total means a process crash stranded credits that the sweep recovered — alert on
+  // a sustained rate (it points at create() crashing mid-saga). last-scan is the heartbeat
+  // (alert on staleness so a dead sweep can't silently let orphans escape the lookback window).
+  readonly orphanReservationsReaped: Counter<string>;
+  readonly orphanReaperLastScan: Gauge<string>;
+  readonly orphanReaperSchedulerRegistered: Gauge<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -249,6 +256,24 @@ export class MetricsService {
     this.outboxSchedulerRegistered = new Gauge({
       name: 'drovery_outbox_scheduler_registered',
       help: '1 when this replica registered the outbox dispatcher repeatable scheduler',
+      registers: [this.registry],
+    });
+
+    this.orphanReservationsReaped = new Counter({
+      name: 'drovery_orphan_reservations_reaped_total',
+      help: 'Orphaned debit-first reservations (stranded credits/promo, no delivery) reversed by the janitor',
+      registers: [this.registry],
+    });
+
+    this.orphanReaperLastScan = new Gauge({
+      name: 'drovery_orphan_reaper_last_scan_timestamp_seconds',
+      help: 'Unix time the orphan-reservation reaper last COMPLETED a sweep (heartbeat)',
+      registers: [this.registry],
+    });
+
+    this.orphanReaperSchedulerRegistered = new Gauge({
+      name: 'drovery_orphan_reaper_scheduler_registered',
+      help: '1 when this replica registered the orphan-reservation reaper scheduler',
       registers: [this.registry],
     });
 
