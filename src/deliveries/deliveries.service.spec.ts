@@ -565,6 +565,125 @@ describe('DeliveriesService', () => {
     });
   });
 
+  // Phase-3 §2 Stage-A2: the debit-first saga (DELIVERY_DEBIT_FIRST=ON). The charge-gating
+  // promo-redeem + wallet-debit move into their OWN single-shard txns BEFORE the delivery
+  // tx, keyed to the pre-generated id; orphaned reservations are reversed by the existing
+  // idempotent compensations. The flag is an import-time const, so drive it via the gate.
+  describe('create — debit-first saga (reservations enabled)', () => {
+    // The uuid mock is fixed, so the pre-generated deliveryId is deterministic.
+    const PREGEN_ID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
+    const fakeCode = { id: 'promo-1', code: 'WELCOME10' };
+
+    beforeEach(() => {
+      jest.spyOn(service as any, 'debitFirstEnabled').mockReturnValue(true);
+    });
+
+    it('reserves promo + debit (own txns, keyed to the pre-generated id) and NOT inside the delivery tx', async () => {
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 1.8,
+        finalTotal: 16.2,
+      });
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 5 });
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.create(userId, {
+        ...createDto,
+        promoCode: 'WELCOME10',
+        useCredits: true,
+      });
+
+      // Reservations are keyed to the PRE-GENERATED id (not the returned row id) — proof
+      // they ran in the pre-delivery reserve steps, not the legacy in-tx path.
+      expect(promoService.redeemWithinTx).toHaveBeenCalledTimes(1);
+      expect(promoService.redeemWithinTx).toHaveBeenCalledWith(
+        expect.anything(),
+        fakeCode,
+        userId,
+        PREGEN_ID,
+        18,
+        { discountAmount: 1.8, finalTotal: 16.2 },
+      );
+      expect(walletService.debitWithinTx).toHaveBeenCalledTimes(1);
+      expect(walletService.debitWithinTx).toHaveBeenCalledWith(
+        expect.anything(),
+        userId,
+        5, // min(balance 5, afterPromo 16.2)
+        { deliveryId: PREGEN_ID, idempotencyKey: `debit:${PREGEN_ID}` },
+      );
+      // The reserves committed before the delivery was created.
+      expect(
+        promoService.redeemWithinTx.mock.invocationCallOrder[0],
+      ).toBeLessThan(prisma.delivery.create.mock.invocationCallOrder[0]);
+      // No compensation on the happy path.
+      expect(promoService.releaseForDelivery).not.toHaveBeenCalled();
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+    });
+
+    it('compensates BOTH reservations and aborts when the debit fails (no delivery, no charge)', async () => {
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 0,
+        finalTotal: 18,
+      });
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
+      walletService.debitWithinTx.mockRejectedValue(
+        new Error('WALLET_INSUFFICIENT_CREDITS'),
+      );
+
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          promoCode: 'WELCOME10',
+          useCredits: true,
+        }),
+      ).rejects.toThrow('WALLET_INSUFFICIENT_CREDITS');
+
+      // Both compensations run unconditionally: release the promo reserved first, AND refund
+      // — refund is a no-op when the debit didn't commit (clean insufficient-credits), but is
+      // the ONLY thing that reverses a debit whose $transaction committed yet rejected on the
+      // way out (a post-commit driver error landing in this in-process catch). The delivery is
+      // never created and the card is never charged.
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+      expect(paymentsService.createDeliveryPayment).not.toHaveBeenCalled();
+    });
+
+    it('compensates BOTH reservations when the delivery insert fails (non-collision error)', async () => {
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
+      prisma.delivery.create.mockRejectedValue(new Error('db exploded'));
+
+      await expect(
+        service.create(userId, { ...createDto, useCredits: true }),
+      ).rejects.toThrow('db exploded');
+
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+    });
+
+    it('compensates and does NOT re-debit when the trackingId retries are exhausted', async () => {
+      const collision = () =>
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'x',
+          meta: { target: ['trackingId'] },
+        });
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
+      prisma.delivery.create.mockRejectedValue(collision());
+
+      await expect(
+        service.create(userId, { ...createDto, useCredits: true }),
+      ).rejects.toThrow(ConflictException);
+
+      // Debit ran exactly ONCE (in the reserve step) — the in-tx path is skipped under the
+      // flag, so the retry loop never re-attempts it against the already-committed key.
+      expect(walletService.debitWithinTx).toHaveBeenCalledTimes(1);
+      expect(prisma.delivery.create).toHaveBeenCalledTimes(5); // MAX_TRACKING_ID_TRIES
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+    });
+  });
+
   describe('reorder', () => {
     it('clones a past delivery into a new one (via create) with an immediate pickup', async () => {
       // findOne (owner-scoped) returns the source; create() then runs fresh.

@@ -79,6 +79,15 @@ const ACTIVE_STATUSES: DeliveryStatus[] = [
 const MAX_HANDOFF_ATTEMPTS = 5;
 const MAX_TRACKING_ID_TRIES = 5;
 
+// Phase-3 §2 Stage-A2: the debit-first saga. When ON, create() runs the AUTHORITATIVE
+// promo-redeem + wallet-debit in their OWN single-shard (user-shard) transactions BEFORE
+// the delivery's (delivery-shard) tx — so no single $transaction co-commits user-rooted
+// balance state with the delivery row, which is what a ShardRouter needs to flip
+// shardCount>1. Orphaned reservations (a failure between reserve and delivery-create) are
+// reversed by the EXISTING idempotent compensations (releaseForDelivery/refundForDelivery).
+// Default OFF = today's single co-committing $transaction, byte-identical.
+const DELIVERY_DEBIT_FIRST = process.env.DELIVERY_DEBIT_FIRST === 'true';
+
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
   DeliveryStatus.SCHEDULED,
   DeliveryStatus.PENDING,
@@ -120,6 +129,33 @@ export class DeliveriesService {
    * create() is unit-testable without re-importing the import-time env const. */
   private referralOutboxEnabled(): boolean {
     return OUTBOX_REFERRAL_ENABLED && !!this.outbox;
+  }
+
+  /** Run the charge-gating promo-redeem + wallet-debit as authoritative pre-delivery
+   * reservations (their own single-shard txns) instead of inside the delivery tx.
+   * Extracted so the reorder is unit-testable without re-importing the import-time const. */
+  private debitFirstEnabled(): boolean {
+    return DELIVERY_DEBIT_FIRST;
+  }
+
+  /** Reverse any orphaned charge-gating reservations (debit-first saga). Both are idempotent
+   * and keyed by deliveryId, and each no-ops when its row is absent, so calling both
+   * unconditionally is safe regardless of which reservations actually ran. */
+  private async compensateReservations(deliveryId: string): Promise<void> {
+    await this.promoService
+      .releaseForDelivery(deliveryId)
+      .catch((e) =>
+        this.logger.warn(
+          `promo release (compensation) failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+    await this.walletService
+      .refundForDelivery(deliveryId)
+      .catch((e) =>
+        this.logger.warn(
+          `credit refund (compensation) failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
   }
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -250,6 +286,49 @@ export class DeliveriesService {
       handoffCodeHash: this.hashHandoffCode(handoffCode),
     };
 
+    const debitFirst = this.debitFirstEnabled();
+
+    // DEBIT-FIRST SAGA (§2 A2): run the AUTHORITATIVE promo-redeem + wallet-debit in their
+    // OWN single-shard (user-shard) transactions BEFORE the delivery tx, keyed to the
+    // pre-generated deliveryId. The card charge (finalTotal) is now backed by committed
+    // reservations: a failed debit aborts create() before any delivery/charge exists, so
+    // the platform can never under-charge. Promo first (credits are sized against
+    // afterPromo), so a failed debit compensates exactly the one prior reservation.
+    if (debitFirst) {
+      if (promoCode) {
+        await this.prisma.$transaction((tx) =>
+          this.promoService.redeemWithinTx(
+            tx,
+            promoCode,
+            userId,
+            deliveryId,
+            originalTotal,
+            discount,
+          ),
+        );
+      }
+      if (creditsToApply > 0) {
+        try {
+          await this.prisma.$transaction((tx) =>
+            this.walletService.debitWithinTx(tx, userId, creditsToApply, {
+              deliveryId,
+              idempotencyKey: `debit:${deliveryId}`,
+            }),
+          );
+        } catch (error) {
+          // Reverse BOTH reservations, then surface the error (no delivery, no card charge).
+          // The clean insufficient-credits case (the CAS throws BEFORE any write) only needs
+          // the promo released — but a debit $transaction can also reject AFTER it committed
+          // (a post-commit driver/connection error), and that rejection lands HERE in-process
+          // with the credits already gone. So compensate unconditionally: refundForDelivery
+          // is idempotent and a no-op when no DEBIT row exists, so it costs nothing on the
+          // clean path and is the only thing that prevents a stranded debit otherwise.
+          await this.compensateReservations(deliveryId);
+          throw error;
+        }
+      }
+    }
+
     // The delivery row + the trackingId-registry row (+ any promo/credit/referral
     // balance mutations) commit in ONE transaction. The registry insert is what
     // enforces global trackingId uniqueness now that `deliveries` is partitioned
@@ -275,7 +354,11 @@ export class DeliveriesService {
               deliveryCreatedAt: created.createdAt,
             },
           });
-          if (promoCode) {
+          // When debit-first is ON these ran as authoritative reservations above (their own
+          // user-shard txns), so they must NOT run again here — a trackingId collision rolls
+          // this tx back and re-runs the body, which would otherwise re-attempt the debit
+          // against an already-committed key (P2002, mis-read as a non-collision failure).
+          if (!debitFirst && promoCode) {
             await this.promoService.redeemWithinTx(
               tx,
               promoCode,
@@ -285,7 +368,7 @@ export class DeliveriesService {
               discount,
             );
           }
-          if (creditsToApply > 0) {
+          if (!debitFirst && creditsToApply > 0) {
             await this.walletService.debitWithinTx(tx, userId, creditsToApply, {
               deliveryId: created.id,
               idempotencyKey: `debit:${created.id}`,
@@ -323,12 +406,19 @@ export class DeliveriesService {
       } catch (error) {
         // Only a trackingId collision is retryable; anything else (incl. the in-tx
         // debit idempotencyKey P2002) propagates unchanged.
-        if (!this.isTrackingIdCollision(error)) throw error;
+        if (!this.isTrackingIdCollision(error)) {
+          // Debit-first: the reservations committed in their own txns but the delivery
+          // never will — reverse them (idempotent) so the credits/promo aren't stranded.
+          if (debitFirst) await this.compensateReservations(deliveryId);
+          throw error;
+        }
         deliveryData.trackingId = uuidv4().slice(0, 8).toUpperCase();
         // Last attempt that still collides falls through to the throw below.
       }
     }
     if (!delivery) {
+      // Retries exhausted on collisions: same orphaned-reservation cleanup as above.
+      if (debitFirst) await this.compensateReservations(deliveryId);
       throw new AppConflictException('error.delivery.tracking_id_alloc_failed');
     }
 
