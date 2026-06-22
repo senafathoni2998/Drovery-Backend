@@ -29,6 +29,7 @@ import { DeliveriesModule } from './deliveries/deliveries.module';
 import { RecurringDeliveriesModule } from './recurring-deliveries/recurring-deliveries.module';
 import { DeliveryWatchdogModule } from './delivery-watchdog/delivery-watchdog.module';
 import { TrackingCheckpointModule } from './deliveries/tracking/tracking-checkpoint.module';
+import { OrphanReaperModule } from './deliveries/orphan-reaper/orphan-reaper.module';
 import { PartitionMaintenanceModule } from './partition-maintenance/partition-maintenance.module';
 import { PromoModule } from './promo/promo.module';
 import { WalletModule } from './wallet/wallet.module';
@@ -141,6 +142,7 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
     RecurringDeliveriesModule,
     DeliveryWatchdogModule,
     TrackingCheckpointModule,
+    OrphanReaperModule,
     PartitionMaintenanceModule,
     PromoModule,
     WalletModule,
