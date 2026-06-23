@@ -34,24 +34,42 @@ export class OrphanReaperService {
     const upper = new Date(now - ORPHAN_GRACE_MS); // older than grace = eligible
     const lower = new Date(now - ORPHAN_GRACE_MS - ORPHAN_LOOKBACK_MS); // window floor
 
-    // Orphan candidates from both reservation kinds. RELEASED promos and (per-candidate) the
-    // already-refunded debits self-exclude, so the working set stays small.
+    // Orphan candidates = committed reservations in the window whose delivery row does NOT
+    // exist (a DB-level anti-join). Selecting EVERY CHECKOUT_SPEND debit and filtering
+    // per-candidate would saturate the bounded, unordered `take` with legitimate
+    // (delivery-backed) debits at scale, crowding genuine orphans out of the LIMIT so they're
+    // never reaped — defeating the safety net. So the anti-join is pushed into SQL (there is
+    // intentionally no FK relation to the partitioned Delivery, so this can't be a Prisma
+    // relation filter). Debits also exclude an already-refunded debit (a CHECKOUT_REFUND
+    // exists); the promo side's `status='REDEEMED'` already excludes released promos. Ordered
+    // oldest-first + bounded; a compensated orphan leaves the set (refund row / RELEASED
+    // status), so it self-drains. reapIfOrphan() re-checks each candidate at compensation time
+    // (the delivery may have committed since this read).
     const [debits, redemptions] = await Promise.all([
-      this.prisma.walletTransaction.findMany({
-        where: {
-          type: 'DEBIT',
-          reason: 'CHECKOUT_SPEND',
-          deliveryId: { not: null },
-          createdAt: { gte: lower, lt: upper },
-        },
-        select: { deliveryId: true },
-        take: ORPHAN_BATCH,
-      }),
-      this.prisma.promoRedemption.findMany({
-        where: { status: 'REDEEMED', redeemedAt: { gte: lower, lt: upper } },
-        select: { deliveryId: true },
-        take: ORPHAN_BATCH,
-      }),
+      this.prisma.$queryRaw<{ deliveryId: string }[]>`
+        SELECT wt."deliveryId" AS "deliveryId"
+        FROM wallet_transactions wt
+        WHERE wt."type" = 'DEBIT'
+          AND wt."reason" = 'CHECKOUT_SPEND'
+          AND wt."deliveryId" IS NOT NULL
+          AND wt."createdAt" >= ${lower} AND wt."createdAt" < ${upper}
+          AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.id = wt."deliveryId")
+          AND NOT EXISTS (
+            SELECT 1 FROM wallet_transactions r
+            WHERE r."deliveryId" = wt."deliveryId" AND r."reason" = 'CHECKOUT_REFUND'
+          )
+        ORDER BY wt."createdAt" ASC
+        LIMIT ${ORPHAN_BATCH}
+      `,
+      this.prisma.$queryRaw<{ deliveryId: string }[]>`
+        SELECT pr."deliveryId" AS "deliveryId"
+        FROM promo_redemptions pr
+        WHERE pr."status" = 'REDEEMED'
+          AND pr."redeemedAt" >= ${lower} AND pr."redeemedAt" < ${upper}
+          AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.id = pr."deliveryId")
+        ORDER BY pr."redeemedAt" ASC
+        LIMIT ${ORPHAN_BATCH}
+      `,
     ]);
 
     const candidateIds = [

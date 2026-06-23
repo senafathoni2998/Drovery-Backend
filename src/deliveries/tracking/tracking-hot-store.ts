@@ -97,6 +97,37 @@ export class TrackingHotStore implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `hot-store write failed for ${deliveryId}: ${(e as Error).message}`,
       );
+      // FALLBACK (load-bearing): a Redis outage must NOT freeze tracking.updatedAt. With the
+      // hot-store ON the only writer of updatedAt is Redis (this write + the checkpoint's
+      // SPOP-then-upsert), and the stuck-delivery watchdog reaps + REFUNDS a LIVE delivery
+      // whose updatedAt is older than WATCHDOG_SILENCE_MS — so a sustained outage would freeze
+      // every LIVE delivery's updatedAt at once and mass-false-reap healthy in-flight drones.
+      // Write through to Postgres directly (exactly the hot-store-OFF behavior) so updatedAt
+      // keeps advancing from a real telemetry frame. Best-effort: if Postgres is ALSO down the
+      // watchdog (which reads Postgres) can't run either, so no false reap can result.
+      try {
+        await this.prisma.deliveryTracking.upsert({
+          where: { deliveryId },
+          create: {
+            deliveryId,
+            deliveryCreatedAt,
+            droneLat: pos.droneLat,
+            droneLng: pos.droneLng,
+            droneStatus: pos.droneStatus,
+            eta: pos.eta,
+          },
+          update: {
+            droneLat: pos.droneLat,
+            droneLng: pos.droneLng,
+            droneStatus: pos.droneStatus,
+            eta: pos.eta,
+          },
+        });
+      } catch (dbErr) {
+        this.logger.warn(
+          `hot-store Postgres fallback also failed for ${deliveryId}: ${(dbErr as Error).message}`,
+        );
+      }
     }
   }
 

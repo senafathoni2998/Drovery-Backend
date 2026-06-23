@@ -295,37 +295,42 @@ export class DeliveriesService {
     // the platform can never under-charge. Promo first (credits are sized against
     // afterPromo), so a failed debit compensates exactly the one prior reservation.
     if (debitFirst) {
-      if (promoCode) {
-        await this.prisma.$transaction((tx) =>
-          this.promoService.redeemWithinTx(
-            tx,
-            promoCode,
-            userId,
-            deliveryId,
-            originalTotal,
-            discount,
-          ),
-        );
-      }
-      if (creditsToApply > 0) {
-        try {
+      try {
+        if (promoCode) {
+          await this.prisma.$transaction((tx) =>
+            this.promoService.redeemWithinTx(
+              tx,
+              promoCode,
+              userId,
+              deliveryId,
+              originalTotal,
+              discount,
+            ),
+          );
+        }
+        if (creditsToApply > 0) {
           await this.prisma.$transaction((tx) =>
             this.walletService.debitWithinTx(tx, userId, creditsToApply, {
               deliveryId,
               idempotencyKey: `debit:${deliveryId}`,
             }),
           );
-        } catch (error) {
-          // Reverse BOTH reservations, then surface the error (no delivery, no card charge).
-          // The clean insufficient-credits case (the CAS throws BEFORE any write) only needs
-          // the promo released — but a debit $transaction can also reject AFTER it committed
-          // (a post-commit driver/connection error), and that rejection lands HERE in-process
-          // with the credits already gone. So compensate unconditionally: refundForDelivery
-          // is idempotent and a no-op when no DEBIT row exists, so it costs nothing on the
-          // clean path and is the only thing that prevents a stranded debit otherwise.
-          await this.compensateReservations(deliveryId);
-          throw error;
         }
+      } catch (error) {
+        // Reverse BOTH reservations on ANY throw out of the reservation block, then surface
+        // the error (no delivery, no card charge). Wrapping the WHOLE block — not just the
+        // debit — is load-bearing: a $transaction can COMMIT and then have its awaited promise
+        // REJECT (a post-commit driver/connection error), landing HERE in-process with the
+        // money already moved. That applies to the promo redeem too (promoCode set +
+        // useCredits=false → the debit block is skipped, so the promo redeem is the only
+        // money write); an unwrapped promo redeem would leak a consumed promo slot — including
+        // a globally-capped code another customer could use — with no delivery and no charge.
+        // compensateReservations is idempotent and a no-op when nothing committed, so
+        // unconditional compensation is safe on every path and restores the documented
+        // "in-process failures are compensated synchronously" invariant (only a process CRASH
+        // falls through to the orphan reaper).
+        await this.compensateReservations(deliveryId);
+        throw error;
       }
     }
 
