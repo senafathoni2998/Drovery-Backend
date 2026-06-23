@@ -76,6 +76,48 @@ describe('TrackingHotStore', () => {
       expect(fields).toHaveProperty('deliveryCreatedAt');
       expect(lastMulti.sadd).toHaveBeenCalledWith('tracking:dirty', 'd1');
     });
+
+    it('falls back to a Postgres upsert when the Redis write fails (updatedAt never freezes)', async () => {
+      // A Redis outage must NOT freeze tracking.updatedAt — else the watchdog would
+      // mass-false-reap (and refund) healthy LIVE drones. The write-through keeps updatedAt
+      // advancing from a real telemetry frame (exactly the hot-store-OFF behavior).
+      client.multi = jest.fn(() => {
+        const m = makeMulti();
+        m.exec = jest.fn().mockRejectedValue(new Error('redis down'));
+        return (lastMulti = m);
+      });
+      prisma.deliveryTracking.upsert.mockResolvedValue({});
+
+      await store.writePosition('d1', new Date('2026-06-01T00:00:00.000Z'), {
+        droneLat: 1.5,
+        droneLng: 2.5,
+      });
+
+      expect(prisma.deliveryTracking.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { deliveryId: 'd1' },
+          create: expect.objectContaining({
+            deliveryId: 'd1',
+            deliveryCreatedAt: new Date('2026-06-01T00:00:00.000Z'),
+            droneLat: 1.5,
+            droneLng: 2.5,
+          }),
+        }),
+      );
+    });
+
+    it('never throws even when BOTH Redis and the Postgres fallback fail', async () => {
+      client.multi = jest.fn(() => {
+        const m = makeMulti();
+        m.exec = jest.fn().mockRejectedValue(new Error('redis down'));
+        return (lastMulti = m);
+      });
+      prisma.deliveryTracking.upsert.mockRejectedValue(new Error('pg down'));
+
+      await expect(
+        store.writePosition('d1', new Date('2026-06-01T00:00:00.000Z'), {}),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe('readPosition', () => {
