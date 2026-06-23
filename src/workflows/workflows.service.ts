@@ -36,7 +36,30 @@ export class WorkflowsService {
     return Object.values(WORKFLOWS);
   }
 
-  async completeStep(deliveryId: string, dto: CompleteStepDto) {
+  /**
+   * Resolve a delivery the CALLER OWNS, returning the parent createdAt needed for child
+   * writes (deliveries is partitioned, so id alone is not a unique-where). 404s — not 403s —
+   * a missing OR non-owned id, mirroring DeliveriesService.findOne, so a delivery's workflow
+   * can only be read/mutated by its owner (the steps/QR endpoints are otherwise just
+   * JwtAuthGuard-authenticated and the deliveryId is a non-secret, owner-visible uuid).
+   */
+  private async assertOwnedDelivery(
+    deliveryId: string,
+    userId: string,
+  ): Promise<{ createdAt: Date }> {
+    const delivery = await this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
+      select: { createdAt: true, userId: true },
+    });
+    if (!delivery || delivery.userId !== userId) {
+      throw new AppNotFoundException('error.delivery.not_found', {
+        id: deliveryId,
+      });
+    }
+    return { createdAt: delivery.createdAt };
+  }
+
+  async completeStep(userId: string, deliveryId: string, dto: CompleteStepDto) {
     const workflow = WORKFLOWS[dto.workflowId];
 
     if (!workflow) {
@@ -54,18 +77,8 @@ export class WorkflowsService {
       });
     }
 
-    // `deliveries` is partitioned (composite PK), so a child write needs the parent's
-    // createdAt for the composite FK. Resolve it (and 404 a bad id) — id alone is no
-    // longer a unique-where, hence findFirst.
-    const delivery = await this.prisma.delivery.findFirst({
-      where: { id: deliveryId },
-      select: { createdAt: true },
-    });
-    if (!delivery) {
-      throw new AppNotFoundException('error.delivery.not_found', {
-        id: deliveryId,
-      });
-    }
+    // Owner-scoped: only the delivery's owner may record its workflow steps.
+    const { createdAt } = await this.assertOwnedDelivery(deliveryId, userId);
 
     return this.prisma.workflowStepCompletion.upsert({
       where: {
@@ -73,7 +86,7 @@ export class WorkflowsService {
           deliveryId,
           workflowId: dto.workflowId,
           stepId: dto.stepId,
-          deliveryCreatedAt: delivery.createdAt,
+          deliveryCreatedAt: createdAt,
         },
       },
       update: {
@@ -81,21 +94,29 @@ export class WorkflowsService {
       },
       create: {
         deliveryId,
-        deliveryCreatedAt: delivery.createdAt,
+        deliveryCreatedAt: createdAt,
         workflowId: dto.workflowId,
         stepId: dto.stepId,
       },
     });
   }
 
-  async getCompletedSteps(deliveryId: string, workflowId: string) {
+  async getCompletedSteps(
+    userId: string,
+    deliveryId: string,
+    workflowId: string,
+  ) {
+    // Owner-scoped: a user may only read their OWN delivery's step completions.
+    await this.assertOwnedDelivery(deliveryId, userId);
     return this.prisma.workflowStepCompletion.findMany({
       where: { deliveryId, workflowId },
       orderBy: { completedAt: 'asc' },
     });
   }
 
-  generateQrPayload(deliveryId: string): string {
+  async generateQrPayload(userId: string, deliveryId: string): Promise<string> {
+    // Owner-scoped: only the delivery's owner may mint a signed handoff QR for it.
+    await this.assertOwnedDelivery(deliveryId, userId);
     const timestamp = Date.now();
     const sig = this.signQr(deliveryId, timestamp);
     return JSON.stringify({ deliveryId, timestamp, sig });

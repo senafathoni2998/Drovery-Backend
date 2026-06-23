@@ -60,18 +60,27 @@ describe('WorkflowsController', () => {
     it('should delegate to workflowsService.completeStep', async () => {
       const dto = { workflowId: 'load-package', stepId: 's-1' };
 
-      const result = await controller.completeStep('d-1', dto);
+      const result = await controller.completeStep('u-1', 'd-1', dto);
 
-      expect(workflowsService.completeStep).toHaveBeenCalledWith('d-1', dto);
+      expect(workflowsService.completeStep).toHaveBeenCalledWith(
+        'u-1',
+        'd-1',
+        dto,
+      );
       expect(result.stepId).toBe('s-1');
     });
   });
 
   describe('getCompletedSteps', () => {
     it('should delegate to workflowsService.getCompletedSteps', async () => {
-      const result = await controller.getCompletedSteps('d-1', 'load-package');
+      const result = await controller.getCompletedSteps(
+        'u-1',
+        'd-1',
+        'load-package',
+      );
 
       expect(workflowsService.getCompletedSteps).toHaveBeenCalledWith(
+        'u-1',
         'd-1',
         'load-package',
       );
@@ -80,10 +89,13 @@ describe('WorkflowsController', () => {
   });
 
   describe('generateQrPayload', () => {
-    it('should return wrapped payload', () => {
-      const result = controller.generateQrPayload('d-1');
+    it('should return wrapped payload for the owner', async () => {
+      const result = await controller.generateQrPayload('u-1', 'd-1');
 
-      expect(workflowsService.generateQrPayload).toHaveBeenCalledWith('d-1');
+      expect(workflowsService.generateQrPayload).toHaveBeenCalledWith(
+        'u-1',
+        'd-1',
+      );
       expect(result).toEqual({
         payload: '{"deliveryId":"d-1","timestamp":123}',
       });

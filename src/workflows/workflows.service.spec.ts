@@ -50,11 +50,14 @@ describe('WorkflowsService', () => {
   });
 
   describe('completeStep', () => {
-    it('should upsert a workflow step completion', async () => {
-      const workflowId = Object.keys(WORKFLOWS)[0];
-      const stepId = WORKFLOWS[workflowId].steps[0].id;
-      // completeStep now resolves the parent createdAt (composite-FK child write).
-      prisma.delivery.findFirst.mockResolvedValue({ createdAt: new Date() });
+    const workflowId = Object.keys(WORKFLOWS)[0];
+    const stepId = WORKFLOWS[Object.keys(WORKFLOWS)[0]].steps[0].id;
+
+    it('should upsert a workflow step completion for the OWNER', async () => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'u-1',
+      });
       prisma.workflowStepCompletion.upsert.mockResolvedValue({
         id: 'completion-1',
         deliveryId: 'delivery-1',
@@ -63,7 +66,7 @@ describe('WorkflowsService', () => {
         completedAt: new Date(),
       });
 
-      const result = await service.completeStep('delivery-1', {
+      const result = await service.completeStep('u-1', 'delivery-1', {
         workflowId,
         stepId,
       });
@@ -72,9 +75,21 @@ describe('WorkflowsService', () => {
       expect(prisma.workflowStepCompletion.upsert).toHaveBeenCalled();
     });
 
+    it('throws NotFoundException (no write) when the delivery is owned by someone else (IDOR guard)', async () => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'someone-else',
+      });
+
+      await expect(
+        service.completeStep('u-1', 'delivery-1', { workflowId, stepId }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.workflowStepCompletion.upsert).not.toHaveBeenCalled();
+    });
+
     it('should throw NotFoundException for unknown workflow', async () => {
       await expect(
-        service.completeStep('delivery-1', {
+        service.completeStep('u-1', 'delivery-1', {
           workflowId: 'nonexistent',
           stepId: 'step-1',
         }),
@@ -82,10 +97,8 @@ describe('WorkflowsService', () => {
     });
 
     it('should throw BadRequestException for unknown step', async () => {
-      const workflowId = Object.keys(WORKFLOWS)[0];
-
       await expect(
-        service.completeStep('delivery-1', {
+        service.completeStep('u-1', 'delivery-1', {
           workflowId,
           stepId: 'nonexistent-step',
         }),
@@ -94,13 +107,17 @@ describe('WorkflowsService', () => {
   });
 
   describe('getCompletedSteps', () => {
-    it('should return completed steps for a delivery workflow', async () => {
+    it('should return completed steps for the OWNER', async () => {
       const mockSteps = [
         { id: 'c-1', deliveryId: 'd-1', workflowId: 'w-1', stepId: 's-1' },
       ];
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'u-1',
+      });
       prisma.workflowStepCompletion.findMany.mockResolvedValue(mockSteps);
 
-      const result = await service.getCompletedSteps('d-1', 'w-1');
+      const result = await service.getCompletedSteps('u-1', 'd-1', 'w-1');
 
       expect(result).toEqual(mockSteps);
       expect(prisma.workflowStepCompletion.findMany).toHaveBeenCalledWith({
@@ -108,22 +125,60 @@ describe('WorkflowsService', () => {
         orderBy: { completedAt: 'asc' },
       });
     });
+
+    it('throws NotFoundException (no read) when the delivery is not the caller’s (IDOR guard)', async () => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'someone-else',
+      });
+
+      await expect(
+        service.getCompletedSteps('u-1', 'd-1', 'w-1'),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.workflowStepCompletion.findMany).not.toHaveBeenCalled();
+    });
   });
 
   describe('generateQrPayload', () => {
-    it('should return a signed JSON string with deliveryId, timestamp and sig', () => {
-      const result = service.generateQrPayload('delivery-1');
+    beforeEach(() => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'u-1',
+      });
+    });
+
+    it('should return a signed JSON string for the OWNER', async () => {
+      const result = await service.generateQrPayload('u-1', 'delivery-1');
       const parsed = JSON.parse(result);
 
       expect(parsed.deliveryId).toBe('delivery-1');
       expect(parsed.timestamp).toBeDefined();
       expect(parsed.sig).toBeDefined();
     });
+
+    it('throws NotFoundException when minting a QR for a non-owned delivery (IDOR guard)', async () => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'someone-else',
+      });
+
+      await expect(
+        service.generateQrPayload('u-1', 'delivery-1'),
+      ).rejects.toThrow(NotFoundException);
+    });
   });
 
   describe('validateQrPayload', () => {
-    it('should return valid for a freshly generated (signed) payload', () => {
-      const payload = service.generateQrPayload('delivery-1');
+    // validateQrPayload is an owner-agnostic signature/TTL check; mint owned payloads to test it.
+    beforeEach(() => {
+      prisma.delivery.findFirst.mockResolvedValue({
+        createdAt: new Date(),
+        userId: 'u-1',
+      });
+    });
+
+    it('should return valid for a freshly generated (signed) payload', async () => {
+      const payload = await service.generateQrPayload('u-1', 'delivery-1');
 
       const result = service.validateQrPayload(payload);
 
@@ -152,8 +207,10 @@ describe('WorkflowsService', () => {
       expect(result.reason).toBe('bad_signature');
     });
 
-    it('should reject a tampered deliveryId (signature no longer matches)', () => {
-      const payload = JSON.parse(service.generateQrPayload('delivery-1'));
+    it('should reject a tampered deliveryId (signature no longer matches)', async () => {
+      const payload = JSON.parse(
+        await service.generateQrPayload('u-1', 'delivery-1'),
+      );
       payload.deliveryId = 'delivery-HACKED';
 
       const result = service.validateQrPayload(JSON.stringify(payload));
@@ -162,8 +219,8 @@ describe('WorkflowsService', () => {
       expect(result.reason).toBe('bad_signature');
     });
 
-    it('should reject an expired QR payload', () => {
-      const payload = service.generateQrPayload('delivery-1');
+    it('should reject an expired QR payload', async () => {
+      const payload = await service.generateQrPayload('u-1', 'delivery-1');
       const realNow = Date.now();
       const spy = jest
         .spyOn(Date, 'now')
