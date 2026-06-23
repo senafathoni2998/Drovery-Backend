@@ -47,6 +47,21 @@ export function validate(config: Record<string, unknown>) {
         'LOADTEST_BYPASS_THROTTLE must not be set in production — it disables rate limiting',
       );
     }
+
+    // The public /payments/webhook endpoint mutates payment status and is trusted ONLY via the
+    // Stripe signature. StripeService falls into an UNSIGNED mock-parse path whenever
+    // STRIPE_SECRET_KEY is absent, so a production deploy missing the keys (secret-store outage,
+    // partial env, key rotation) would fail OPEN and accept forged events. Require both keys
+    // (non-placeholder) so we fail to BOOT instead of failing open.
+    for (const key of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'] as const) {
+      const raw = config[key];
+      const value = typeof raw === 'string' ? raw : '';
+      if (!value || /change|example|xxxx|placeholder/i.test(value)) {
+        throw new Error(
+          `${key} is missing or a placeholder — required in production (the Stripe webhook must verify signatures, never run in mock/unsigned mode)`,
+        );
+      }
+    }
   }
 
   return validated;

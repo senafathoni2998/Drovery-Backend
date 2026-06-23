@@ -37,8 +37,35 @@ describe('config validation', () => {
           NODE_ENV: 'production',
           JWT_SECRET: STRONG,
           JWT_REFRESH_SECRET: `${STRONG}_refresh`,
+          STRIPE_SECRET_KEY: 'sk_live_realkey0123456789',
+          STRIPE_WEBHOOK_SECRET: 'whsec_realsecret0123456789',
         }),
       ).not.toThrow();
+    });
+
+    it('refuses to boot WITHOUT the Stripe keys in production (the webhook would fail open)', () => {
+      expect(() =>
+        validate({
+          ...base(),
+          NODE_ENV: 'production',
+          JWT_SECRET: STRONG,
+          JWT_REFRESH_SECRET: `${STRONG}_refresh`,
+          STRIPE_WEBHOOK_SECRET: 'whsec_realsecret0123456789',
+        }),
+      ).toThrow(/STRIPE_SECRET_KEY/);
+    });
+
+    it('refuses to boot with placeholder Stripe keys in production', () => {
+      expect(() =>
+        validate({
+          ...base(),
+          NODE_ENV: 'production',
+          JWT_SECRET: STRONG,
+          JWT_REFRESH_SECRET: `${STRONG}_refresh`,
+          STRIPE_SECRET_KEY: 'sk_test_xxxx',
+          STRIPE_WEBHOOK_SECRET: 'whsec_xxxx',
+        }),
+      ).toThrow(/STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET/);
     });
 
     it('refuses to boot if LOADTEST_BYPASS_THROTTLE is set in production', () => {

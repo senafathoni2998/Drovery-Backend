@@ -175,6 +175,14 @@ export class StripeService {
     }
 
     const secret = this.config.get<string>('stripe.webhookSecret') ?? '';
+    // Never verify against an empty secret — that would silently accept any payload. Fail
+    // closed (the controller maps the throw to 400). In production the boot guard
+    // (config/validation) already requires this to be set; this is defense-in-depth.
+    if (!secret) {
+      throw new Error(
+        'STRIPE_WEBHOOK_SECRET is not configured — refusing to process webhook',
+      );
+    }
     return this.stripe.webhooks.constructEvent(
       payload,
       signature ?? '',

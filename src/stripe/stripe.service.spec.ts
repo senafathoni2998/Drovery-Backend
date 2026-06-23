@@ -69,3 +69,28 @@ describe('StripeService (mock mode)', () => {
     expect(service.publishableKey).toBeNull();
   });
 });
+
+describe('StripeService (live mode)', () => {
+  const make = (over: Record<string, string | undefined> = {}) => {
+    const cfg: Record<string, string | undefined> = {
+      'stripe.secretKey': 'sk_test_dummy',
+      'stripe.webhookSecret': undefined,
+      ...over,
+    };
+    return new StripeService({
+      get: (k: string) => cfg[k],
+    } as unknown as ConfigService);
+  };
+
+  it('is NOT in mock mode when a secret key is configured', () => {
+    expect(make().isMock).toBe(false);
+  });
+
+  it('constructEvent fails closed (throws) when no webhook secret is configured', () => {
+    // Defense-in-depth: never verify a signature against an empty secret (which would
+    // accept any payload). The controller maps this throw to 400.
+    expect(() => make().constructEvent(Buffer.from('{}'), 'sig')).toThrow(
+      /STRIPE_WEBHOOK_SECRET is not configured/,
+    );
+  });
+});
