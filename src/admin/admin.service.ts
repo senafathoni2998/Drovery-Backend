@@ -199,6 +199,19 @@ export class AdminService {
 
     try {
       await this.prisma.$transaction(async (tx) => {
+        // Single-winner gate so the card charge is refunded AT MOST ONCE across channels: flip
+        // the Payment to REFUNDED only if it isn't already, and credit the wallet only when
+        // that flip won. Without this, the automatic drone-fault refund
+        // (WalletService.refundChargeToWallet, keyed `exception-refund:<id>`) and this goodwill
+        // refund (keyed `admin-refund:<id>`) use mutually-blind idempotency keys and both credit
+        // the same delivery — a double refund.
+        const { count } = await tx.payment.updateMany({
+          where: { deliveryId, status: { not: 'REFUNDED' } },
+          data: { status: 'REFUNDED' },
+        });
+        if (count === 0) {
+          throw new AppConflictException('error.admin.refund.already_refunded');
+        }
         await this.walletService.creditWithinTx(
           tx,
           delivery.userId,
@@ -206,10 +219,6 @@ export class AdminService {
           'CHECKOUT_REFUND',
           { deliveryId, idempotencyKey: `admin-refund:${deliveryId}` },
         );
-        await tx.payment.updateMany({
-          where: { deliveryId },
-          data: { status: 'REFUNDED' },
-        });
       });
     } catch (e) {
       if (

@@ -172,6 +172,18 @@ export class WalletService {
     if (!delivery || delivery.estimatedPrice <= 0) return;
     try {
       await this.prisma.$transaction(async (tx) => {
+        // Single-winner gate: flip the Payment COMPLETED→REFUNDED and credit the wallet ONLY
+        // if that flip won. This (1) refuses to mint credit when the card was never captured
+        // (no COMPLETED Payment — e.g. the best-effort intent creation was swallowed, or it
+        // sits PENDING/FAILED), and (2) dedupes against the admin goodwill-refund channel
+        // (whichever refunds first flips the row; the other matches 0), so the card charge
+        // returns to the wallet AT MOST ONCE. The status write must precede the credit so the
+        // count===0 short-circuit prevents the credit entirely.
+        const { count } = await tx.payment.updateMany({
+          where: { deliveryId, status: 'COMPLETED' },
+          data: { status: 'REFUNDED' },
+        });
+        if (count === 0) return;
         await this.creditWithinTx(
           tx,
           delivery.userId,
@@ -179,10 +191,6 @@ export class WalletService {
           'CHECKOUT_REFUND',
           { deliveryId, idempotencyKey: `exception-refund:${deliveryId}` },
         );
-        await tx.payment.updateMany({
-          where: { deliveryId },
-          data: { status: 'REFUNDED' },
-        });
       });
     } catch (e) {
       if (this.isUniqueViolation(e)) return; // already refunded — no-op
