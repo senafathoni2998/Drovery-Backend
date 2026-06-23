@@ -162,16 +162,23 @@ describe('WalletService', () => {
   });
 
   describe('refundChargeToWallet', () => {
-    it('credits the card-charged amount to the wallet + marks the payment refunded', async () => {
+    it('credits the card-charged amount + marks the payment refunded when a COMPLETED payment exists', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         userId,
         estimatedPrice: 18,
       });
       prisma.user.update.mockResolvedValue({ creditBalance: 18 });
+      // The single-winner gate flipped a COMPLETED payment → REFUNDED (count 1).
       prisma.payment.updateMany.mockResolvedValue({ count: 1 });
 
       await service.refundChargeToWallet('d-1');
 
+      // Gate runs first, scoped to a COMPLETED payment...
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: { deliveryId: 'd-1', status: 'COMPLETED' },
+        data: { status: 'REFUNDED' },
+      });
+      // ...then the credit.
       expect(prisma.walletTransaction.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           type: 'CREDIT',
@@ -180,10 +187,19 @@ describe('WalletService', () => {
           idempotencyKey: 'exception-refund:d-1',
         }),
       });
-      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
-        where: { deliveryId: 'd-1' },
-        data: { status: 'REFUNDED' },
+    });
+
+    it('does NOT credit when no COMPLETED payment exists (never captured / already refunded) — no free money', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId,
+        estimatedPrice: 18,
       });
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+      await service.refundChargeToWallet('d-1');
+
+      expect(prisma.walletTransaction.create).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
     it('no-ops for a $0 (fully credit-paid / free) charge', async () => {
@@ -201,6 +217,7 @@ describe('WalletService', () => {
         userId,
         estimatedPrice: 18,
       });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
       prisma.user.update.mockResolvedValue({ creditBalance: 18 });
       prisma.walletTransaction.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('dup', {
