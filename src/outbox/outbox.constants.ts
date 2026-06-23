@@ -36,8 +36,10 @@ export const OUTBOX_DISPATCH_INTERVAL_MS =
 /** Per-tick claim bound so a tick stays cheap (mirrors CHECKPOINT_BATCH). */
 export const OUTBOX_BATCH = Number(process.env.OUTBOX_BATCH) || 100;
 
-/** Max claim attempts before a row is parked FAILED. Replay (FAILED→PENDING) is safe —
- * every handler is idempotent — so FAILED is recoverable, not a dead end. */
+/** Max claim attempts in a fast-retry burst before a row is parked FAILED (the lease reaper
+ * re-PENDs an abandoned PROCESSING claim up to this many times). FAILED is NOT terminal —
+ * every handler is idempotent, so requeueRecoverableFailed() replays a FAILED row
+ * (FAILED→PENDING) after a backoff, up to OUTBOX_MAX_RECOVERY_ATTEMPTS total attempts. */
 export const OUTBOX_MAX_ATTEMPTS = Number(process.env.OUTBOX_MAX_ATTEMPTS) || 5;
 
 /**
@@ -47,3 +49,20 @@ export const OUTBOX_MAX_ATTEMPTS = Number(process.env.OUTBOX_MAX_ATTEMPTS) || 5;
  */
 export const OUTBOX_CLAIM_LEASE_MS =
   Number(process.env.OUTBOX_CLAIM_LEASE_MS) || 60_000;
+
+/**
+ * Backoff before a FAILED row is replayed (re-PENDed). Long (default 30 min) so a transient
+ * failure has cleared and we never hot-loop a slow-failing event; gated on the row's last
+ * attempt time (claimedAt), so a just-failed row waits the full backoff.
+ */
+export const OUTBOX_RECOVERY_BACKOFF_MS =
+  Number(process.env.OUTBOX_RECOVERY_BACKOFF_MS) || 30 * 60_000;
+
+/**
+ * Hard ceiling on TOTAL claim attempts (the fast-retry burst + every recovery replay). Once a
+ * row's attempts reach this it stays FAILED permanently — a genuinely poison event (bad
+ * payload / missing handler) can't replay forever; the outboxFailed gauge alerts an operator.
+ * MUST exceed OUTBOX_MAX_ATTEMPTS for recovery to do anything.
+ */
+export const OUTBOX_MAX_RECOVERY_ATTEMPTS =
+  Number(process.env.OUTBOX_MAX_RECOVERY_ATTEMPTS) || 50;

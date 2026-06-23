@@ -9,6 +9,8 @@ import {
   OUTBOX_CLAIM_LEASE_MS,
   OUTBOX_EVENT_REFERRAL_REWARD,
   OUTBOX_MAX_ATTEMPTS,
+  OUTBOX_MAX_RECOVERY_ATTEMPTS,
+  OUTBOX_RECOVERY_BACKOFF_MS,
 } from './outbox.constants';
 
 /** The shape a producer enqueues (the row's status/attempts/timestamps are defaulted). */
@@ -64,6 +66,7 @@ export class OutboxService {
    * events. Invoked only by the worker-tier OutboxProcessor. */
   async dispatchDue(): Promise<void> {
     await this.reapStaleClaims();
+    await this.requeueRecoverableFailed();
 
     const pending = await this.prisma.outboxEvent.findMany({
       where: { status: 'PENDING' },
@@ -164,6 +167,29 @@ export class OutboxService {
         status: 'PROCESSING',
         claimedAt: { lt: cutoff },
         attempts: { lt: OUTBOX_MAX_ATTEMPTS },
+      },
+      data: { status: 'PENDING', claimedAt: null },
+    });
+  }
+
+  /**
+   * Make FAILED genuinely recoverable (the constants promise replay is safe — every handler is
+   * idempotent — but nothing previously transitioned a row OUT of FAILED, so a money-bearing
+   * event lost to a burst of TRANSIENT failures, e.g. several worker redeploys mid-apply or a
+   * run of deadlocks under load, was silently dropped). Re-PEND a FAILED row after a long
+   * backoff so it's retried rather than abandoned. Bounded by OUTBOX_MAX_RECOVERY_ATTEMPTS:
+   * once total attempts reach the ceiling the row stays FAILED permanently (a genuinely poison
+   * event — bad payload / missing handler — can't loop forever), surfaced by the outboxFailed
+   * gauge. The backoff is gated on claimedAt (the last attempt time), so a just-failed row
+   * waits the full backoff before its next replay.
+   */
+  private async requeueRecoverableFailed(): Promise<void> {
+    const retryBefore = new Date(Date.now() - OUTBOX_RECOVERY_BACKOFF_MS);
+    await this.prisma.outboxEvent.updateMany({
+      where: {
+        status: 'FAILED',
+        attempts: { lt: OUTBOX_MAX_RECOVERY_ATTEMPTS },
+        claimedAt: { lt: retryBefore },
       },
       data: { status: 'PENDING', claimedAt: null },
     });

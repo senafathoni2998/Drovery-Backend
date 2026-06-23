@@ -216,7 +216,36 @@ describe('OutboxService', () => {
     });
   });
 
+  describe('requeueRecoverableFailed (FAILED is recoverable, not a dead-end)', () => {
+    it('re-PENDs FAILED rows past the backoff and under the recovery ceiling', async () => {
+      await (service as any).requeueRecoverableFailed();
+
+      expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'FAILED',
+            attempts: expect.objectContaining({ lt: expect.any(Number) }),
+            claimedAt: expect.objectContaining({ lt: expect.any(Date) }),
+          }),
+          data: { status: 'PENDING', claimedAt: null },
+        }),
+      );
+    });
+  });
+
   describe('dispatchDue', () => {
+    it('runs FAILED recovery before claiming PENDING (a recovered row is eligible same tick)', async () => {
+      prisma.outboxEvent.findMany.mockResolvedValue([]);
+
+      await service.dispatchDue();
+
+      const recovered = prisma.outboxEvent.updateMany.mock.calls.find(
+        (c: any[]) =>
+          c[0]?.where?.status === 'FAILED' && c[0]?.data?.status === 'PENDING',
+      );
+      expect(recovered).toBeDefined();
+    });
+
     it('reaps, claims+applies each PENDING event, and refreshes backlog gauges', async () => {
       prisma.outboxEvent.findMany.mockResolvedValue([{ id: 'e-1' }]);
       prisma.outboxEvent.findUnique.mockResolvedValue({
