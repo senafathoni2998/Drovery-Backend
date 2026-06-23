@@ -682,6 +682,37 @@ describe('DeliveriesService', () => {
       expect(prisma.delivery.create).toHaveBeenCalledTimes(5); // MAX_TRACKING_ID_TRIES
       expect(walletService.refundForDelivery).toHaveBeenCalledWith(PREGEN_ID);
     });
+
+    it('compensates the promo reservation when the promo redeem rejects with NO debit (post-commit leak)', async () => {
+      // promoCode set + useCredits=false → creditsToApply=0, so the debit block is SKIPPED and
+      // the promo $transaction is the only money write. A $transaction can commit and then have
+      // its awaited promise reject (a post-commit driver error); that must still compensate
+      // synchronously. Regression: the promo redeem used to sit outside any try/catch, so this
+      // leaked a consumed promo slot with no delivery and no charge until the orphan reaper.
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 0,
+        finalTotal: 18,
+      });
+      promoService.redeemWithinTx.mockRejectedValue(
+        new Error('post-commit connection reset'),
+      );
+
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          promoCode: 'WELCOME10',
+          useCredits: false,
+        }),
+      ).rejects.toThrow('post-commit connection reset');
+
+      // The promo slot is released (idempotent) even though no debit ran...
+      expect(promoService.releaseForDelivery).toHaveBeenCalledWith(PREGEN_ID);
+      // ...and nothing downstream happened: no debit, no delivery, no card charge.
+      expect(walletService.debitWithinTx).not.toHaveBeenCalled();
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+      expect(paymentsService.createDeliveryPayment).not.toHaveBeenCalled();
+    });
   });
 
   describe('reorder', () => {
