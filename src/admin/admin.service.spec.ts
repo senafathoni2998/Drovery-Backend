@@ -124,11 +124,12 @@ describe('AdminService', () => {
       expect(droneCommands.listForDelivery).toHaveBeenCalledWith('d-1');
     });
 
-    it('refunds as a wallet credit + marks the payment REFUNDED', async () => {
+    it('refunds as a wallet credit + marks the payment REFUNDED (single-winner gate)', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         userId: 'u-1',
         estimatedPrice: 18,
       });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
       await service.refund('d-1');
       expect(wallet.creditWithinTx).toHaveBeenCalledWith(
         expect.anything(),
@@ -137,10 +138,22 @@ describe('AdminService', () => {
         'CHECKOUT_REFUND',
         expect.objectContaining({ idempotencyKey: 'admin-refund:d-1' }),
       );
+      // The card charge is flipped only if not already refunded — dedupes against the
+      // automatic drone-fault refund channel so a delivery can't be refunded twice.
       expect(prisma.payment.updateMany).toHaveBeenCalledWith({
-        where: { deliveryId: 'd-1' },
+        where: { deliveryId: 'd-1', status: { not: 'REFUNDED' } },
         data: { status: 'REFUNDED' },
       });
+    });
+
+    it('rejects (no double-credit) when the payment was already refunded by another channel', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 18,
+      });
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 }); // already REFUNDED
+      await expect(service.refund('d-1')).rejects.toThrow(ConflictException);
+      expect(wallet.creditWithinTx).not.toHaveBeenCalled();
     });
 
     it('rejects a refund larger than the charged total', async () => {
@@ -158,6 +171,7 @@ describe('AdminService', () => {
         userId: 'u-1',
         estimatedPrice: 18,
       });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
       wallet.creditWithinTx.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('dup', {
           code: 'P2002',
