@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WorkflowStepDto } from '../deliveries/dto/delivery-response.dto';
 import { CompleteStepDto } from './dto';
 import {
@@ -29,25 +30,39 @@ export class WorkflowsController {
   @Post(':deliveryId/steps/complete')
   @ApiCreatedResponse({ type: WorkflowStepDto })
   completeStep(
+    @CurrentUser('sub') userId: string,
     @Param('deliveryId') deliveryId: string,
     @Body() dto: CompleteStepDto,
   ) {
-    return this.workflowsService.completeStep(deliveryId, dto);
+    return this.workflowsService.completeStep(userId, deliveryId, dto);
   }
 
   @Get(':deliveryId/steps/:workflowId')
   @ApiOkResponse({ type: [WorkflowStepDto] })
   getCompletedSteps(
+    @CurrentUser('sub') userId: string,
     @Param('deliveryId') deliveryId: string,
     @Param('workflowId') workflowId: string,
   ) {
-    return this.workflowsService.getCompletedSteps(deliveryId, workflowId);
+    return this.workflowsService.getCompletedSteps(
+      userId,
+      deliveryId,
+      workflowId,
+    );
   }
 
   @Post('qr/generate')
   @ApiCreatedResponse({ type: QrGenerateResponseDto })
-  generateQrPayload(@Body('deliveryId') deliveryId: string) {
-    return { payload: this.workflowsService.generateQrPayload(deliveryId) };
+  async generateQrPayload(
+    @CurrentUser('sub') userId: string,
+    @Body('deliveryId') deliveryId: string,
+  ) {
+    return {
+      payload: await this.workflowsService.generateQrPayload(
+        userId,
+        deliveryId,
+      ),
+    };
   }
 
   @Post('qr/validate')
