@@ -211,8 +211,10 @@ describe('PromoService', () => {
   });
 
   describe('redeemWithinTx', () => {
-    it('increments the global counter (CAS) and writes the ledger', async () => {
-      prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
+    const discount = { discountAmount: 2, finalTotal: 18 };
+
+    it('increments the global counter (atomic guard) and writes the ledger', async () => {
+      prisma.$executeRaw.mockResolvedValue(1);
       prisma.promoRedemption.create.mockResolvedValue({});
       await service.redeemWithinTx(
         prisma as any,
@@ -220,18 +222,38 @@ describe('PromoService', () => {
         userId,
         'd-1',
         20,
-        {
-          discountAmount: 2,
-          finalTotal: 18,
-        },
+        discount,
       );
-      const cas = prisma.promoCode.updateMany.mock.calls[0][0];
-      expect(cas.data).toEqual({ timesRedeemed: { increment: 1 } });
+      expect(prisma.$executeRaw).toHaveBeenCalled();
       expect(prisma.promoRedemption.create).toHaveBeenCalled();
     });
 
-    it('throws 409 GLOBALLY_MAXED when the CAS matches nothing', async () => {
-      prisma.promoCode.updateMany.mockResolvedValue({ count: 0 });
+    it('the atomic guard enforces the start/end window AND a column-vs-column cap', async () => {
+      // Guards the audit fix: the redeem CAS must check startsAt/endsAt and compare
+      // timesRedeemed against the maxRedemptions COLUMN (not the stale validate-time snapshot).
+      prisma.$executeRaw.mockResolvedValue(1);
+      prisma.promoRedemption.create.mockResolvedValue({});
+      await service.redeemWithinTx(
+        prisma as any,
+        code() as any,
+        userId,
+        'd-1',
+        20,
+        discount,
+      );
+      const sql = (
+        prisma.$executeRaw.mock.calls[0][0] as TemplateStringsArray
+      ).join(' ');
+      expect(sql).toMatch(/"startsAt" IS NULL OR "startsAt" <=/);
+      expect(sql).toMatch(/"endsAt" IS NULL OR "endsAt" >/);
+      expect(sql).toMatch(/"timesRedeemed" < "maxRedemptions"/);
+    });
+
+    it('rejects 409 GLOBALLY_MAXED when the guard matches nothing and the cap is hit', async () => {
+      prisma.$executeRaw.mockResolvedValue(0);
+      prisma.promoCode.findUnique.mockResolvedValue(
+        code({ maxRedemptions: 1, timesRedeemed: 1 }) as any,
+      );
       await expect(
         service.redeemWithinTx(
           prisma as any,
@@ -239,17 +261,32 @@ describe('PromoService', () => {
           userId,
           'd-1',
           20,
-          {
-            discountAmount: 2,
-            finalTotal: 18,
-          },
+          discount,
         ),
       ).rejects.toMatchObject({ status: 409 });
       expect(prisma.promoRedemption.create).not.toHaveBeenCalled();
     });
 
+    it('rejects 422 EXPIRED at redeem time for a code expired since validation', async () => {
+      prisma.$executeRaw.mockResolvedValue(0);
+      prisma.promoCode.findUnique.mockResolvedValue(
+        code({ endsAt: new Date(Date.now() - 1000) }) as any,
+      );
+      await expect(
+        service.redeemWithinTx(
+          prisma as any,
+          code() as any,
+          userId,
+          'd-1',
+          20,
+          discount,
+        ),
+      ).rejects.toMatchObject({ status: 422 });
+      expect(prisma.promoRedemption.create).not.toHaveBeenCalled();
+    });
+
     it('maps the per-user partial-unique P2002 to 409 PER_USER_EXCEEDED', async () => {
-      prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
+      prisma.$executeRaw.mockResolvedValue(1);
       prisma.promoRedemption.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('unique', {
           code: 'P2002',
@@ -264,16 +301,13 @@ describe('PromoService', () => {
           userId,
           'd-1',
           20,
-          {
-            discountAmount: 2,
-            finalTotal: 18,
-          },
+          discount,
         ),
       ).rejects.toMatchObject({ status: 409 });
     });
 
     it('does NOT map an unrelated P2002 to PER_USER_EXCEEDED', async () => {
-      prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
+      prisma.$executeRaw.mockResolvedValue(1);
       const other = new Prisma.PrismaClientKnownRequestError('unique', {
         code: 'P2002',
         clientVersion: 'x',
@@ -287,10 +321,7 @@ describe('PromoService', () => {
           userId,
           'd-1',
           20,
-          {
-            discountAmount: 2,
-            finalTotal: 18,
-          },
+          discount,
         ),
       ).rejects.toBe(other);
     });

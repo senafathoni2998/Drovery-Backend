@@ -45,7 +45,12 @@ type MockPrismaService = {
       }
     : K extends '$transaction'
       ? jest.Mock
-      : K extends '$connect' | '$disconnect' | 'readWithFallback'
+      : K extends
+            | '$connect'
+            | '$disconnect'
+            | 'readWithFallback'
+            | '$executeRaw'
+            | '$queryRaw'
         ? jest.Mock
         : PrismaService[K];
 };
@@ -106,6 +111,9 @@ export function createMockPrismaService(): MockPrismaService {
     webhookEvent: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
+    // Raw escape hatches used by a few money/reaper paths; default to a benign result.
+    $executeRaw: jest.fn().mockResolvedValue(0),
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
   // (findFirst→findUnique delegation is now built into createModelMock for every model.)
   // Supports both forms: array (Promise.all) AND the interactive callback form,

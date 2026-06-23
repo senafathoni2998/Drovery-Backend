@@ -97,18 +97,42 @@ export class PromoService {
     originalTotal: number,
     discount: DiscountResult,
   ): Promise<void> {
-    const { count } = await tx.promoCode.updateMany({
-      where: {
-        id: code.id,
-        active: true,
-        OR: [
-          { maxRedemptions: null },
-          { timesRedeemed: { lt: code.maxRedemptions ?? 0 } },
-        ],
-      },
-      data: { timesRedeemed: { increment: 1 } },
-    });
-    if (count === 0) {
+    // Authoritative atomic guard: increment the global counter ONLY if the code is still
+    // active, WITHIN its start/end window, and under its CURRENT cap — every condition checked
+    // against the row's OWN columns under the row lock. This is a raw UPDATE because (a) Prisma
+    // updateMany can't compare `timesRedeemed` against the `maxRedemptions` COLUMN (the prior
+    // CAS compared it against the validateForRedeem SNAPSHOT, so a concurrently-lowered cap was
+    // over-redeemed), and (b) the window (startsAt/endsAt) was only checked in checkRedeemable
+    // OUTSIDE this tx, so an expired / not-yet-started code could still redeem.
+    const now = new Date();
+    const affected = await tx.$executeRaw`
+      UPDATE "promo_codes"
+      SET "timesRedeemed" = "timesRedeemed" + 1
+      WHERE "id" = ${code.id}
+        AND "active" = true
+        AND ("startsAt" IS NULL OR "startsAt" <= ${now})
+        AND ("endsAt" IS NULL OR "endsAt" > ${now})
+        AND ("maxRedemptions" IS NULL OR "timesRedeemed" < "maxRedemptions")
+    `;
+    if (affected === 0) {
+      // Disambiguate the rejection reason from the row's current state (the atomic guard folds
+      // active/window/cap into one predicate) so the caller gets a precise 4xx, not a blanket one.
+      const cur = await tx.promoCode.findUnique({ where: { id: code.id } });
+      if (!cur || !cur.active) {
+        throw this.promoError(
+          'INACTIVE',
+          'This promo code is no longer active.',
+        );
+      }
+      if (cur.startsAt && now < cur.startsAt) {
+        throw this.promoError(
+          'NOT_STARTED',
+          'This promo code is not active yet.',
+        );
+      }
+      if (cur.endsAt && now >= cur.endsAt) {
+        throw this.promoError('EXPIRED', 'This promo code has expired.');
+      }
       throw this.promoError(
         'GLOBALLY_MAXED',
         'This promo code has reached its redemption limit.',
