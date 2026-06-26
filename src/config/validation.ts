@@ -53,13 +53,23 @@ export function validate(config: Record<string, unknown>) {
     // STRIPE_SECRET_KEY is absent, so a production deploy missing the keys (secret-store outage,
     // partial env, key rotation) would fail OPEN and accept forged events. Require both keys
     // (non-placeholder) so we fail to BOOT instead of failing open.
-    for (const key of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'] as const) {
-      const raw = config[key];
-      const value = typeof raw === 'string' ? raw : '';
-      if (!value || /change|example|xxxx|placeholder/i.test(value)) {
-        throw new Error(
-          `${key} is missing or a placeholder — required in production (the Stripe webhook must verify signatures, never run in mock/unsigned mode)`,
-        );
+    //
+    // ESCAPE HATCH for demo/portfolio deploys: ALLOW_MOCK_PAYMENTS=true runs Stripe keyless in
+    // production AND makes the webhook fail-CLOSED (StripeService.constructEvent rejects unsigned
+    // events in mock mode), so there is no fail-open to guard against. Default (unset) still
+    // requires real keys — real payment deployments are unaffected.
+    if (config.ALLOW_MOCK_PAYMENTS !== 'true') {
+      for (const key of [
+        'STRIPE_SECRET_KEY',
+        'STRIPE_WEBHOOK_SECRET',
+      ] as const) {
+        const raw = config[key];
+        const value = typeof raw === 'string' ? raw : '';
+        if (!value || /change|example|xxxx|placeholder/i.test(value)) {
+          throw new Error(
+            `${key} is missing or a placeholder — required in production (the Stripe webhook must verify signatures, never run in mock/unsigned mode). Set ALLOW_MOCK_PAYMENTS=true for a mock/demo deploy.`,
+          );
+        }
       }
     }
   }

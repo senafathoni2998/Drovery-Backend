@@ -68,6 +68,19 @@ describe('config validation', () => {
       ).toThrow(/STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET/);
     });
 
+    it('ALLOW_MOCK_PAYMENTS=true lets a demo boot WITHOUT Stripe keys in production', () => {
+      expect(() =>
+        validate({
+          ...base(),
+          NODE_ENV: 'production',
+          JWT_SECRET: STRONG,
+          JWT_REFRESH_SECRET: `${STRONG}_refresh`,
+          ALLOW_MOCK_PAYMENTS: 'true',
+          // no Stripe keys — allowed because the webhook fails CLOSED in mock mode
+        }),
+      ).not.toThrow();
+    });
+
     it('refuses to boot if LOADTEST_BYPASS_THROTTLE is set in production', () => {
       expect(() =>
         validate({
