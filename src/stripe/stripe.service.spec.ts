@@ -37,16 +37,17 @@ describe('StripeService (mock mode)', () => {
     expect(intent.clientSecret).toContain('secret');
   });
 
-  it('constructEvent parses the raw JSON body without a signature in mock mode', () => {
+  it('constructEvent fails CLOSED in mock mode — refuses unsigned events (no fail-open)', () => {
     const body = JSON.stringify({
       type: 'payment_intent.succeeded',
       data: { object: { id: 'pi_1' } },
     });
 
-    const event = service.constructEvent(Buffer.from(body));
-
-    expect(event.type).toBe('payment_intent.succeeded');
-    expect(event.data.object.id).toBe('pi_1');
+    // Mock mode has no signing secret, so an unsigned payload is unverifiable. It must be
+    // REFUSED (not parsed) so a forged event can't mutate payment state via the public webhook.
+    expect(() => service.constructEvent(Buffer.from(body))).toThrow(
+      /disabled in mock mode/i,
+    );
   });
 
   it('createCustomer returns a deterministic mock id', async () => {

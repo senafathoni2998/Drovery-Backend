@@ -165,13 +165,17 @@ export class StripeService {
   }
 
   /**
-   * Verifies and parses a Stripe webhook. In mock mode the signature check is
-   * skipped and the raw JSON body is parsed directly.
+   * Verifies and parses a Stripe webhook. In mock mode there is no signing secret, so the
+   * webhook is REFUSED (fail-closed) rather than parsing the unsigned body — otherwise the
+   * public endpoint would fail OPEN and let a forged event mutate payment state. Mock payments
+   * are confirmed at creation (createPaymentIntent returns 'succeeded'), so the webhook is
+   * unused in mock mode. The controller maps the throw to 400.
    */
   constructEvent(payload: Buffer | string, signature?: string): StripeEvent {
     if (this.isMock || !this.stripe) {
-      const raw = Buffer.isBuffer(payload) ? payload.toString('utf8') : payload;
-      return JSON.parse(raw) as StripeEvent;
+      throw new Error(
+        'Stripe webhook is disabled in mock mode — refusing to process unsigned events',
+      );
     }
 
     const secret = this.config.get<string>('stripe.webhookSecret') ?? '';
