@@ -47,6 +47,11 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set a strong JWT_REFRESH_SECRET in .env}
       # Same-origin admin needs no CORS; set this only if you serve the console on another host.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Demo/global knobs (default off — opt in via .env): SERVICE_AREA_GLOBAL=true makes the whole
+      # world serviceable; ALLOW_MOCK_PAYMENTS=true boots in prod without Stripe keys (mock payments,
+      # webhook fails closed). See .env.example.
+      SERVICE_AREA_GLOBAL: ${SERVICE_AREA_GLOBAL:-}
+      ALLOW_MOCK_PAYMENTS: ${ALLOW_MOCK_PAYMENTS:-}
 
   worker:
     image: ${DOCKER_REGISTRY:-drovery}/drovery-backend:${TAG:-latest}
@@ -56,6 +61,8 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/drovery?schema=public
       JWT_SECRET: ${JWT_SECRET:?set a strong JWT_SECRET in .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set a strong JWT_REFRESH_SECRET in .env}
+      SERVICE_AREA_GLOBAL: ${SERVICE_AREA_GLOBAL:-}
+      ALLOW_MOCK_PAYMENTS: ${ALLOW_MOCK_PAYMENTS:-}
 
   # The operator/support console (drovery-admin). Built from the sibling repo, or pulled.
   admin:
