@@ -44,6 +44,25 @@ describe('ServiceabilityService', () => {
     expect(r.codes).toContain('OUT_OF_AREA');
   });
 
+  it('SERVICE_AREA_GLOBAL=true makes anywhere serviceable (e.g. a London route)', async () => {
+    const prev = process.env.SERVICE_AREA_GLOBAL;
+    process.env.SERVICE_AREA_GLOBAL = 'true';
+    try {
+      // Both endpoints far outside any configured hub — rejected by default, allowed in global mode.
+      const r = await service.checkServiceability(
+        51.5074,
+        -0.1278,
+        51.5155,
+        -0.1426,
+      );
+      expect(r.serviceable).toBe(true);
+      expect(r.codes).not.toContain('OUT_OF_AREA');
+    } finally {
+      if (prev === undefined) delete process.env.SERVICE_AREA_GLOBAL;
+      else process.env.SERVICE_AREA_GLOBAL = prev;
+    }
+  });
+
   it('rejects an endpoint inside a no-fly zone (CGK airport)', async () => {
     const r = await service.checkServiceability(
       -6.1256,

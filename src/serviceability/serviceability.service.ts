@@ -110,6 +110,10 @@ export class ServiceabilityService {
   // ── geometry ───────────────────────────────────────────────
 
   private isInAnyArea(lat: number, lng: number): boolean {
+    // GLOBAL mode: SERVICE_AREA_GLOBAL=true treats everywhere as in-area, so any user
+    // anywhere can place a delivery. Default (unset) keeps the Jakarta/Bandung hub geofence —
+    // the realistic demo behavior. Read at call time so it's runtime-togglable + testable.
+    if (process.env.SERVICE_AREA_GLOBAL === 'true') return true;
     return SERVICE_AREAS.some((a) => this.inCircle(lat, lng, a));
   }
 
