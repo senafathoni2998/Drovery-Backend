@@ -85,14 +85,12 @@ describe('MqttService', () => {
   });
 
   describe('round-trip against an in-process aedes broker (no docker)', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let broker: any;
     let server: Server;
     let port: number;
     let svc: MqttService;
 
     beforeAll(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
       broker = (require('aedes') as () => any)();
       server = createServer(
         (broker as { handle: (s: unknown) => void }).handle,
