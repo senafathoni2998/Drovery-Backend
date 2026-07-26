@@ -77,7 +77,11 @@ describe('DeliveriesService', () => {
     receiver: 'Jane Doe',
     packages: 'Electronics box',
     packageSize: 'Medium',
-    packageWeight: 2,
+    // At the Medium cap (MAX_WEIGHT_KG.Medium = 1.5). create() now rejects an
+    // over-capacity package, so the shared fixture has to be a package a drone
+    // can actually lift. Pricing is mocked below, so the number here does not
+    // feed any expected total.
+    packageWeight: 1.5,
     packageTypes: ['electronics', 'fragile'],
     pickupDate: '2026-04-10',
     pickupTime: '10:00',
@@ -102,7 +106,21 @@ describe('DeliveriesService', () => {
       scheduleKickoff: jest.fn(),
       stopSimulation: jest.fn().mockResolvedValue(undefined),
     };
-    geoService = { geocode: jest.fn() };
+    // create() geocodes BOTH addresses on every call now (the geocode is
+    // authoritative for pricing/serviceability — caller coords are never trusted),
+    // so the default mock has to resolve. It returns the fixture's coords so the
+    // existing "stored/simulated with these coords" assertions still describe the
+    // same delivery. Per-test mockResolvedValueOnce/mockResolvedValue overrides
+    // still take precedence.
+    geoService = {
+      geocode: jest.fn((address: string) =>
+        Promise.resolve(
+          address === createDto.fromAddress
+            ? { lat: createDto.fromLat, lng: createDto.fromLng }
+            : { lat: createDto.toLat, lng: createDto.toLng },
+        ),
+      ),
+    };
     pricingService = {
       estimate: jest.fn().mockResolvedValue({
         baseFee: 2,
@@ -277,7 +295,7 @@ describe('DeliveriesService', () => {
       expect(pricingService.estimate).toHaveBeenCalledWith(
         expect.objectContaining({
           packageSize: 'Medium',
-          packageWeight: 2,
+          packageWeight: 1.5,
           packageTypes: ['electronics', 'fragile'],
           fromLat: createDto.fromLat,
           toLng: createDto.toLng,
@@ -311,8 +329,11 @@ describe('DeliveriesService', () => {
           toLng: createDto.toLng,
         },
       );
-      // Coords supplied → no geocoding needed
-      expect(geoService.geocode).not.toHaveBeenCalled();
+      // Coords supplied, but the server still geocodes: the address is the
+      // authoritative source for pricing + serviceability. (It used to short-circuit
+      // here, which is what let a caller price their own delivery.)
+      expect(geoService.geocode).toHaveBeenCalledWith(createDto.fromAddress);
+      expect(geoService.geocode).toHaveBeenCalledWith(createDto.toAddress);
     });
 
     it('should geocode missing coordinates from addresses', async () => {
@@ -723,6 +744,8 @@ describe('DeliveriesService', () => {
         userId,
         fromAddress: 'Old From',
         toAddress: 'Old To',
+        // Stored coords deliberately far from whatever 'Old From'/'Old To' geocode
+        // to: reorder must NOT replay them into the caller-coord deviation check.
         fromLat: -6.9,
         fromLng: 107.6,
         toLat: -6.92,
@@ -730,7 +753,7 @@ describe('DeliveriesService', () => {
         receiver: 'Repeat Bob',
         packages: 'Same box',
         packageSize: 'Medium',
-        packageWeight: 2,
+        packageWeight: 1.5, // within the Medium cap — reorder goes through create()
         packageTypes: ['electronics'],
       });
       prisma.delivery.create.mockResolvedValue(mockDelivery);
@@ -747,6 +770,44 @@ describe('DeliveriesService', () => {
       expect(data.status).toBe(DeliveryStatus.PENDING);
     });
 
+    it('does not replay the source delivery coords into the caller-coord check', async () => {
+      // The source carries coords that disagree with what its addresses geocode to.
+      // If reorder forwarded them, assertCoordAgreesWithAddress would 400 — so a
+      // customer could never reorder a delivery created before the geocode became
+      // authoritative. create() re-geocodes instead.
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        userId,
+        fromAddress: 'Old From',
+        toAddress: 'Old To',
+        fromLat: 10,
+        fromLng: 120,
+        toLat: -30,
+        toLng: -60,
+        packageSize: 'Medium',
+        packageWeight: 1.5,
+        packageTypes: ['electronics'],
+      });
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      geoService.geocode.mockImplementation((address: string) =>
+        Promise.resolve(
+          address === 'Old From'
+            ? { lat: -6.5, lng: 107.1 }
+            : { lat: -6.6, lng: 107.2 },
+        ),
+      );
+
+      await expect(
+        service.reorder(userId, 'delivery-1'),
+      ).resolves.toBeDefined();
+
+      // Geocoded from the addresses — the stored (10, 120) never reaches the row.
+      const data = prisma.delivery.create.mock.calls[0][0].data;
+      expect(data.fromLat).toBe(-6.5);
+      expect(data.fromLng).toBe(107.1);
+      expect(data.toLat).toBe(-6.6);
+    });
+
     it('throws NotFound when reordering a delivery the user does not own', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         ...mockDelivery,
@@ -755,6 +816,132 @@ describe('DeliveriesService', () => {
       await expect(service.reorder(userId, 'delivery-1')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('create — pricing trust boundary', () => {
+    // The distance fee (PER_KM_RATE × haversine) is the largest single component of
+    // the price. It used to be computed from coordinates the CALLER supplied, so
+    // posting fromLat/fromLng === toLat/toLng zeroed it — and the same coords were
+    // then handed to the serviceability check, passing the geofence by construction.
+    it('prices from the server geocode, NOT the caller coords', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      // Caller coords nudged ~55 m — inside the 1 km tolerance, so they survive
+      // validation and the ONLY thing that can reject them is being ignored.
+      await service.create(userId, {
+        ...createDto,
+        fromLat: createDto.fromLat + 0.0005,
+        fromLng: createDto.fromLng + 0.0005,
+        toLat: createDto.toLat + 0.0005,
+        toLng: createDto.toLng + 0.0005,
+      } as any);
+
+      // Priced on the geocoded route (the fixture's real, distinct coords).
+      expect(pricingService.estimate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fromLat: createDto.fromLat,
+          fromLng: createDto.fromLng,
+          toLat: createDto.toLat,
+          toLng: createDto.toLng,
+        }),
+      );
+
+      // …and the geocoded route is what gets stored + flown.
+      const data = prisma.delivery.create.mock.calls[0][0].data;
+      expect(data.toLat).toBe(createDto.toLat);
+      expect(data.toLng).toBe(createDto.toLng);
+    });
+
+    it('serviceability is checked against the geocode, not the caller coords', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.create(userId, {
+        ...createDto,
+        fromLat: createDto.fromLat + 0.0005,
+        fromLng: createDto.fromLng + 0.0005,
+        toLat: createDto.toLat + 0.0005,
+        toLng: createDto.toLng + 0.0005,
+      } as any);
+
+      expect(serviceability.checkServiceability).toHaveBeenCalledWith(
+        createDto.fromLat,
+        createDto.fromLng,
+        createDto.toLat,
+        createDto.toLng,
+      );
+    });
+
+    it('rejects the zero-the-distance-fee shape (pickup coords claimed at the dropoff)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          toLat: createDto.fromLat,
+          toLng: createDto.fromLng,
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a caller coord that disagrees with its address by more than 1 km', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      // ~11 km north of the geocoded pickup.
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          fromLat: createDto.fromLat + 0.1,
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts a caller coord within 1 km of its address (rooftop pin vs street centroid)', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      // ~55 m off — a plausible precise drop point.
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          fromLat: createDto.fromLat + 0.0005,
+        } as any),
+      ).resolves.toBeDefined();
+    });
+
+    it('rejects a package over the per-size payload cap', async () => {
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          packageSize: 'Small',
+          packageWeight: 500,
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      // Rejected before any geocode / pricing / DB work.
+      expect(geoService.geocode).not.toHaveBeenCalled();
+      expect(pricingService.estimate).not.toHaveBeenCalled();
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('enforces the payload cap on reorder, which never sees the ValidationPipe', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...mockDelivery,
+        userId,
+        packageSize: 'Small',
+        packageWeight: 500,
+        packageTypes: ['electronics'],
+      });
+
+      await expect(service.reorder(userId, 'delivery-1')).rejects.toMatchObject(
+        {
+          status: 400,
+        },
+      );
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
     });
   });
 
