@@ -166,6 +166,24 @@ export class AuthService {
       where: { tokenHash: this.hashToken(refreshToken) },
     });
 
+    // REUSE DETECTION. A token that exists, belongs to this user, and is already
+    // revoked is being REPLAYED — rotation means each one is valid exactly once.
+    // Either the legitimate holder is replaying a rotated token, or an attacker is
+    // using a stolen one; from here the two are indistinguishable, so the safe move
+    // is to end the whole family and force a fresh login. Scoped to `revokedAt`
+    // being set on a token genuinely owned by `userId`, so a stranger presenting a
+    // guessed hash cannot use this to log someone else out.
+    if (record && record.revokedAt && record.userId === userId) {
+      const { count } = await this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      this.logger.warn(
+        `refresh token reuse detected for user ${userId}; revoked ${count} active token(s)`,
+      );
+      throw new AppUnauthorizedException('error.auth.refresh_invalid');
+    }
+
     if (
       !record ||
       record.revokedAt ||
@@ -180,20 +198,23 @@ export class AuthService {
       throw new AppUnauthorizedException('error.auth.user_gone');
     }
 
-    // Revoke the used token (rotation), then issue + persist a new pair.
-    await this.prisma.refreshToken.update({
-      where: { id: record.id },
-      data: { revokedAt: new Date() },
-    });
-
-    return this.generateTokens(user.id, user.email);
+    // Swap the used token for a fresh pair in one transaction.
+    return this.rotateTokens(user.id, user.email, record.id);
   }
 
-  /** Revokes the presented refresh token (real, server-side logout). */
+  /**
+   * Ends the presented session (real, server-side logout).
+   *
+   * DELETES the row rather than stamping `revokedAt`. That keeps `revokedAt` meaning
+   * exactly one thing — "superseded by rotation" — which is what makes the reuse
+   * detection in refreshTokens() safe: a surviving revoked row can now ONLY be a
+   * replayed rotation, never the harmless residue of a logout. Deleting is also no
+   * weaker than revoking (an absent row fails the lookup outright), and nothing
+   * outside this service ever reads refresh_tokens.
+   */
   async logout(refreshToken: string): Promise<{ success: true }> {
-    await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: this.hashToken(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date() },
+    await this.prisma.refreshToken.deleteMany({
+      where: { tokenHash: this.hashToken(refreshToken) },
     });
     return { success: true };
   }
@@ -251,6 +272,8 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
 
+    const now = new Date();
+
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: record.userId },
@@ -258,7 +281,20 @@ export class AuthService {
       }),
       this.prisma.passwordResetToken.updateMany({
         where: { userId: record.userId, usedAt: null },
-        data: { usedAt: new Date() },
+        data: { usedAt: now },
+      }),
+      // Reset the password AND end every session, atomically. Without this a
+      // refresh token stolen before the reset stays valid for its full 7-day life
+      // and can mint access tokens indefinitely by rotation — so the reset, the one
+      // action a user takes precisely BECAUSE they think they are compromised,
+      // would not actually evict the attacker.
+      //
+      // DELETE, not revoke, for the same reason as logout(): a bulk-revoked row
+      // replayed later by a device that missed the reset would otherwise look
+      // identical to a rotation replay and take out the session the user just
+      // created when they logged back in.
+      this.prisma.refreshToken.deleteMany({
+        where: { userId: record.userId },
       }),
     ]);
 
@@ -331,7 +367,40 @@ export class AuthService {
     return { success: true };
   }
 
-  private async generateTokens(
+  /**
+   * Rotates: signs a fresh pair and swaps it for `oldTokenId` ATOMICALLY.
+   *
+   * The revoke and the replacement insert have to co-commit. Done as two separate
+   * writes, a failure between them leaves the caller holding a token that is revoked
+   * with no successor — and with reuse detection in place, their next retry would
+   * then look like a replay and log out every one of their devices.
+   */
+  private async rotateTokens(
+    userId: string,
+    email: string,
+    oldTokenId: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const signed = await this.signTokens(userId, email);
+
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.update({
+        where: { id: oldTokenId },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.refreshToken.create({
+        data: {
+          userId,
+          tokenHash: this.hashToken(signed.refreshToken),
+          expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+        },
+      }),
+    ]);
+
+    return signed;
+  }
+
+  /** Signs a pair WITHOUT persisting — callers decide how the row is written. */
+  private async signTokens(
     userId: string,
     email: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
@@ -349,6 +418,16 @@ export class AuthService {
         expiresIn: this.config.get<string>('jwt.refreshExpiresIn') as string,
       } as any),
     ]);
+
+    return { accessToken, refreshToken };
+  }
+
+  /** Signs a pair and persists the refresh token. For fresh logins (no predecessor). */
+  private async generateTokens(
+    userId: string,
+    email: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const { accessToken, refreshToken } = await this.signTokens(userId, email);
 
     // Persist the refresh token (hashed) so it can be rotated/revoked.
     await this.prisma.refreshToken.create({
