@@ -16,7 +16,7 @@ describe('RecurringDeliveriesService', () => {
     receiver: 'R',
     packages: 'Box',
     packageSize: 'Medium',
-    packageWeight: 2,
+    packageWeight: 1.5, // at the Medium cap — create() now rejects an over-cap template
     packageTypes: ['electronics'],
   };
 
@@ -34,6 +34,23 @@ describe('RecurringDeliveriesService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('create', () => {
+    it('rejects an over-capacity template up front, not once per occurrence', async () => {
+      // Without this the schedule saves as active, and every tick fails inside the
+      // materializer — whose catch logs a warning after the cursor has advanced. The
+      // user would see an active schedule that silently produces nothing, forever.
+      await expect(
+        service.create(userId, {
+          freq: 'DAILY' as any,
+          timeOfDay: '08:00',
+          ...template,
+          packageSize: 'Small',
+          packageWeight: 500,
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      expect(prisma.recurringDelivery.create).not.toHaveBeenCalled();
+    });
+
     it('computes nextRunAt and persists a DAILY schedule', async () => {
       prisma.recurringDelivery.create.mockResolvedValue({ id: 'r-1' });
       await service.create(userId, {
