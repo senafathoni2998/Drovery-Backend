@@ -27,7 +27,6 @@ jest.mock('@prisma/client', () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Prisma } = require('@prisma/client');
 
 describe('PrismaService', () => {
