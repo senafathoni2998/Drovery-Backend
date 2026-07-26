@@ -50,27 +50,62 @@ describe('MailService', () => {
     mail = new MailService(config, new I18nService());
   });
 
-  it('composes the localized reset email (en) with From, subject, CTA, deep link + token', async () => {
-    const log = jest
+  /**
+   * All output goes through `logger.log`: call 0 is the always-safe metadata line,
+   * call 1 (non-production only) is the rendered body. The body is deliberately NOT
+   * at debug — the pino level defaults to `info` and LOG_LEVEL is set nowhere, so a
+   * debug line would never actually be emitted by the running app.
+   */
+  const spyLog = () =>
+    jest
       .spyOn((mail as unknown as { logger: { log: jest.Mock } }).logger, 'log')
       .mockImplementation(() => undefined);
+
+  it('composes the localized reset email (en) with From, subject, CTA, deep link + token', async () => {
+    const log = spyLog();
     await mail.sendPasswordResetEmail('u@x.com', 'TOK123', 'en');
-    const out = log.mock.calls[0][0] as string;
-    expect(out).toContain('From: no-reply@drovery.com');
-    expect(out).toContain('Reset your Drovery password'); // subject
-    expect(out).toContain('Reset password'); // cta label
-    expect(out).toContain('droverymobile://reset-password?token=TOK123');
-    expect(out).toContain('Or enter this code in the app: TOK123'); // code hint
+
+    // Metadata line — safe to emit anywhere.
+    const meta = log.mock.calls[0][0] as string;
+    expect(meta).toContain('From: no-reply@drovery.com');
+    expect(meta).toContain('Reset your Drovery password'); // subject
+    expect(meta).not.toContain('TOK123'); // the token never rides the metadata line
+
+    // Composition is still asserted — via the dev-only body line.
+    const body = log.mock.calls[1][0] as string;
+    expect(body).toContain('Reset password'); // cta label
+    expect(body).toContain('droverymobile://reset-password?token=TOK123');
+    expect(body).toContain('Or enter this code in the app: TOK123'); // code hint
   });
 
   it('localizes the verification email to Indonesian', async () => {
-    const log = jest
-      .spyOn((mail as unknown as { logger: { log: jest.Mock } }).logger, 'log')
-      .mockImplementation(() => undefined);
+    const log = spyLog();
     await mail.sendVerificationEmail('u@x.com', 'TOK', 'id');
-    const out = log.mock.calls[0][0] as string;
-    expect(out).toContain('Verifikasi email Drovery Anda'); // id subject
-    expect(out).toContain('Verifikasi email'); // id cta
-    expect(out).toContain('Atau masukkan kode ini di aplikasi: TOK'); // id code hint
+
+    expect(log.mock.calls[0][0] as string).toContain(
+      'Verifikasi email Drovery Anda',
+    ); // id subject
+    const body = log.mock.calls[1][0] as string;
+    expect(body).toContain('Verifikasi email'); // id cta
+    expect(body).toContain('Atau masukkan kode ini di aplikasi: TOK'); // id code hint
+  });
+
+  it('NEVER logs the rendered body in production, on either branch', async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const log = spyLog();
+      await mail.sendPasswordResetEmail('u@x.com', 'TOK123', 'en');
+
+      // Metadata only — one line, and the token is in none of them. This is the
+      // DEFAULT deploy path: no mail provider is integrated, so production takes
+      // the same branch development does.
+      expect(log).toHaveBeenCalledTimes(1);
+      for (const call of log.mock.calls) {
+        expect(String(call[0])).not.toContain('TOK123');
+      }
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
   });
 });
