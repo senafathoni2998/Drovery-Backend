@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { haversineKm } from '../common/geo-distance';
+import { assertWeightWithinCap } from '../common/package-limits';
 import { GeoService } from '../geo/geo.service';
 import { ServiceabilityService } from '../serviceability/serviceability.service';
 import { ServiceabilityResult } from '../serviceability/serviceability.types';
@@ -62,6 +63,11 @@ export class PricingService {
   ) {}
 
   async estimate(dto: EstimatePriceDto): Promise<PriceEstimate> {
+    // Quote and charge must agree on what is flyable at all, so the payload cap is
+    // enforced here too — otherwise the app would happily quote a package no drone
+    // can lift and only fail at create().
+    assertWeightWithinCap(dto.packageSize, dto.packageWeight);
+
     const baseFee = BASE_FEE;
     const sizeFee = SIZE_FEES[dto.packageSize] ?? 0;
     const weightFee = round2(dto.packageWeight * WEIGHT_RATE);
