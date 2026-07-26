@@ -62,6 +62,8 @@ export const ERROR_KEYS = [
   'error.delivery.tracking_id_alloc_failed',
   'error.delivery.serviceability.unresolved_location',
   'error.delivery.serviceability.not_flyable',
+  'error.delivery.package.weight_exceeds_cap',
+  'error.delivery.coords.address_mismatch',
   'error.serviceability.OUT_OF_AREA',
   'error.serviceability.NO_FLY_ZONE',
   'error.serviceability.WEATHER_STORM',
