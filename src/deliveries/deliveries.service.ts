@@ -22,6 +22,8 @@ import {
   AppUnauthorizedException,
   AppUnprocessableEntityException,
 } from '../common/exceptions/app-exception';
+import { haversineKm } from '../common/geo-distance';
+import { assertWeightWithinCap } from '../common/package-limits';
 import { GeoService } from '../geo/geo.service';
 import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -98,6 +100,14 @@ const MAX_SCHEDULE_MS = MAX_SCHEDULE_DAYS * 24 * 60 * 60 * 1000;
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+/**
+ * How far a caller-supplied coordinate may sit from the geocode of the address it
+ * claims to describe before we reject the pair outright. Generous enough to absorb
+ * the difference between a rooftop pin and the street centroid a geocoder returns,
+ * tight enough that "same address, wildly different point" is a 400.
+ */
+const MAX_COORD_DEVIATION_KM = 1;
+
 @Injectable()
 export class DeliveriesService {
   private readonly logger = new Logger(DeliveriesService.name);
@@ -159,6 +169,12 @@ export class DeliveriesService {
   }
 
   async create(userId: string, dto: CreateDeliveryDto) {
+    // A drone can only lift so much. Reject an over-capacity package before any
+    // geocode / pricing / DB / queue work. Enforced HERE and not only on the DTO
+    // because reorder, favorite-order and the recurring materializer all call
+    // create() with a hand-built DTO that never sees the ValidationPipe.
+    assertWeightWithinCap(dto.packageSize, dto.packageWeight);
+
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
     // Pre-generate the delivery's id (the Phase-3 §2 Stage-A1 keystone). Today this is
     // byte-identical to the DB `@default(uuid())` — the row just gets an explicit id —
@@ -173,8 +189,8 @@ export class DeliveriesService {
     const deliveryId = uuidv4();
 
     // Resolve pickup/dropoff coordinates so the drone can fly a real route.
-    // Uses client-provided coords when present; otherwise geocodes the
-    // addresses (best-effort — geocoding failures leave coords undefined).
+    // Server-side geocode of the addresses is authoritative — caller-supplied
+    // coords are validated against it but never priced from. See resolveCoords.
     const coords = await this.resolveCoords(dto);
 
     // Gate on serviceability BEFORE any DB/payment/queue side-effects: reject
@@ -483,31 +499,75 @@ export class DeliveriesService {
   }
 
   /**
-   * Fills in pickup/dropoff coordinates. Client-supplied coords win; any
-   * missing pair is geocoded from its address via the geo provider.
-   * Best-effort: a failed geocode simply leaves the coordinate undefined
-   * (the simulation then falls back to its default route).
+   * Resolves pickup/dropoff coordinates for pricing, serviceability and the stored
+   * flight route.
+   *
+   * SECURITY — the GEOCODE OF THE ADDRESS IS AUTHORITATIVE. Caller-supplied
+   * coordinates are validated but never used for any of the three. This used to be
+   * "client-supplied coords win", which meant the distance fee — the largest single
+   * component of the price (PER_KM_RATE × haversine) — was computed from a number
+   * the caller chose. Posting `fromLat/fromLng === toLat/toLng` zeroed it, and the
+   * same coords were then handed to `assertServiceable`, so the geofence was passed
+   * by construction rather than checked.
+   *
+   * Both addresses are geocoded on every create. `GeoService` caches, so a repeated
+   * address is a cache hit; correctness beats a saved round-trip on a money path.
+   *
+   * A failed geocode leaves the pair undefined, which `assertServiceable` then
+   * rejects as UNRESOLVED_LOCATION — deliberately fail-closed. We do NOT fall back
+   * to caller coords, because that is exactly the trust boundary being closed here.
    */
   private async resolveCoords(dto: CreateDeliveryDto): Promise<ResolvedCoords> {
-    let { fromLat, fromLng, toLat, toLng } = dto;
+    const [fromGeo, toGeo] = await Promise.all([
+      dto.fromAddress ? this.geoService.geocode(dto.fromAddress) : null,
+      dto.toAddress ? this.geoService.geocode(dto.toAddress) : null,
+    ]);
 
-    if ((fromLat == null || fromLng == null) && dto.fromAddress) {
-      const geo = await this.geoService.geocode(dto.fromAddress);
-      if (geo) {
-        fromLat = geo.lat;
-        fromLng = geo.lng;
-      }
+    // Caller coords are still worth something as an INPUT-SANITY signal: if the
+    // caller pinned a point that disagrees with the address they typed, one of the
+    // two is wrong, and 400 is a better answer than silently flying to whichever
+    // street centroid the geocoder returned.
+    this.assertCoordAgreesWithAddress(
+      fromGeo,
+      dto.fromLat,
+      dto.fromLng,
+      'fromAddress',
+    );
+    this.assertCoordAgreesWithAddress(toGeo, dto.toLat, dto.toLng, 'toAddress');
+
+    return {
+      fromLat: fromGeo?.lat,
+      fromLng: fromGeo?.lng,
+      toLat: toGeo?.lat,
+      toLng: toGeo?.lng,
+    };
+  }
+
+  /**
+   * Rejects a caller coordinate that sits further than MAX_COORD_DEVIATION_KM from
+   * the geocode of the address it claims to describe. No-ops when either side is
+   * absent — a missing geocode is `assertServiceable`'s error to raise, and callers
+   * that send no coords (every first-party client today) are unaffected.
+   */
+  private assertCoordAgreesWithAddress(
+    geo: { lat: number; lng: number } | null,
+    lat: number | undefined,
+    lng: number | undefined,
+    field: string,
+  ): void {
+    if (!geo || lat == null || lng == null) return;
+
+    const deviationKm = haversineKm(geo.lat, geo.lng, lat, lng);
+    if (deviationKm > MAX_COORD_DEVIATION_KM) {
+      throw new AppBadRequestException(
+        'error.delivery.coords.address_mismatch',
+        {
+          field,
+          maxKm: MAX_COORD_DEVIATION_KM,
+          deviationKm: Math.round(deviationKm * 10) / 10,
+        },
+      );
     }
-
-    if ((toLat == null || toLng == null) && dto.toAddress) {
-      const geo = await this.geoService.geocode(dto.toAddress);
-      if (geo) {
-        toLat = geo.lat;
-        toLng = geo.lng;
-      }
-    }
-
-    return { fromLat, fromLng, toLat, toLng };
   }
 
   /**
@@ -1035,10 +1095,10 @@ export class DeliveriesService {
       packageSize: src.packageSize,
       packageWeight: src.packageWeight,
       packageTypes: src.packageTypes,
-      fromLat: src.fromLat ?? undefined,
-      fromLng: src.fromLng ?? undefined,
-      toLat: src.toLat ?? undefined,
-      toLng: src.toLng ?? undefined,
+      // Deliberately NOT forwarding the source's coords. create() geocodes the
+      // addresses and ignores caller coords entirely, so replaying stored ones can
+      // only ever trip assertCoordAgreesWithAddress — a check meant for untrusted
+      // CALLER input, not for values this service wrote itself.
       pickupDate: overrides?.pickupDate ?? now.date,
       pickupTime: overrides?.pickupTime ?? now.time,
     });
