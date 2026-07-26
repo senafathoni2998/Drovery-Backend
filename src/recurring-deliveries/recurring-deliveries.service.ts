@@ -5,6 +5,7 @@ import {
   AppBadRequestException,
   AppNotFoundException,
 } from '../common/exceptions/app-exception';
+import { assertWeightWithinCap } from '../common/package-limits';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRecurringDeliveryDto, RecurringQueryDto } from './dto';
 import { RecurrenceRule, computeNextOccurrence } from './recurrence';
@@ -14,6 +15,13 @@ export class RecurringDeliveriesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(userId: string, dto: CreateRecurringDeliveryDto) {
+    // Reject an unliftable payload HERE, when the user is on the other end of the
+    // request. DeliveriesService.create() enforces the same cap, but by then we are
+    // inside the materializer, whose catch swallows the 400 into a log line after the
+    // cursor has advanced — an over-cap schedule would sit "active" forever, silently
+    // producing nothing.
+    assertWeightWithinCap(dto.packageSize, dto.packageWeight);
+
     const startDate = dto.startDate ? new Date(dto.startDate) : new Date();
     const endDate = dto.endDate ? new Date(dto.endDate) : null;
     if (endDate && endDate.getTime() < startDate.getTime()) {
