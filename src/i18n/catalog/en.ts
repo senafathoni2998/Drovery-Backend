@@ -150,6 +150,10 @@ export const en: Record<string, string> = {
     "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
   'error.delivery.serviceability.not_flyable':
     'This delivery cannot be flown right now.',
+  'error.delivery.package.weight_exceeds_cap':
+    'A {size} package can weigh at most {maxKg} kg (you entered {weightKg} kg).',
+  'error.delivery.coords.address_mismatch':
+    'The selected location is {deviationKm} km from "{field}". It must be within {maxKm} km — check the address or drop the pin again.',
   'error.serviceability.OUT_OF_AREA':
     'Pickup or dropoff is outside our service area.',
   'error.serviceability.NO_FLY_ZONE':
