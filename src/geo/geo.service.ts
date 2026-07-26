@@ -18,6 +18,16 @@ interface GeocodeResult {
 
 // Cache envelope: either a hit (lat/lng) or a negative-cache sentinel.
 type GeoCacheEntry = (GeocodeResult & { miss?: false }) | { miss: true };
+
+/**
+ * A geocode attempt's outcome. `not_found` (the provider answered, with nothing)
+ * and `failed` (the provider never answered) are deliberately distinct: only the
+ * former says anything about the address, and only the former may be cached.
+ */
+type GeocodeOutcome =
+  | { status: 'found'; result: GeocodeResult }
+  | { status: 'not_found' }
+  | { status: 'failed' };
 type ReverseCacheEntry = { address: string | null };
 
 @Injectable()
@@ -42,13 +52,22 @@ export class GeoService {
           };
     }
 
-    const result = await this.fetchGeocode(query);
+    const outcome = await this.fetchGeocode(query);
+
+    // Only a real "the geocoder has no such address" answer is negative-cached.
+    // A provider FAILURE (429 / 5xx / network) is not evidence about the address,
+    // and caching it for GEO_MISS_TTL_S would turn one transient blip into an hour
+    // of hard failures — deliveries fail closed on an unresolved location, so that
+    // is an hour of rejected creates for every address that happened to be queried
+    // during the blip. Leave the key unset and let the next call retry.
+    if (outcome.status === 'failed') return null;
+
     await this.cache.set(
       key,
-      result ?? { miss: true },
-      result ? GEO_TTL_S : GEO_MISS_TTL_S,
+      outcome.status === 'found' ? outcome.result : { miss: true },
+      outcome.status === 'found' ? GEO_TTL_S : GEO_MISS_TTL_S,
     );
-    return result;
+    return outcome.status === 'found' ? outcome.result : null;
   }
 
   async reverseGeocode(lat: number, lng: number): Promise<string | null> {
@@ -69,7 +88,7 @@ export class GeoService {
 
   // ── Nominatim calls ───────────────────────────────────────
 
-  private async fetchGeocode(query: string): Promise<GeocodeResult | null> {
+  private async fetchGeocode(query: string): Promise<GeocodeOutcome> {
     try {
       const params = new URLSearchParams({
         q: query,
@@ -83,26 +102,40 @@ export class GeoService {
       );
 
       if (!response.ok) {
+        // 429 (rate limit) / 5xx — the provider never gave us an answer.
         this.logger.warn(
           `Nominatim geocode request failed with status ${response.status}`,
         );
-        return null;
+        return { status: 'failed' };
       }
 
       const results = await response.json();
-      if (!Array.isArray(results) || results.length === 0) {
-        return null;
+      if (!Array.isArray(results)) {
+        // A 200 whose body isn't the documented shape is a provider problem too.
+        this.logger.warn('Nominatim geocode returned an unexpected payload');
+        return { status: 'failed' };
+      }
+      if (results.length === 0) {
+        // The provider answered: there is no such address. Safe to negative-cache.
+        return { status: 'not_found' };
       }
 
-      return {
-        lat: parseFloat(results[0].lat),
-        lng: parseFloat(results[0].lon),
-      };
+      const lat = parseFloat(results[0].lat);
+      const lng = parseFloat(results[0].lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        this.logger.warn(
+          'Nominatim geocode returned an unparseable coordinate',
+        );
+        return { status: 'failed' };
+      }
+
+      return { status: 'found', result: { lat, lng } };
     } catch (error) {
+      // Network error / abort / JSON parse failure — no answer, do not cache.
       this.logger.error(
         `Geocode failed for query "${query}": ${error.message}`,
       );
-      return null;
+      return { status: 'failed' };
     }
   }
 
