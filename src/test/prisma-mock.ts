@@ -70,11 +70,17 @@ export function createMockPrismaService(): MockPrismaService {
       ),
       findMany: jest.fn(),
       create: jest.fn(),
-      createMany: jest.fn(),
+      // The batch writes ALWAYS resolve to a BatchPayload in real Prisma. Defaulting
+      // them to `{ count: 0 }` (rather than undefined) means a service that reads
+      // `const { count } = await tx.model.updateMany(...)` — the shape every CAS in
+      // this codebase uses — doesn't blow up with a destructuring TypeError in a spec
+      // that simply didn't care about the return. Specs needing a real count still
+      // override with mockResolvedValue.
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
       update: jest.fn(),
-      updateMany: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       delete: jest.fn(),
-      deleteMany: jest.fn(),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       count: jest.fn(),
       upsert: jest.fn(),
       groupBy: jest.fn(),
