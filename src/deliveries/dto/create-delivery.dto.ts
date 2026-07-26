@@ -8,7 +8,9 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 import { PACKAGE_SIZES, PACKAGE_TYPES } from '../../common/constants';
@@ -65,20 +67,31 @@ export class CreateDeliveryDto {
   @IsBoolean()
   useCredits?: boolean;
 
+  // Advisory only. The server geocodes fromAddress/toAddress and prices from THAT;
+  // these are validated against the geocode (see DeliveriesService.resolveCoords)
+  // and rejected if they disagree, but never used for distance or serviceability.
   @IsOptional()
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   fromLat?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   fromLng?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   toLat?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   toLng?: number;
 
   // Who drives this delivery's lifecycle. Omitted/SIMULATED (default) runs the
