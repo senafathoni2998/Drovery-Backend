@@ -67,10 +67,8 @@ export class FavoritesService {
       packageSize: fav.packageSize,
       packageWeight: fav.packageWeight,
       packageTypes: fav.packageTypes,
-      fromLat: fav.fromLat ?? undefined,
-      fromLng: fav.fromLng ?? undefined,
-      toLat: fav.toLat ?? undefined,
-      toLng: fav.toLng ?? undefined,
+      // No coords: create() re-geocodes the addresses and ignores caller coords,
+      // so forwarding the favorite's stored pair could only cause a spurious 400.
       pickupDate: overrides?.pickupDate ?? now.date,
       pickupTime: overrides?.pickupTime ?? now.time,
     });
