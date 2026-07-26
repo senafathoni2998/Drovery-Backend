@@ -148,6 +148,10 @@ export const id: Record<string, string> = {
     'Kami tidak dapat menemukan lokasi penjemputan atau pengantaran. Pilih titiknya di peta dan coba lagi.',
   'error.delivery.serviceability.not_flyable':
     'Pengiriman ini tidak dapat diterbangkan saat ini.',
+  'error.delivery.package.weight_exceeds_cap':
+    'Paket {size} memiliki berat maksimum {maxKg} kg (Anda memasukkan {weightKg} kg).',
+  'error.delivery.coords.address_mismatch':
+    'Lokasi yang dipilih berjarak {deviationKm} km dari "{field}". Jaraknya harus dalam {maxKm} km — periksa alamatnya atau tandai ulang lokasinya.',
   'error.serviceability.OUT_OF_AREA':
     'Lokasi penjemputan atau pengantaran berada di luar area layanan kami.',
   'error.serviceability.NO_FLY_ZONE':
