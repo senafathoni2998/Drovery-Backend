@@ -340,3 +340,147 @@ placeholder secrets, so bodies logged there are acceptable.
 - **New information for later phases:** `revokedAt` now has exactly one meaning. Any future
   code that soft-revokes a refresh token for a new reason MUST add `revokedReason` first, or
   it will silently turn benign flows into mass logouts.
+
+---
+
+## Phases 3 + 4 + 5 — Scheduled-delivery contract · Mobile stop-the-bleeding · Price honesty — DONE
+**Date:** 2026-07-26
+**Session:** same session as the audit and phases 1–2; user was away, so all judgment calls were made autonomously per their instruction
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-3-schedule-contract` — 11 commits, branched off `fix/audit-remediation-phases-1-2` (NOT `main`: it edits `create-delivery.dto.ts`, which that branch already changed)
+- mobile `fix/audit-phases-3-4-5` — 26 commits, branched off `docs/readme-and-app-fixes` (NOT `main`: it edits `CongratulatoryScreen.tsx`, which commit `a87fb26` on that branch already changed — branching off main would have folded someone else's commit into this diff)
+
+### What changed
+
+**Phase 3 — the scheduled-delivery contract (the audit's highest-severity bug)**
+- mobile **NEW** `features/delivery/utils/pickupDateTime.ts` — the single source of truth for
+  the wire format. Form state now HOLDS `YYYY-MM-DD` / 24h `HH:MM`; only what a human reads is
+  localized. `toWireDate` uses LOCAL calendar fields, not `toISOString`, which would report the
+  previous day for every user east of UTC.
+- mobile `DateTimePickerField` (displays formatted, emits wire, seeds the calendar),
+  `CustomTimePicker` (12-hour wheel kept — only the boundary value changed), `validators.ts`
+  (now REJECTS an unparseable pickup where it used to return `true`), `helpers.estimateDelivery`,
+  and the display sites on Confirmation / Congratulatory / DeliveryDetail / Orders / Home.
+- backend `delivery-schedule.ts` now EXPORTS `PICKUP_DATE_RE` + `PICKUP_TIME_RE` so a DTO
+  validator cannot drift from the parser, plus `isValidPickupDate()` (see *Deviations*).
+- backend `@Matches` on all three pickup DTOs; a service-level calendar check in `create()`;
+  dedicated i18n keys so the 400 says what shape is wanted.
+
+**Phase 4 — mobile stop-the-bleeding**
+- **NEW `AuthGate`** in `app/_layout.tsx`. One mechanism for two bugs: a cold start used to
+  discard a valid session (`app/index.tsx` was `export { default } from './login'`), and on
+  refresh-token expiry the app cleared auth state but never navigated. `index.tsx` is now a
+  neutral spinner the gate redirects away from.
+- The four `BackHandler.exitApp()` sites: Home is `useFocusEffect` + double-press-to-exit, Login
+  is `useFocusEffect` + exit (it is the root of the signed-out stack), Profile and Signup are
+  removed. Tab screens never unmount in Expo Router, so a mount-scoped handler stayed registered
+  for the whole session and quit the app from anywhere.
+- `TrackPackageScreen`: `number-pad` → `default` + `autoCapitalize="characters"`. Tracking IDs
+  are `uuidv4().slice(0,8).toUpperCase()`, so ~98% contain a letter and could not be typed.
+- `DeliveryDetailScreen.handleAction` passes `apiDelivery.id`, and `WorkflowScreen` alerts
+  instead of swallowing a failed step (see *Deviations* — the audit's line reference was wrong).
+
+**Phase 5 — price honesty at checkout**
+- mobile **NEW** `utils/currency.ts` — one `formatCurrency`. The app had four formatters, two on
+  the same screen: the price bar read `$37` while the promo card directly above rendered the
+  SAME total as `Rp37.000`.
+- `ConfirmationDeliveryScreen`: no client-side seed; the estimate now sends the route and re-runs
+  when geocoding resolves; a distance-less quote is treated as INCOMPLETE rather than cheap; the
+  swallowed `.catch` is surfaced; a promo previewed against a superseded total is dropped;
+  confirm is blocked until a real server price is on screen.
+- `helpers.calcPrice` and `PriceEstimationScreen`'s `calcBreakdownLocal` both DELETED.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (0 errors, **98 warnings — unchanged baseline**) / **80 suites, 755 tests** (phase 2 left 746)
+- mobile: tsc ✔ / lint ✔ / **41 suites, 286 tests** (baseline 279)
+- admin: untouched.
+
+**On the mobile count.** It is 286, not 279 + everything added: 7 `calcPrice` tests and 6
+`calcBreakdownLocal` tests were deleted *with the functions they tested*, and 20 new ones added.
+Per Plan §1.1 a drop needs an explicit reason — this is it. Both suites asserted a client-side
+total with no distance term, i.e. exactly the number the screens must never show.
+
+**Mutation tests** — each applied, the targeted spec run, the file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| calendar guard back to shape-only | "calendar guard the regex cannot express" | ✔ failed |
+| calendar guard back to shape-only | "not a real calendar date" (service) | ✔ failed |
+
+**Manual checks beyond the suites:**
+- Enumerated all 33 route files under `app/` against the gate's segment sets. The 7 public ones
+  match exactly; everything else is protected; `(tabs)` correctly falls through as protected.
+  `reset-password` and `verify-email` are public, so email deep links still work signed out.
+- Grepped the whole mobile repo for surviving 12-hour parsing/emitting. The only AM/PM left is
+  the time-picker WHEEL and `formatWireTime` — both display-only. No other screen produces a
+  pickup value; `favoriteApi` merely declares the fields, and recurring only displays `timeOfDay`.
+- Confirmed Phase 1 did not break this: mobile's `geocodeAddress` goes through the backend's own
+  `/geo`, the same `GeoService` used for pricing, so client coords match the server geocode
+  exactly and the >1km deviation check never fires on a first-party request.
+
+### Decisions made
+- **Wire format stored, display format derived.** The alternative — carrying two values through
+  form state and route params — doubles the number of places that can disagree. `formatWire*`
+  passes unrecognized input through, which also makes old rows (stored as `"09:30 AM"`) render
+  correctly with no migration.
+- **The 12-hour wheel stays.** Only the value crossing the component boundary changed. Picking a
+  time is a UX question; the wire shape is a correctness one.
+- **Calendar validation in the service, not a custom class-validator constraint.** Same reasoning
+  as the Phase 1 weight cap: reorder, favorite-order and the materializer never see the
+  ValidationPipe. `@Matches` still guards the shape at the boundary for a fast, well-localized 400.
+- **One gate rather than per-screen redirects.** Cold-start and session-expiry are the same
+  question ("does auth state agree with the current route"), so they get one answer. Manual
+  `router.replace` calls that duplicated it were removed.
+- **Android Back differs per screen deliberately:** exit from Home (double-press) and Login (root
+  of the signed-out stack); plain back from Profile and Signup, where quitting mid-form is never
+  what the user meant.
+
+### Deviations from the plan
+- **Scope grew from the adversarial review of my own diff** (20 agents, 4 lenses, **13 findings
+  confirmed, 3 refuted**). One was a **critical bug I introduced**:
+  1. *AuthGate stranded every signed-out cold start.* I had `""` (the index route) in
+     `PUBLIC_SEGMENTS`, so a signed-out user at `/` was "public, nothing to do" — and `index`
+     renders only a spinner. Permanent spinner, `/login` unreachable. Fixed by removing `""` from
+     the public set, leaving it only in `AUTH_ONLY_SEGMENTS`.
+  2. *A quote whose route never resolved was rendered as the final Total* with the distance fee
+     missing and confirm still enabled. Now `!res.distanceKm` is treated as an incomplete quote.
+  3. *An applied promo went stale* when the price re-fetched after geocoding, so the bar showed a
+     discount computed against a total that no longer existed. The promo is now cleared.
+  4. *`CustomTimePicker` mapped 12 o'clock to the wheel's "01" slot* — pre-existing, but I
+     rewrote that function so I fixed it. Minute 58 also wrapped to "00" instead of "55".
+  5. *`PriceEstimationScreen` still had `calcBreakdownLocal`* — the surviving twin of the
+     `calcPrice` I deleted, on the screen whose entire purpose is showing a price.
+  6. *`PICKUP_DATE_RE` was shape-only.* `2026-02-31` matched and `Date.UTC` silently rolled it to
+     Mar 3; `2026-00-10` reached Prisma as an Invalid Date and 500'd instead of 400-ing. Added
+     `isValidPickupDate` — the same round-trip guard the mobile `parseWireDate` already had. The
+     two sides of the contract were not equivalent in both directions.
+- **Plan §1.4's "ghost" is resolved.** The audit claimed `DeliveryDetailScreen.tsx:205` passes a
+  trackingId. That line passes `delivery.id` — but the view-model at `:120` sets
+  `id: apiDelivery.trackingId`, *overwriting* the UUID. The bug was real and the line reference
+  was wrong, exactly as §1.4 warned. Fixed at the call site by passing `apiDelivery.id`.
+- **One commit is mislabelled.** Mobile `473ee70` ("fix(nav): scope the exit-on-back handler…")
+  also contains the `formatWireTime` change to the Home ETA, because I edited that file twice
+  before committing. The code is correct; the message under-describes it. Not rewritten — 26
+  commits of history churn is disproportionate to a message.
+
+### Left undone / follow-ups
+- **The Google Maps API key is still `YOUR_GOOGLE_MAPS_API_KEY`** (`app.json:26`), so the Android
+  map remains a grey rectangle. Blocked on a credential I do not have; I deliberately did not
+  invent one or convert `app.json` to `app.config.js` (a build-format change I could not verify
+  without running prebuild). **This is the only Phase 4 item not done** — hence the ◐ in §2.
+- **`MAX_WEIGHT_KG` is still duplicated** between backend `src/common/constants/index.ts` and
+  mobile `features/delivery/screens/CreateDeliveryScreen/validators.ts`. Byte-identical today; a
+  comment now says so on the mobile side. Carried over from Phase 1.
+- **`estimateDelivery` is still pickup + 2 hours, flat.** Kept only so the screen shows
+  something. The real fix is the backend populating `estimatedDelivery`, which is declared on the
+  model and never written (audit backlog).
+- **No test covers `AuthGate` itself.** It needs expo-router navigation mocking; I verified it by
+  enumerating all 33 routes by hand instead. Worth a real test when someone next touches routing.
+- Neither branch is merged. Backend stacks on the phases 1–2 branch, so merge that first.
+
+### Next
+- **Phase 6 — Terminal-path atomicity** (M, backend): CAS in `cancel()`, the missing card-refund
+  leg, narrowing the watchdog reap CAS, gating `submitProof`. Independent of everything above.
+- **New information for later phases:** the mobile app now has two shared utility modules worth
+  reusing rather than re-inventing — `features/delivery/utils/pickupDateTime.ts` and
+  `utils/currency.ts`. Any new screen showing money or a pickup time should use them.
