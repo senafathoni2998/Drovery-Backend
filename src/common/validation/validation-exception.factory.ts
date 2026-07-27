@@ -124,6 +124,8 @@ function keyFor(constraintName: string, property: string): string {
   if (constraintName === 'matches') {
     if (property === 'code') return 'validation.code.sixDigit';
     if (property === 'timeOfDay') return 'validation.timeOfDay.format';
+    if (property === 'pickupDate') return 'validation.pickupDate.format';
+    if (property === 'pickupTime') return 'validation.pickupTime.format';
   }
   return KNOWN_CONSTRAINTS.has(constraintName)
     ? `validation.${constraintName}`
