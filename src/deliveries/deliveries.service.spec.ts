@@ -912,6 +912,21 @@ describe('DeliveriesService', () => {
       ).resolves.toBeDefined();
     });
 
+    it('rejects a pickupDate that matches the shape regex but is not a real date', async () => {
+      // The DTO's @Matches is shape-only, so "2026-02-31" reaches the service. Date.UTC
+      // would roll it to Mar 3 and schedule the flight for a day nobody asked for.
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          pickupDate: '2026-02-31',
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      // Rejected before any geocode / pricing / DB work.
+      expect(geoService.geocode).not.toHaveBeenCalled();
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
     it('rejects a package over the per-size payload cap', async () => {
       await expect(
         service.create(userId, {
