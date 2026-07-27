@@ -8,12 +8,14 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
 
 import { PACKAGE_SIZES, PACKAGE_TYPES } from '../../common/constants';
+import { PICKUP_DATE_RE, PICKUP_TIME_RE } from '../delivery-schedule';
 
 export class CreateDeliveryDto {
   @IsString()
@@ -46,12 +48,17 @@ export class CreateDeliveryDto {
   @IsIn([...PACKAGE_TYPES], { each: true })
   packageTypes: string[];
 
+  // Wire format: YYYY-MM-DD. Unvalidated, a mismatch does not 400 — it silently
+  // becomes an immediate dispatch. See delivery-schedule.ts.
   @IsString()
   @IsNotEmpty()
+  @Matches(PICKUP_DATE_RE, { message: 'pickupDate must be YYYY-MM-DD' })
   pickupDate: string;
 
+  // Wire format: 24-hour HH:MM. Same reason as pickupDate.
   @IsString()
   @IsNotEmpty()
+  @Matches(PICKUP_TIME_RE, { message: 'pickupTime must be 24-hour HH:MM' })
   pickupTime: string;
 
   // Optional promo code applied to the price at checkout (validated + redeemed
