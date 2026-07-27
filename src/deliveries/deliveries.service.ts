@@ -53,6 +53,7 @@ import {
   MAX_SCHEDULE_DAYS,
   SCHEDULE_THRESHOLD_MS,
   computeScheduledFor,
+  isValidPickupDate,
   nowInServiceTz,
 } from './delivery-schedule';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
@@ -174,6 +175,17 @@ export class DeliveriesService {
     // because reorder, favorite-order and the recurring materializer all call
     // create() with a hand-built DTO that never sees the ValidationPipe.
     assertWeightWithinCap(dto.packageSize, dto.packageWeight);
+
+    // The DTO's @Matches only checks SHAPE. "2026-02-31" and "2026-00-10" match it,
+    // and Date.UTC rolls them over rather than rejecting — the first would schedule a
+    // flight for a day the caller never asked for, the second reaches Prisma as an
+    // Invalid Date and 500s. Checked here so reorder, favorite-order and the recurring
+    // materializer are covered too; none of them pass through the ValidationPipe.
+    if (!isValidPickupDate(dto.pickupDate)) {
+      throw new AppBadRequestException('error.delivery.schedule.invalid_date', {
+        pickupDate: dto.pickupDate,
+      });
+    }
 
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
     // Pre-generate the delivery's id (the Phase-3 §2 Stage-A1 keystone). Today this is
