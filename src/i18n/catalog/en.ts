@@ -129,6 +129,8 @@ export const en: Record<string, string> = {
   'validation.invalid': '{property} is invalid',
   'validation.code.sixDigit': 'code must be a 6-digit number',
   'validation.timeOfDay.format': 'timeOfDay must be HH:MM (24-hour)',
+  'validation.pickupDate.format': 'pickupDate must be YYYY-MM-DD',
+  'validation.pickupTime.format': 'pickupTime must be HH:MM (24-hour)',
 
   // ── Thrown HTTP errors (one key per literal; the filter translates at the boundary) ──
   // Cross-cutting authz / user.
@@ -142,6 +144,8 @@ export const en: Record<string, string> = {
     'Delivery with tracking id "{trackingId}" not found',
   'error.delivery.schedule.too_far':
     'Pickup can be scheduled at most {maxDays} days ahead.',
+  'error.delivery.schedule.invalid_date':
+    'pickupDate "{pickupDate}" is not a real calendar date.',
   'error.delivery.schedule.live_not_allowed':
     'A LIVE-tracked delivery cannot be scheduled for a future pickup window.',
   'error.delivery.tracking_id_alloc_failed':
