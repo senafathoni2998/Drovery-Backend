@@ -7,6 +7,47 @@
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
 const HH_MM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
+/**
+ * The wire shapes the DTOs enforce, exported from HERE so a validator can never
+ * drift from the parser below.
+ *
+ * This matters more than it looks. computeScheduledFor() returns null for anything
+ * it cannot parse, and create() treats null as "dispatch immediately" — so an
+ * unvalidated format mismatch does not fail loudly, it launches a drone now and
+ * still answers 201. The mobile app shipped "Jul 30, 2026" / "09:30 AM" against
+ * these regexes, which is exactly how every scheduled delivery flew immediately.
+ *
+ * PICKUP_DATE_RE is end-anchored where ISO_DATE is not, because ISO_DATE is applied
+ * to `.slice(0, 10)` while a DTO validates the whole string.
+ */
+export const PICKUP_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const PICKUP_TIME_RE = HH_MM;
+
+/**
+ * Calendar-aware pickup-date check. The regex alone is SHAPE-only, so `2026-13-45`,
+ * `2026-00-10` and `2026-02-31` all match it — and `Date.UTC` silently rolls each of
+ * them over rather than rejecting:
+ *
+ *   2026-02-31 -> Mar 3   (delivery scheduled for a day the client never asked for)
+ *   2026-00-10 -> Dec 2025, and `new Date('2026-00-10')` is Invalid Date, so the
+ *                 request 500s out of Prisma instead of 400-ing at the boundary.
+ *
+ * PICKUP_TIME_RE range-checks its components; this is the date's equivalent. It is
+ * the same round-trip guard the mobile client's parseWireDate already applies — a
+ * regex cannot express leap years, so the only honest test is to build the date and
+ * check it did not move.
+ */
+export function isValidPickupDate(value: string): boolean {
+  if (!PICKUP_DATE_RE.test(value ?? '')) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  return (
+    probe.getUTCFullYear() === y &&
+    probe.getUTCMonth() === m - 1 &&
+    probe.getUTCDate() === d
+  );
+}
+
 /** Below this lead time we just start now — a "scheduled in 30s" delivery isn't
  * worth a deferred job, and it absorbs small clock skew between API and worker. */
 export const SCHEDULE_THRESHOLD_MS = 60_000;
