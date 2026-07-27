@@ -127,6 +127,9 @@ export const id: Record<string, string> = {
   'validation.invalid': '{property} tidak valid',
   'validation.code.sixDigit': 'code harus berupa angka 6 digit',
   'validation.timeOfDay.format': 'timeOfDay harus dalam format HH:MM (24 jam)',
+  'validation.pickupDate.format': 'pickupDate harus dalam format YYYY-MM-DD',
+  'validation.pickupTime.format':
+    'pickupTime harus dalam format HH:MM (24 jam)',
 
   // ── Error HTTP yang dilempar (satu kunci per literal; diterjemahkan di batas) ──
   // Otorisasi / pengguna lintas-fitur.
@@ -140,6 +143,8 @@ export const id: Record<string, string> = {
     'Pengiriman dengan id pelacakan "{trackingId}" tidak ditemukan',
   'error.delivery.schedule.too_far':
     'Penjemputan dapat dijadwalkan paling lama {maxDays} hari ke depan.',
+  'error.delivery.schedule.invalid_date':
+    'pickupDate "{pickupDate}" bukan tanggal kalender yang valid.',
   'error.delivery.schedule.live_not_allowed':
     'Pengiriman dengan pelacakan LIVE tidak dapat dijadwalkan untuk jendela penjemputan di masa depan.',
   'error.delivery.tracking_id_alloc_failed':
