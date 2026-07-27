@@ -30,6 +30,8 @@ export const VALIDATION_KEYS = [
   'validation.invalid',
   'validation.code.sixDigit',
   'validation.timeOfDay.format',
+  'validation.pickupDate.format',
+  'validation.pickupTime.format',
 ] as const;
 
 /** Transactional-email blocks (MailRenderer composes these per email + the shared common.*
@@ -59,6 +61,7 @@ export const ERROR_KEYS = [
   'error.delivery.not_found_by_tracking_id',
   'error.delivery.schedule.too_far',
   'error.delivery.schedule.live_not_allowed',
+  'error.delivery.schedule.invalid_date',
   'error.delivery.tracking_id_alloc_failed',
   'error.delivery.serviceability.unresolved_location',
   'error.delivery.serviceability.not_flyable',
