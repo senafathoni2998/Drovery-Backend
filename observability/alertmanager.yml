@@ -1,0 +1,73 @@
+# Alertmanager routing for the Drovery SLO rules in `alerts.yml`.
+#
+# Why this file exists: `alerts.yml` has always defined nine rules — three of them
+# `severity: critical` — but `prometheus.yml` had no `alerting:` block and there was
+# no Alertmanager in the stack. Every rule evaluated, fired, and went nowhere except
+# the Prometheus UI. The platform could detect an outage and page nobody.
+#
+# NOTE ON CONFIGURING RECEIVERS
+# Alertmanager does NOT expand environment variables in this file — `${VAR}` would be
+# taken literally and a bad URL stops it from starting. So the receivers below are
+# deliberately EMPTY: that is a valid "group it, dedupe it, show it" receiver. Out of
+# the box you get working grouping, inhibition and silences at http://localhost:9093,
+# and no delivery. Turning on real paging is a few lines — uncomment one block and
+# fill in the URL. Empty beats a fake URL that logs delivery errors forever.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  # Group by alertname AND tier: an api-wide 5xx spike is one notification rather than
+  # one per replica, but an api problem and a worker problem stay separate.
+  group_by: ['alertname', 'tier']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  receiver: warning
+
+  routes:
+    # The paging path. DroveryHighErrorRatePage, DroveryReadinessFailing and
+    # DroveryTargetDown are the three the rules already mark critical: users are
+    # seeing errors, a dependency is down, or a whole tier has vanished.
+    - matchers: [severity = "critical"]
+      receiver: critical
+      group_wait: 10s
+      repeat_interval: 1h
+
+inhibit_rules:
+  # A tier that is DOWN will also trip its latency and error-rate rules. Page once
+  # about the cause, not three times about the symptoms.
+  - source_matchers: [alertname = "DroveryTargetDown"]
+    target_matchers: [severity =~ "warning|critical"]
+    equal: ['tier']
+
+  # Don't also ticket the 2% warning while the 5% page is already open.
+  - source_matchers: [alertname = "DroveryHighErrorRatePage"]
+    target_matchers: [alertname = "DroveryHighErrorRateWarning"]
+
+receivers:
+  # ── Paged, 24/7 ──
+  - name: critical
+    # Slack:
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/T000/B000/XXXX'
+    #     channel: '#drovery-oncall'
+    #     send_resolved: true
+    #     title: '{{ .CommonAnnotations.summary }}'
+    #
+    # PagerDuty:
+    # pagerduty_configs:
+    #   - routing_key: '<integration key>'
+    #     send_resolved: true
+    #
+    # Anything else (Opsgenie, a custom bridge):
+    # webhook_configs:
+    #   - url: 'https://example.invalid/hooks/drovery-critical'
+    #     send_resolved: true
+
+  # ── Ticketed, business hours ──
+  - name: warning
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/T000/B000/YYYY'
+    #     channel: '#drovery-alerts'
+    #     send_resolved: true
