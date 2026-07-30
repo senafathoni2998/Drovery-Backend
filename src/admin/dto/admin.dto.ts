@@ -23,6 +23,16 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 
 // ── Support inbox ──
 export class AdminTicketQueryDto extends PaginationDto {
+  /**
+   * Free-text search. The console had NO search anywhere — every list was
+   * page + limit + one enum — so an agent with a customer on the phone quoting a
+   * tracking id had to page through 20 rows at a time. Case-insensitive contains.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+
   @IsOptional()
   @IsEnum(SupportTicketStatus)
   status?: SupportTicketStatus;
@@ -42,6 +52,16 @@ export class TicketStatusDto {
 
 // ── Delivery oversight ──
 export class AdminDeliveryQueryDto extends PaginationDto {
+  /**
+   * Free-text search. The console had NO search anywhere — every list was
+   * page + limit + one enum — so an agent with a customer on the phone quoting a
+   * tracking id had to page through 20 rows at a time. Case-insensitive contains.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+
   @IsOptional()
   @IsEnum(DeliveryStatus)
   status?: DeliveryStatus;
@@ -161,6 +181,16 @@ export class UpdatePromoDto {
 
 // ── Users / roles ──
 export class AdminUserQueryDto extends PaginationDto {
+  /**
+   * Free-text search. The console had NO search anywhere — every list was
+   * page + limit + one enum — so an agent with a customer on the phone quoting a
+   * tracking id had to page through 20 rows at a time. Case-insensitive contains.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+
   @IsOptional()
   @IsEnum(Role)
   role?: Role;
