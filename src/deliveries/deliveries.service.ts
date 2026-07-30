@@ -821,35 +821,37 @@ export class DeliveriesService {
       });
     }
 
-    // Remove the delivery's pending simulation jobs (best-effort).
-    try {
-      await this.simulationService.stopSimulation(deliveryId);
-    } catch {
-      // The processor also guards on CANCELED status, so this is non-fatal.
-    }
-
-    // Release any promo redemption + refund any spent wallet credits so the slot
-    // and the credits are returned (best-effort, idempotent). No-ops when unused.
-    try {
-      await this.promoService.releaseForDelivery(deliveryId);
-    } catch (error) {
-      this.logger.warn(
-        `Promo release failed for delivery ${deliveryId}: ${(error as Error).message}`,
-      );
-    }
-    try {
-      await this.walletService.refundForDelivery(deliveryId);
-    } catch (error) {
-      this.logger.warn(
-        `Credit refund failed for delivery ${deliveryId}: ${(error as Error).message}`,
-      );
-    }
-
-    return this.prisma.delivery.update({
-      where: {
-        id_createdAt: { id: deliveryId, createdAt: delivery.createdAt },
-      },
+    // SINGLE-WINNER CAS, and it runs BEFORE any cleanup.
+    //
+    // This used to be: read, then three network round-trips of cleanup, then an
+    // UNCONDITIONAL status write — the only transition in this file without a CAS.
+    // The read above is advisory (the delivery can be dispatched, delivered or
+    // failed while those round-trips are in flight), so a lost race both refunded a
+    // delivery that had already completed AND overwrote its terminal status with
+    // CANCELED. Claiming the transition first means only the winner cleans up, and
+    // a terminal can never be resurrected.
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: CANCELABLE_STATUSES } },
       data: { status: DeliveryStatus.CANCELED },
+    });
+    if (count === 0) {
+      const current = await this.prisma.delivery.findFirst({
+        where: { id: deliveryId },
+        select: { status: true },
+      });
+      throw new AppConflictException('error.delivery.cancel.race_bad_status', {
+        status: current?.status ?? delivery.status,
+      });
+    }
+
+    // Refund BOTH legs. cancel() previously released the promo and returned the
+    // wallet-credit portion but never refundChargeToWallet, so a customer who paid
+    // partly by card was silently short-refunded — while every exception path
+    // returned both. Same helper now serves all terminal paths.
+    await this.cleanupAfterTermination(deliveryId, true);
+
+    return this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
       include: {
         tracking: true,
         workflowSteps: true,
@@ -893,16 +895,9 @@ export class DeliveriesService {
       });
     }
 
-    // Best-effort cleanup (reuses the same services the owner-cancel uses).
-    await this.simulationService
-      .stopSimulation(deliveryId)
-      .catch(() => undefined);
-    await this.promoService
-      .releaseForDelivery(deliveryId)
-      .catch(() => undefined);
-    await this.walletService
-      .refundForDelivery(deliveryId)
-      .catch(() => undefined);
+    // Same cleanup as every other terminal path — including the card-charged leg,
+    // which this used to omit exactly like owner-cancel did.
+    await this.cleanupAfterTermination(deliveryId, true);
 
     return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -926,13 +921,26 @@ export class DeliveriesService {
   async failExceptional(
     deliveryId: string,
     reason: DeliveryFailureReason,
+    /**
+     * Statuses this particular caller is allowed to fail FROM. Defaults to the full
+     * failable set; the watchdog passes its own narrower one.
+     *
+     * Why it exists: FAILABLE_STATUSES includes AWAITING_HANDOFF, but the watchdog's
+     * candidate query deliberately EXCLUDES it — a drone hovering at the door is not
+     * "stuck", it is waiting for a person. Because the CAS was wider than the query
+     * that selected the row, a delivery picked up as IN_TRANSIT that reached handoff
+     * mid-scan still passed the CAS and was failed + auto-refunded while the customer
+     * was walking outside. The per-row recheck could not catch it: it re-reads
+     * in-memory values from the original query, not the current status.
+     */
+    allowedStatuses: DeliveryStatus[] = FAILABLE_STATUSES,
   ): Promise<boolean> {
     const { count } = await this.prisma.delivery.updateMany({
-      where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+      where: { id: deliveryId, status: { in: allowedStatuses } },
       data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
     await this.announceException(
       deliveryId,
       DeliveryStatus.DELIVERY_FAILED,
@@ -956,7 +964,7 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.RETURNING, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
     await this.announceException(deliveryId, DeliveryStatus.RETURNING, reason);
     this.logger.log(`Delivery ${deliveryId} → RETURNING (${reason})`);
     return true;
@@ -1007,7 +1015,17 @@ export class DeliveriesService {
 
   /** Stop the sim, and for a drone-fault release the promo slot + refund credits.
    * Idempotent + best-effort — the same trio cancel/adminForceCancel use. */
-  private async cleanupAfterException(
+  /**
+   * The one cleanup every terminal path runs: stop the simulation and, when the
+   * outcome warrants a refund, return BOTH legs of the charge (wallet credits and
+   * the card-charged portion credited back to the wallet — there is no live Stripe
+   * refund yet). Every step is idempotent and no-ops when unused.
+   *
+   * Shared by failExceptional, beginReturnToBase, cancel and adminForceCancel so a
+   * new terminal cannot quietly refund one leg and forget the other, which is how
+   * the two cancel paths came to short-refund card payers.
+   */
+  private async cleanupAfterTermination(
     deliveryId: string,
     refundCredits: boolean,
   ): Promise<void> {
