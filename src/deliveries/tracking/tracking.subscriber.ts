@@ -33,6 +33,22 @@ const SUFFIX = ':update';
 export class TrackingSubscriber implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TrackingSubscriber.name);
   private sub!: Redis;
+  /**
+   * Channels this replica WANTS to be subscribed to.
+   *
+   * The client is built with enableOfflineQueue:false, so a SUBSCRIBE issued while
+   * Redis is unreachable rejects immediately — and the old code logged that and moved
+   * on. The gateway had already put the socket in its local map and answered
+   * `subscribed`, so the client was told it was live while no channel had been
+   * registered, and nothing ever retried: the map entry being non-empty meant a later
+   * subscriber reused it instead of re-subscribing. One blink of Redis silently
+   * deafened those clients for the life of their socket.
+   *
+   * Keeping the desired set and re-arming on 'ready' makes a failed subscribe
+   * temporary instead of permanent — the same thing MqttService does on 'connect'.
+   */
+  private readonly desired = new Set<string>();
+
   private handler?: UpdateHandler;
   // Defaults to 'standard' so unit tests that inject a mock sub (skipping
   // onModuleInit) route to subscribe/unsubscribe; onModuleInit reads the real mode.
@@ -55,6 +71,8 @@ export class TrackingSubscriber implements OnModuleInit, OnModuleDestroy {
     this.sub.on('error', (e) =>
       this.logger.warn(`tracking subscriber redis error: ${e.message}`),
     );
+    // Re-arm every desired channel whenever the connection comes back.
+    this.sub.on('ready', () => this.rearmAll());
     this.wireMessageListener(this.sub);
     this.logger.log(`TrackingSubscriber ready (pubsub mode: ${this.mode})`);
   }
@@ -81,17 +99,40 @@ export class TrackingSubscriber implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Re-subscribe everything this replica wants. Called on ioredis 'ready', so a
+   * subscribe that failed while Redis was unreachable is recovered on reconnect
+   * instead of leaving the client silently deaf. Extracted from the event handler so
+   * it is testable without a live Redis.
+   */
+  rearmAll() {
+    if (this.desired.size === 0) return;
+    this.logger.log(
+      `tracking redis ready — re-arming ${this.desired.size} subscription(s)`,
+    );
+    for (const channel of this.desired) {
+      pubSubSubscribe(this.sub, channel, this.mode).catch((e: Error) =>
+        this.logger.warn(`re-arm ${channel} failed: ${e.message}`),
+      );
+    }
+  }
+
   subscribeToDelivery(deliveryId: string) {
-    pubSubSubscribe(this.sub, trackingChannel(deliveryId), this.mode).catch(
-      (e: Error) =>
-        this.logger.warn(`subscribe ${deliveryId} failed: ${e.message}`),
+    const channel = trackingChannel(deliveryId);
+    // Record the intent FIRST: if the SUBSCRIBE below fails because Redis is
+    // unreachable, the 'ready' handler re-arms it instead of losing it forever.
+    this.desired.add(channel);
+    pubSubSubscribe(this.sub, channel, this.mode).catch((e: Error) =>
+      this.logger.warn(
+        `subscribe ${deliveryId} failed (will re-arm on reconnect): ${e.message}`,
+      ),
     );
   }
 
   unsubscribeFromDelivery(deliveryId: string) {
-    pubSubUnsubscribe(this.sub, trackingChannel(deliveryId), this.mode).catch(
-      () => undefined,
-    );
+    const channel = trackingChannel(deliveryId);
+    this.desired.delete(channel);
+    pubSubUnsubscribe(this.sub, channel, this.mode).catch(() => undefined);
   }
 
   async onModuleDestroy() {
