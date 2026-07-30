@@ -179,6 +179,8 @@ export const en: Record<string, string> = {
   'error.delivery.handoff.invalid_code': 'Invalid handoff code.',
   'error.delivery.handoff.locked':
     'Too many incorrect attempts — the handoff is locked.',
+  'error.delivery.proof.not_delivered':
+    'Proof of delivery can only be submitted once the delivery is complete (currently {status}).',
   'error.delivery.proof.not_found': 'No proof of delivery for delivery "{id}"',
   'error.delivery.rating.not_delivered':
     'You can only rate a delivery once it has been delivered.',
