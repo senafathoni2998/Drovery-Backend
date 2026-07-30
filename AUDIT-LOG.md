@@ -572,3 +572,86 @@ as a vacuous assertion, and only re-running it a second way surfaced it.
 ### Next
 - **Phase 7 — Admin console unblock** (S, admin + backend), or **Phase 8 — Alerting & backups**
   (S, independent). Phase 8 is the cheapest real risk reduction left and blocks nothing.
+
+---
+
+## Phase 8 — Alerting & backups — DONE
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-8-alerting-backups` — 6 commits, pushed, stacked on
+`fix/audit-phase-6-terminal-atomicity`
+
+### What changed
+- **`observability/alertmanager.yml` (new)** — routing for the nine SLO rules that had been
+  firing into nothing. `severity: critical` pages (10s group wait, hourly repeat); the rest is
+  ticketed. Inhibition so a DOWN tier pages once about the cause instead of three times about
+  its latency and error-rate symptoms.
+- **`observability/prometheus.yml`** — added the `alerting:` block. `rule_files` was set;
+  there was no `alerting:` block and no Alertmanager, so every rule evaluated and went nowhere
+  but the Prometheus UI.
+- **`docker-compose.observability.yml`** — Alertmanager service in the same profile.
+- **`scripts/backup.sh` (new)** — compressed custom-format dump, **verified** with
+  `pg_restore --list`, fails if the archive is unreadable or has no table data; retention runs
+  last and only after a verified success, so a run of failures cannot age out the last good
+  backup; non-zero exit so a timer surfaces it.
+- **`scripts/restore.sh` (new)** — the half that did not exist. Default mode restores into a
+  scratch database and asserts the result is *usable* (table count, `users`/`deliveries`
+  queryable, and **`deliveries` still has partition children**), prints elapsed time — the real
+  RTO — then drops the scratch DB. A real restore needs an explicit `CONFIRM`.
+- **`DEPLOY.md`** — backup/restore and alerting runbooks, plus removal of a **duplicated Notes
+  block** (secrets/backups/scaling/observability appeared twice, verbatim).
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / 80 suites, **758 tests** — unchanged by
+  this phase, which touches ops config and scripts only.
+- All four YAML files parse (`yaml.safe_load`), and every receiver referenced by a route in
+  `alertmanager.yml` is defined (checked programmatically, not by eye).
+- `bash -n` on both scripts; guard behaviour exercised by hand: missing `DATABASE_URL` → 2,
+  no args → 2, bad path → 2, unconfirmed overwrite → 3.
+- **Not verified:** the stack was not actually brought up. Docker was unavailable here, so
+  `docker compose config` could not run and no alert was fired end to end. The next person with
+  a Docker host should do exactly that — see *Left undone*.
+
+### Decisions made
+- **Empty receivers, not placeholder URLs.** My first draft used `${ALERTMANAGER_CRITICAL_WEBHOOK}`
+  in the config. **Alertmanager does not expand environment variables in its YAML** — that would
+  have been taken as a literal URL and stopped it from starting. Caught before committing.
+  Empty receivers are valid and give working grouping/inhibition/silences; enabling delivery is
+  a few uncommented lines, with Slack/PagerDuty/webhook blocks written out ready to fill in.
+- **The destructive guard is checked before the archive is read.** First version verified the
+  archive first, so an unconfirmed overwrite exited 1 (bad archive) instead of 3 (refused) —
+  the refusal should be immediate and not depend on anything else succeeding.
+- **Verify inside `backup.sh`, not as a separate step.** An unverified backup and no backup are
+  the same thing on the day you need it, and the check is one `pg_restore --list`.
+- **The rehearsal asserts partition children survive.** `deliveries` is RANGE-partitioned with
+  child DDL owned by the `partition_*` routines rather than Prisma, so "the restore exited 0"
+  is not evidence the schema came back intact.
+- **Health-readiness item SKIPPED, confirmed unreachable.** Plan Phase 8 item 3 said to confirm
+  first. All Redis roles fall back to the shared `REDIS_HOST` and no shipped config
+  (`.env.example`, compose, k8s) overrides them, so the cache ping does cover them. It only
+  becomes real if someone uses the per-role split `configuration.ts` supports — documented as a
+  caveat in DEPLOY.md rather than building client plumbing for a case nobody is in.
+
+### Deviations from the plan
+- Nothing beyond the two items above (empty receivers; readiness skipped as confirmed
+  unreachable). No adversarial review workflow — this phase adds ops config and shell scripts
+  with no application code path, and the checks that matter (YAML validity, receiver
+  resolution, guard exit codes) were run directly.
+
+### Left undone / follow-ups
+- **Nobody has fired a real alert.** Bring the profile up on a Docker host, stop the API
+  container, and confirm `DroveryTargetDown` reaches Alertmanager at :9093. Until that is done,
+  the alerting path is *configured*, not *proven*.
+- **Nobody has run a real restore.** `restore.sh` has never been executed against a real
+  archive. The rehearsal exists precisely so this is a scheduled, boring exercise — run it once
+  by hand first.
+- **No PITR.** Nightly snapshots only; worst case is losing a day. Needs WAL archiving.
+- **Backups are local by default.** `BACKUP_DIR` should point at off-host storage — a backup on
+  the same disk as the database does not survive the failure it exists for.
+- **No alert on a stale backup.** A silent backup failure is the same as no backup; the cron log
+  is the only signal. A `DroveryBackupStale` rule needs a freshness metric to alert on.
+
+### Next
+- **Phase 7 — Admin console unblock** (S, admin + backend) is the only remaining S-sized phase.
+- Then 9 (realtime durability), 10 (charge money — also picks up Phase 6's deferred partial-refund
+  accounting), 11–12 (Drone entity and flight ops).
