@@ -5,18 +5,39 @@
 #   docker compose -f docker-compose.yml -f docker-compose.observability.yml \
 #     --profile observability up -d
 #
-# Then: Prometheus http://localhost:9090 (targets + alerts), Grafana
-# http://localhost:3001 (admin/admin) → the provisioned Drovery dashboards.
+# Then: Prometheus http://localhost:9090 (targets + alerts), Alertmanager
+# http://localhost:9093 (routing + silences), Grafana http://localhost:3001
+# (admin/admin) → the provisioned Drovery dashboards.
 services:
   prometheus:
     image: prom/prometheus:v2.54.1
     profiles: ['observability']
+    depends_on:
+      - alertmanager
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
     ports:
       - '9090:9090'
+    restart: unless-stopped
+
+  # Routes what Prometheus fires. Ships with EMPTY receivers, which is valid: you get
+  # grouping, inhibition and silences at :9093 out of the box, and delivery is a few
+  # uncommented lines in observability/alertmanager.yml.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ['observability']
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    # No env vars: Alertmanager does not expand them in its config. Receivers are
+    # configured by editing observability/alertmanager.yml (see the comments there).
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertdata:/alertmanager
+    ports:
+      - '9093:9093'
     restart: unless-stopped
 
   grafana:
@@ -39,3 +60,4 @@ services:
 volumes:
   promdata:
   grafanadata:
+  alertdata:
