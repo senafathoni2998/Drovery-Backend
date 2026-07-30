@@ -180,8 +180,26 @@ export class AdminService {
     );
   }
 
-  /** Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent
-   * via the `admin-refund:<id>` key; marks the Payment REFUNDED for bookkeeping. */
+  /**
+   * Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent
+   * via the `admin-refund:<id>` key; marks the Payment REFUNDED for bookkeeping.
+   *
+   * KNOWN LIMITATION — PARTIAL REFUNDS CONSUME THE WHOLE BUDGET.
+   * The at-most-once gate below is a boolean on Payment.status, so refunding less
+   * than the full amount still flips the row to REFUNDED. The remainder can then
+   * never be refunded through this endpoint, and the automatic drone-fault refund
+   * (WalletService.refundChargeToWallet, keyed `exception-refund:<id>`) is dead for
+   * that delivery too. The admin console does expose a partial-amount field, so this
+   * is reachable.
+   *
+   * It is deliberately NOT fixed here. Doing it properly needs a cumulative refunded
+   * amount — either a column on Payment or a sum over the WalletTransaction ledger —
+   * AND a per-refund idempotency key instead of the per-delivery one, which is a
+   * money-safety change that wants a real payments integration to test against.
+   * Tracked as Phase 10 (`AUDIT-PLAN.md`), which rewrites this path anyway.
+   *
+   * What it is NOT: a double-refund. The CAS still guarantees at most one credit per
+   * delivery across both channels. The failure mode is under-refunding, not over-. */
   async refund(deliveryId: string, amount?: number) {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
