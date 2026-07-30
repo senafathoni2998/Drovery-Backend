@@ -66,6 +66,9 @@ describe('DeliveryWatchdog', () => {
     expect(deliveries.failExceptional).toHaveBeenCalledWith(
       'd-1',
       'MECHANICAL',
+      // The reap must pass its OWN candidate set, not the wider default:
+      // AWAITING_HANDOFF is failable in general but is NOT stuck.
+      WATCHDOG_STUCK_STATUSES,
     );
     // Reap is counted by status, and the heartbeat gauge advances.
     expect(metrics.watchdogReapedTotal.inc).toHaveBeenCalledWith({
@@ -82,6 +85,9 @@ describe('DeliveryWatchdog', () => {
     expect(deliveries.failExceptional).toHaveBeenCalledWith(
       'd-2',
       'MECHANICAL',
+      // The reap must pass its OWN candidate set, not the wider default:
+      // AWAITING_HANDOFF is failable in general but is NOT stuck.
+      WATCHDOG_STUCK_STATUSES,
     );
   });
 
@@ -99,6 +105,9 @@ describe('DeliveryWatchdog', () => {
     expect(deliveries.failExceptional).toHaveBeenCalledWith(
       'd-3',
       'WEATHER_ABORT',
+      // The reap must pass its OWN candidate set, not the wider default:
+      // AWAITING_HANDOFF is failable in general but is NOT stuck.
+      WATCHDOG_STUCK_STATUSES,
     );
   });
 
@@ -124,6 +133,9 @@ describe('DeliveryWatchdog', () => {
     expect(deliveries.failExceptional).toHaveBeenCalledWith(
       'd-1',
       'MECHANICAL',
+      // The reap must pass its OWN candidate set, not the wider default:
+      // AWAITING_HANDOFF is failable in general but is NOT stuck.
+      WATCHDOG_STUCK_STATUSES,
     );
   });
 
@@ -254,6 +266,9 @@ describe('DeliveryWatchdog', () => {
     expect(deliveries.failExceptional).toHaveBeenCalledWith(
       'd-b',
       'MECHANICAL',
+      // The reap must pass its OWN candidate set, not the wider default:
+      // AWAITING_HANDOFF is failable in general but is NOT stuck.
+      WATCHDOG_STUCK_STATUSES,
     );
     // A partial tick still completed the scan → heartbeat advances.
     expect(metrics.watchdogLastScan.set).toHaveBeenCalledTimes(1);
