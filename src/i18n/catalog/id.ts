@@ -177,6 +177,8 @@ export const id: Record<string, string> = {
   'error.delivery.handoff.invalid_code': 'Kode serah terima tidak valid.',
   'error.delivery.handoff.locked':
     'Terlalu banyak percobaan yang salah — serah terima dikunci.',
+  'error.delivery.proof.not_delivered':
+    'Bukti pengiriman hanya dapat dikirim setelah pengiriman selesai (saat ini {status}).',
   'error.delivery.proof.not_found':
     'Tidak ada bukti pengiriman untuk pengiriman "{id}"',
   'error.delivery.rating.not_delivered':
