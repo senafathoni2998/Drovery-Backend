@@ -655,3 +655,103 @@ as a vacuous assertion, and only re-running it a second way surfaced it.
 - **Phase 7 — Admin console unblock** (S, admin + backend) is the only remaining S-sized phase.
 - Then 9 (realtime durability), 10 (charge money — also picks up Phase 6's deferred partial-refund
   accounting), 11–12 (Drone entity and flight ops).
+
+---
+
+## Phase 7 — Admin console unblock — DONE (two items deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-7-admin-unblock` — 6 commits, stacked on `fix/audit-phase-8-alerting-backups`
+- admin `fix/audit-phase-7-admin-unblock` — 13 commits, branched off `main` (the admin repo was
+  untouched by phases 1–6, so no stacking needed)
+
+### What changed
+
+**The three things that made the console unusable**
+- **Role-aware routing.** `/` rendered the ADMIN-only Dashboard for every authenticated user, so
+  an AGENT signing in hit a permanent 403 with no Dashboard entry in their sidebar to explain
+  it. New `navItems.tsx` is now the single source of the nav AND the guards (`rolesForPath`,
+  `homePathForRole`); `RequireRole` redirects a role to the first page it can actually open
+  instead of showing an error. `AppLayout` consumes the same list, so nav and guards cannot drift.
+- **Staff can subscribe to a ticket socket.** `assertOwnedTicket` is ownership-only and an agent
+  is never the owner, so live chat read "Offline" on every ticket, permanently. New
+  `assertTicketAccess(userId, role, ticketId)` gives AGENT/ADMIN an existence check; the role is
+  resolved once at `handleConnection` because the JWT carries only `{sub, email, jti}`.
+- **The admin client now handles `message:new`.** Every frame from this gateway is enveloped as
+  `{event, data}`; the client handled only `subscribed | error | message:sent`, so the broadcast
+  matched `'event' in obj`, fell through and returned — every inbound customer message was
+  dropped while the chip read "Live".
+
+**Search and URL state**
+- `q` on all three admin list DTOs + server-side filters. Deliveries match `trackingId` first —
+  it is what a customer reads out over the phone — then addresses, receiver, customer email;
+  tickets match the opening message and the customer; users match name and email.
+- `useListParams` holds page/filter/search in the URL (`useSearchParams` appeared nowhere in the
+  console before), plus a debounced `SearchField`. Wired into all three list pages.
+
+**Smaller fixes**
+- `DeliveryDetailPage` header Refresh now reloads the drone command history too — it reloaded
+  the delivery only, so a dispatcher watching for an ABORT ack saw PENDING forever and issued a
+  second command to an aircraft that had already obeyed the first.
+- Delivery rows are keyboard-reachable: the id cell is a real `<Link>`, so a keyboard or
+  screen-reader operator can open a record and middle-click opens a new tab.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 762 tests** (phase 8 left 758)
+- admin:   tsc ✔ / lint ✔ **clean** / **17 files, 74 tests** (baseline 65)
+- mobile:  untouched.
+
+**One real lint error caught and fixed before commit:** `SearchField` resynced its draft with
+`useEffect(() => setDraft(value), [value])`, which trips `react-hooks/set-state-in-effect` —
+setState in an effect forces a second render pass. Replaced with the render-time adjustment
+pattern (compare against a `lastValue` state and adjust during render). The admin lint baseline
+was clean, so this would have been a regression.
+
+### Decisions made
+- **Guards derived from the nav list, not written twice.** The sidebar already had the correct
+  role map; the routes had none. One list means a page cannot be advertised under one rule and
+  guarded under another.
+- **Redirect, don't 403.** An AGENT sent to a page they cannot open should land somewhere they
+  can work, not read an error. `homePathForRole` returns the first nav entry the role can see.
+- **Staff bypass is READ-only.** `assertTicketAccess` is used by `subscribe`, not by `send`.
+  `createUserMessage` hardcodes `senderRole: 'USER'`, and an agent's reply goes through the admin
+  REST endpoint which writes `senderRole: 'AGENT'`. Letting staff write through the socket path
+  would have recorded their replies as customer messages.
+- **Longest-prefix matching in `rolesForPath`.** `/` is itself a nav path, so a naive
+  `startsWith` would give `/support/t-1` the Dashboard's ADMIN-only rule and lock agents out of
+  ticket detail. There is a test for exactly this.
+- **Search on all three lists, not just deliveries.** Structurally identical and cheap; doing one
+  and leaving two would be worse than doing none.
+
+### Deviations from the plan
+- **Toasts / success feedback NOT done.** `Snackbar` still appears nowhere, so a refund still
+  gives no confirmation of the amount (`adminApi.refund` returns it and `onRefund` discards it).
+  It needs a provider plus a call site in every mutation across four pages — a coherent piece of
+  work in its own right, and the phase was already spanning two repos and seven items. This is
+  the single most user-visible thing still missing from the console.
+- **The customer-side ticket entry point NOT done.** `supportApi.createTicket` in the mobile app
+  still has zero call sites and `HelpSupportScreen`'s "Live Chat" row is still `() => {}`, so
+  customers cannot open a ticket and the admin inbox has no source. The plan explicitly allowed
+  deferring this; it belongs with the mobile work, not here. **Note the consequence: the agent
+  side of support is now fully working against an inbox nothing can fill.**
+- **No adversarial review workflow.** Consistent with phases 6 and 8: the changes are guards,
+  a frame-name fix, and query params, each covered by a test, and the highest-risk one (the lint
+  regression) was caught by tooling.
+
+### Left undone / follow-ups
+- **Toasts** — see above. Highest-value remaining console item.
+- **Customer ticket entry point** — mobile; the inbox has no source without it.
+- **Sticky headers and server-side column sort** were in the plan's item 4 and are not done;
+  search + URL state were the parts that blocked phone support.
+- **Support and Users rows are still not keyboard-reachable** — only the deliveries list was
+  converted. Same one-line `<Link>` change.
+- **No test covers `RequireRole` rendering** — the guard logic is tested through `navItems`
+  (`rolesForPath`/`homePathForRole`), but the component itself would need a router harness.
+
+### Next
+- **Phase 9 — Realtime durability** (M, backend + admin), or **Phase 10 — Charge money** (M,
+  needs Stripe keys and also picks up Phase 6's deferred partial-refund accounting).
+- Phases 11–12 (Drone entity, flight ops) are the structural work and want deliberate planning.
+- **Seven of thirteen phases are now done.** Five branches are stacked and unmerged; merging is
+  becoming the bottleneck.

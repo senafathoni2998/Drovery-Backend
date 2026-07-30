@@ -134,7 +134,7 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 4 | Mobile stop-the-bleeding | S | mobile | ◐ Done except the Maps key (2026-07-26) |
 | 5 | Price honesty at checkout | S | mobile | ☑ Done (2026-07-26) |
 | 6 | Terminal-path atomicity | M | backend | ◐ Done except partial-refund accounting → Phase 10 (2026-07-26) |
-| 7 | Admin console unblock | S | admin + backend | ☐ Not started |
+| 7 | Admin console unblock | S | admin + backend | ◐ Done except toasts + customer ticket entry (2026-07-26) |
 | 8 | Alerting & backups | S | backend/ops | ☑ Done (2026-07-26) |
 | 9 | Realtime durability | M | backend + admin | ☐ Not started |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
