@@ -1235,73 +1235,100 @@ describe('DeliveriesService', () => {
   });
 
   describe('cancel', () => {
+    /** Owner read returns `status`; the CAS wins; the post-CAS read returns CANCELED. */
+    const arrangeCancel = (status: DeliveryStatus) => {
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({ ...mockDelivery, status })
+        .mockResolvedValue({
+          ...mockDelivery,
+          status: DeliveryStatus.CANCELED,
+        });
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+    };
+
     it('should cancel a PENDING delivery', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.PENDING,
-      });
-      prisma.delivery.update.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.CANCELED,
-      });
+      arrangeCancel(DeliveryStatus.PENDING);
 
       const result = await service.cancel(userId, 'delivery-1');
 
-      expect(result.status).toBe(DeliveryStatus.CANCELED);
+      expect(result?.status).toBe(DeliveryStatus.CANCELED);
       expect(simulationService.stopSimulation).toHaveBeenCalledWith(
         'delivery-1',
       );
     });
 
     it('should cancel a CONFIRMED delivery', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.CONFIRMED,
-      });
-      prisma.delivery.update.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.CANCELED,
-      });
+      arrangeCancel(DeliveryStatus.CONFIRMED);
+      const result = await service.cancel(userId, 'delivery-1');
+      expect(result?.status).toBe(DeliveryStatus.CANCELED);
+    });
+
+    it('should cancel a SCHEDULED delivery (removes the pending kickoff job)', async () => {
+      arrangeCancel(DeliveryStatus.SCHEDULED);
 
       const result = await service.cancel(userId, 'delivery-1');
 
-      expect(result.status).toBe(DeliveryStatus.CANCELED);
+      expect(result?.status).toBe(DeliveryStatus.CANCELED);
+      // stopSimulation removes the :kickoff job (and any stage/pos jobs).
+      expect(simulationService.stopSimulation).toHaveBeenCalledWith(
+        'delivery-1',
+      );
     });
 
-    it('releases any promo redemption on cancel (best-effort)', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.PENDING,
+    it('claims the transition with a status-guarded CAS', async () => {
+      // The pre-read is advisory — the delivery can be dispatched or delivered while
+      // cleanup round-trips are in flight. Only a guarded write can be the winner.
+      arrangeCancel(DeliveryStatus.PENDING);
+
+      await service.cancel(userId, 'delivery-1');
+
+      expect(prisma.delivery.updateMany).toHaveBeenCalledWith({
+        where: { id: 'delivery-1', status: { in: expect.any(Array) } },
+        data: { status: DeliveryStatus.CANCELED },
       });
-      prisma.delivery.update.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.CANCELED,
-      });
+    });
+
+    it('refunds BOTH legs — credits and the card-charged portion', async () => {
+      // cancel() used to return the wallet-credit portion only, so a customer who
+      // paid partly by card was silently short-refunded, while every exception path
+      // returned both.
+      arrangeCancel(DeliveryStatus.PENDING);
 
       await service.cancel(userId, 'delivery-1');
 
       expect(promoService.releaseForDelivery).toHaveBeenCalledWith(
         'delivery-1',
       );
-    });
-
-    it('should cancel a SCHEDULED delivery (removes the pending kickoff job)', async () => {
-      prisma.delivery.findUnique.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.SCHEDULED,
-      });
-      prisma.delivery.update.mockResolvedValue({
-        ...mockDelivery,
-        status: DeliveryStatus.CANCELED,
-      });
-
-      const result = await service.cancel(userId, 'delivery-1');
-
-      expect(result.status).toBe(DeliveryStatus.CANCELED);
-      // stopSimulation removes the :kickoff job (and any stage/pos jobs).
-      expect(simulationService.stopSimulation).toHaveBeenCalledWith(
+      expect(walletService.refundForDelivery).toHaveBeenCalledWith(
         'delivery-1',
       );
+      expect(walletService.refundChargeToWallet).toHaveBeenCalledWith(
+        'delivery-1',
+      );
+    });
+
+    it('does NOT clean up or refund when it loses the race', async () => {
+      // Someone else moved the delivery between the read and the CAS. The loser must
+      // not refund a delivery that has already completed.
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({
+          ...mockDelivery,
+          status: DeliveryStatus.PENDING,
+        })
+        .mockResolvedValue({
+          ...mockDelivery,
+          status: DeliveryStatus.DELIVERED,
+        });
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.cancel(userId, 'delivery-1')).rejects.toMatchObject({
+        status: 409,
+      });
+
+      expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+      expect(walletService.refundChargeToWallet).not.toHaveBeenCalled();
+      expect(promoService.releaseForDelivery).not.toHaveBeenCalled();
+      expect(simulationService.stopSimulation).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException if delivery not found', async () => {
