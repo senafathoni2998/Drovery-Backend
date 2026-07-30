@@ -79,6 +79,7 @@ export const ERROR_KEYS = [
   'error.delivery.handoff.invalid_code',
   'error.delivery.handoff.locked',
   'error.delivery.proof.not_found',
+  'error.delivery.proof.not_delivered',
   'error.delivery.rating.not_delivered',
   'error.delivery.rating.not_rated',
   'error.delivery.tracking.not_found',
