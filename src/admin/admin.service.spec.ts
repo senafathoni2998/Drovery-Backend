@@ -98,6 +98,47 @@ describe('AdminService', () => {
   });
 
   describe('deliveries', () => {
+    it('searches deliveries by tracking id, addresses, receiver and customer email', async () => {
+      // The console had no search anywhere, so an agent with a customer on the phone
+      // quoting a tracking id had to page through 20 rows at a time.
+      prisma.readWithFallback.mockResolvedValue([[], 0]);
+
+      await service.listDeliveries({ q: 'A1B2C3D4', limit: 20 } as any);
+
+      const cb = prisma.readWithFallback.mock.calls[0][0];
+      const client = {
+        $transaction: jest.fn().mockResolvedValue([[], 0]),
+        delivery: { findMany: jest.fn(), count: jest.fn() },
+      };
+      cb(client);
+      const where = client.delivery.findMany.mock.calls[0][0].where;
+      const fields = where.OR.map(
+        (c: Record<string, unknown>) => Object.keys(c)[0],
+      );
+      expect(fields).toContain('trackingId');
+      expect(fields).toContain('receiver');
+      expect(where.OR[0].trackingId).toEqual({
+        contains: 'A1B2C3D4',
+        mode: 'insensitive',
+      });
+    });
+
+    it('omits the search clause entirely when q is blank', async () => {
+      prisma.readWithFallback.mockResolvedValue([[], 0]);
+
+      await service.listDeliveries({ q: '   ', limit: 20 } as any);
+
+      const cb = prisma.readWithFallback.mock.calls[0][0];
+      const client = {
+        $transaction: jest.fn().mockResolvedValue([[], 0]),
+        delivery: { findMany: jest.fn(), count: jest.fn() },
+      };
+      cb(client);
+      expect(
+        client.delivery.findMany.mock.calls[0][0].where.OR,
+      ).toBeUndefined();
+    });
+
     it('fail delegates to DeliveriesService.adminFail with the given reason', async () => {
       await service.fail('d-1', 'WEATHER_ABORT' as any);
       expect(deliveries.adminFail).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
