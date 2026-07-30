@@ -1,8 +1,8 @@
 import {
   Injectable,
   Logger,
+  OnApplicationShutdown,
   OnModuleInit,
-  OnModuleDestroy,
 } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -18,7 +18,7 @@ const READER_OMIT = {
 @Injectable()
 export class PrismaService
   extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
+  implements OnModuleInit, OnApplicationShutdown
 {
   private readonly logger = new Logger(PrismaService.name);
 
@@ -129,7 +129,21 @@ export class PrismaService
     }
   }
 
-  async onModuleDestroy() {
+  /**
+   * Disconnect on APPLICATION shutdown, not module destroy.
+   *
+   * Nest runs onModuleDestroy -> beforeApplicationShutdown -> onApplicationShutdown,
+   * and @nestjs/bullmq closes its workers in onApplicationShutdown
+   * (bull.explorer.js). Disconnecting in onModuleDestroy therefore pulled the
+   * database out from under every job still draining — so each deploy killed the
+   * in-flight work that `enableShutdownHooks` exists to protect.
+   *
+   * Same phase is the fix available here: within a phase Nest tears down in reverse
+   * initialisation order, and PrismaModule is global and initialised early, so it
+   * goes last. If a future module needs a guaranteed ordering rather than a likely
+   * one, close the workers explicitly in beforeApplicationShutdown.
+   */
+  async onApplicationShutdown() {
     await this.$disconnect().catch(() => undefined);
     await this.readerClient?.$disconnect().catch(() => undefined);
   }
