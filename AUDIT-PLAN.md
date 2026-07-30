@@ -136,7 +136,7 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 6 | Terminal-path atomicity | M | backend | ◐ Done except partial-refund accounting → Phase 10 (2026-07-26) |
 | 7 | Admin console unblock | S | admin + backend | ◐ Done except toasts + customer ticket entry (2026-07-26) |
 | 8 | Alerting & backups | S | backend/ops | ☑ Done (2026-07-26) |
-| 9 | Realtime durability | M | backend + admin | ☐ Not started |
+| 9 | Realtime durability | M | backend + admin | ◐ Backend done; admin socket + hot-store drain deferred (2026-07-26) |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
 | 11 | Drone entity + dispatch engine | L | backend + admin | ☐ Not started |
 | 12 | Flight-ops layer | M | backend + admin | ☐ Not started |

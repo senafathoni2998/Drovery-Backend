@@ -755,3 +755,89 @@ was clean, so this would have been a regression.
 - Phases 11–12 (Drone entity, flight ops) are the structural work and want deliberate planning.
 - **Seven of thirteen phases are now done.** Five branches are stacked and unmerged; merging is
   becoming the bottleneck.
+
+---
+
+## Phase 9 — Realtime durability — PARTIAL (backend done; two items deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-9-realtime-durability` — 5 commits, pushed, stacked on
+`fix/audit-phase-7-admin-unblock`
+
+### What changed
+- **`tracking.subscriber.ts` + `support-chat.subscriber.ts` — subscriptions survive a Redis
+  blip.** With `enableOfflineQueue:false` a SUBSCRIBE issued while Redis is unreachable rejects
+  immediately, and that was logged and dropped. The gateway had already added the socket to its
+  local map and answered `subscribed`, so the client was told it was live while no channel had
+  been registered — and nothing ever retried, because the non-empty map entry made a later
+  subscriber reuse it instead of re-subscribing. One blink deafened those clients for the life
+  of their socket. Both now record the desired channel *before* the SUBSCRIBE and re-arm on
+  ioredis `'ready'`, which is what `MqttService` already did on `'connect'`.
+- **`prisma.service.ts` — disconnect moved from `onModuleDestroy` to `onApplicationShutdown`.**
+  Verified against `node_modules/@nestjs/bullmq/dist/bull.explorer.js:32`, which closes workers
+  in `onApplicationShutdown`. Nest runs `onModuleDestroy` a full phase earlier, so every deploy
+  pulled the database out from under jobs that were still draining — killing exactly the
+  in-flight work `enableShutdownHooks` exists to protect.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 765 tests** (phase 7 left 762)
+- admin / mobile: untouched by this phase.
+
+**Mutation tests** — applied, targeted spec run, file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| subscribe stops recording intent | "keeps the channel in the desired set" | ✔ failed |
+| subscribe stops recording intent | "re-subscribes every desired channel" | ✔ failed |
+| prisma back to `onModuleDestroy` | "onApplicationShutdown disconnects" | ✔ failed |
+
+**A test I wrote was initially worthless and I rewrote it.** The first version of
+"re-subscribes every desired channel" re-implemented the re-arm loop inline in the spec, so it
+asserted its own copy of the logic rather than the code. Fixed by extracting `rearmAll()` from
+the `'ready'` handler and having the spec call the real method — which is also why the mutation
+above can fail it.
+
+### Decisions made
+- **Record intent before subscribing, not after.** The ordering is the fix: a subscribe that
+  fails must still leave behind the fact that we wanted it, or there is nothing to re-arm.
+- **Re-arm on `'ready'` rather than awaiting the subscribe and rolling back the gateway's map**
+  (the plan's suggested alternative). Rolling back turns a transient outage into a hard client
+  error; re-arming turns it into a delay. The client is told `subscribed` and — once Redis is
+  back — that becomes true, which is the honest behaviour for a reconnecting transport.
+- **Prisma moved to the same phase as the worker close, not ordered before it.** Within a phase
+  Nest tears down in reverse initialisation order and PrismaModule is global and early, so it
+  goes last in practice. A guaranteed ordering would need the workers closed explicitly in
+  `beforeApplicationShutdown`; noted in the code comment rather than done, because it means
+  taking over lifecycle management from `@nestjs/bullmq`.
+
+### Deviations from the plan
+- **Item 2 (recoverable admin socket) NOT done.** `Drovery_Admin/src/api/supportSocket.ts` still
+  treats close 1008 as permanently fatal and still opens with whatever 15-minute access token is
+  in localStorage, so live chat dies for good once that token expires. It needs a token-refresh-
+  then-retry path plus surfacing the six distinct `UnavailableReason` values instead of
+  collapsing them into "Offline" — that is admin-side work of similar size to the backend half,
+  and Phase 7 already reworked this file.
+- **Item 3 (fair hot-store checkpoint drain) NOT done.** `tracking-hot-store.ts:158` still claims
+  a random `SPOP` batch with no aging, so above roughly 5k live deliveries an individual delivery
+  can starve past `WATCHDOG_SILENCE_MS` and be false-reaped. Replacing it with an aging ZSET plus
+  a backlog gauge is a self-contained change but a real data-structure swap on a hot path, and it
+  wants a load test to prove rather than a unit test — which is not available here.
+- **Item 5 (WS session revalidation) NOT done.** `tracking.gateway.ts:81` still authenticates
+  once at connect, so logout and token expiry never terminate a live stream. Same shape as the
+  `passwordChangedAt` decision in Phase 2: any revalidation adds per-frame or periodic I/O to a
+  hot path, and it should be designed alongside that one rather than twice.
+- No adversarial review workflow, consistent with phases 6–8: two focused changes, both
+  mutation-tested.
+
+### Left undone / follow-ups
+- The three items above. **Item 2 is the most user-visible** — an agent's chat still dies
+  permanently 15 minutes into a shift.
+- The re-arm is unit-tested but has never been exercised against a real Redis restart. Worth
+  doing once by hand: bounce Redis with a client subscribed and confirm frames resume.
+
+### Next
+- **Phase 10 — Charge money for real** (M, backend + mobile) — needs Stripe test keys from the
+  user, and also picks up Phase 6's deferred partial-refund accounting.
+- **Phases 11–12** — the Drone entity and flight ops. L-sized and structural.
+- **Eight of thirteen phases now touched.** Six branches stacked and unmerged; merging is well
+  past the point of being the bottleneck.
