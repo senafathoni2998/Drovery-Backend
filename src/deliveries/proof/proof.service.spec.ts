@@ -1,3 +1,4 @@
+import { DeliveryStatus } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 
@@ -71,11 +72,35 @@ describe('ProofService', () => {
   });
 
   describe('submitProof', () => {
+    it('refuses to mint proof for a delivery that never completed', async () => {
+      // Ungated, this created proof for a CANCELED or still-PENDING delivery — and
+      // because it upserts, let the owner overwrite the lat/lng/recipientName
+      // recorded at the real handoff with their own values, or with nulls.
+      for (const status of [
+        DeliveryStatus.CANCELED,
+        DeliveryStatus.PENDING,
+        DeliveryStatus.IN_TRANSIT,
+      ]) {
+        prisma.delivery.findUnique.mockResolvedValue({
+          id: 'd-1',
+          userId,
+          receiver: 'Rina',
+          status,
+        });
+
+        await expect(
+          service.submitProof(userId, 'd-1', { photoBase64: 'abc' }),
+        ).rejects.toMatchObject({ status: 409 });
+      }
+      expect(prisma.proofOfDelivery.upsert).not.toHaveBeenCalled();
+    });
+
     it('upserts the proof with the uploaded photo (recipient defaults to delivery.receiver)', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         id: 'd-1',
         userId,
         receiver: 'Rina',
+        status: DeliveryStatus.DELIVERED,
       });
       prisma.proofOfDelivery.upsert.mockResolvedValue({ id: 'pod-1' });
 
