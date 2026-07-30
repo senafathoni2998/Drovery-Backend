@@ -484,3 +484,91 @@ total with no distance term, i.e. exactly the number the screens must never show
 - **New information for later phases:** the mobile app now has two shared utility modules worth
   reusing rather than re-inventing — `features/delivery/utils/pickupDateTime.ts` and
   `utils/currency.ts`. Any new screen showing money or a pickup time should use them.
+
+---
+
+## Phase 6 — Terminal-path atomicity — DONE (one item deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions made autonomously per their instruction
+**Branch:** `fix/audit-phase-6-terminal-atomicity` — 10 commits, pushed, branched off
+`fix/audit-phase-3-schedule-contract` (stacks: it edits `deliveries.service.ts`, which that
+branch already changed)
+
+### What changed
+- `deliveries.service.ts` `cancel()` — **now single-winner**. It was the only status transition
+  in the file without a CAS: read, three network round-trips of cleanup, then an
+  *unconditional* write. The read is advisory, so a lost race both refunded a completed
+  delivery and overwrote its terminal status with CANCELED. The CAS now runs BEFORE any
+  cleanup, so only the winner cleans up.
+- `cancel()` and `adminForceCancel` — **now refund both legs**. Both released the promo and
+  returned the wallet-credit portion but never `refundChargeToWallet`, so a customer who paid
+  partly by card was silently short-refunded while every exception path returned both.
+- `cleanupAfterException` → **`cleanupAfterTermination`**, now shared by all four terminal
+  paths (failExceptional, beginReturnToBase, cancel, adminForceCancel) so a new terminal
+  cannot refund one leg and forget the other.
+- `failExceptional` takes an optional `allowedStatuses`; `delivery-watchdog.ts` passes
+  `WATCHDOG_STUCK_STATUSES`. The reap CAS was **wider than the query that selected the row**:
+  `FAILABLE_STATUSES` includes `AWAITING_HANDOFF`, which the candidate query deliberately
+  excludes. A delivery picked up as IN_TRANSIT that reached handoff mid-scan was failed and
+  auto-refunded while the customer was walking outside. The stranded-ack path keeps the wider
+  default on purpose — it replays an admin ABORT, legitimately allowed from AWAITING_HANDOFF.
+- `proof.service.ts` `submitProof` — **gated on DELIVERED**. Ungated it minted proof for
+  CANCELED/PENDING deliveries and, because it upserts, let the owner overwrite the lat/lng and
+  recipientName recorded at the real handoff. Sibling `RatingService.rate` already gated this way.
+- New i18n key `error.delivery.proof.not_delivered` in both locales + `ERROR_KEYS`.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (0 errors, **98 warnings — unchanged baseline**) /
+  **80 suites, 758 tests** (phase 3 left 755)
+- mobile / admin: untouched.
+
+**Mutation tests** — each applied, targeted spec run, file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| cancel back to an unconditional write | "does NOT clean up…when it loses the race" | ✔ failed |
+| delete the `refundChargeToWallet` call | "refunds BOTH legs" | ✔ failed |
+| watchdog reap back to the default CAS | "reaps a stuck LIVE IN_TRANSIT" | ✔ failed |
+| remove the submitProof gate | "refuses to mint proof…never completed" | ✔ failed |
+
+**The second mutation initially PASSED**, which would have meant a worthless test. The cause was
+my mutation, not the test: I string-replaced the first occurrence of `refundChargeToWallet`
+after the function start, which landed on a *comment* two lines above the call. Deleting the
+actual call block fails the test correctly. Worth recording because it is the same failure mode
+as a vacuous assertion, and only re-running it a second way surfaced it.
+
+### Decisions made
+- **CAS before cleanup, not after.** Ordering is the whole fix. Cleaning up first and writing
+  second is what let a loser refund a delivery that had already completed.
+- **One shared `cleanupAfterTermination`.** The two cancel paths had drifted from the exception
+  paths by exactly one refund leg. Sharing the helper makes that drift impossible rather than
+  merely fixed.
+- **The watchdog narrows its own CAS; the stranded-ack path does not.** They look identical but
+  mean different things: one is "this looks stuck", the other is "an operator explicitly ordered
+  an abort". Only the first must exclude AWAITING_HANDOFF.
+- **Partial-refund accounting DEFERRED to Phase 10** (see below) rather than half-fixed.
+
+### Deviations from the plan
+- **Plan item 5 (cumulative refunded amount on Payment) is NOT done.** Doing it properly needs
+  either a schema column or a sum over the WalletTransaction ledger, AND a per-refund
+  idempotency key instead of today's per-delivery `admin-refund:<id>` — a money-safety change
+  that wants a real payments integration to test against, and Phase 10 rewrites this path
+  anyway. I verified the admin console *does* expose a partial-amount field
+  (`DeliveryDetailPage.tsx:169-172`), so simply rejecting partials would have removed a used
+  capability. Documented in a block comment at the `refund()` site instead, with the precise
+  reason and a pointer to Phase 10.
+  **Not a double-refund**: the CAS still guarantees at most one credit per delivery across both
+  channels. The failure mode is under-refunding, which is why leaving it is tolerable.
+- No adversarial review workflow was run for this phase — the four changes are small, each is
+  mutation-tested, and three of them are narrowing guards rather than new behaviour. Phases 1–5
+  each got one; this is a deliberate step down in ceremony, not an oversight.
+
+### Left undone / follow-ups
+- **Partial-refund accounting** — see above. Phase 10.
+- `cancel()` still does its cleanup outside a transaction (best-effort, idempotent, matching
+  every other terminal path). Making terminal cleanup transactional is a larger change and was
+  not in scope.
+
+### Next
+- **Phase 7 — Admin console unblock** (S, admin + backend), or **Phase 8 — Alerting & backups**
+  (S, independent). Phase 8 is the cheapest real risk reduction left and blocks nothing.
