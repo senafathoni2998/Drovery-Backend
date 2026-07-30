@@ -5,6 +5,14 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# Where firing rules actually GO. Without this block the nine rules in alerts.yml
+# evaluated and fired into the Prometheus UI and nowhere else — three of them are
+# `severity: critical`, so the stack could detect an outage and page nobody.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 scrape_configs:
   # API tier — HTTP histogram/counter, WS gauges, default node/process metrics.
   - job_name: drovery-api
