@@ -46,7 +46,23 @@ export class AdminService {
   // ── Support inbox (AGENT + ADMIN) ──
 
   async listTickets(query: AdminTicketQueryDto) {
-    const where = query.status ? { status: query.status } : {};
+    const q = query.q?.trim();
+    const where: Prisma.SupportTicketWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      // Search what an agent actually has in front of them: the opening message,
+      // or the customer's name/email from the caller on the phone.
+      ...(q
+        ? {
+            OR: [
+              { message: { contains: q, mode: 'insensitive' as const } },
+              {
+                user: { email: { contains: q, mode: 'insensitive' as const } },
+              },
+              { user: { name: { contains: q, mode: 'insensitive' as const } } },
+            ],
+          }
+        : {}),
+    };
     // Operator reporting list — lag-tolerant → read replica (one consistent
     // snapshot via the reader's $transaction; falls back to primary).
     const [items, total] = await this.prisma.readWithFallback((c) =>
@@ -132,9 +148,24 @@ export class AdminService {
   // ── Delivery oversight (ADMIN) ──
 
   async listDeliveries(query: AdminDeliveryQueryDto) {
+    const q = query.q?.trim();
     const where: Prisma.DeliveryWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.userId ? { userId: query.userId } : {}),
+      // trackingId first — it is the thing a customer reads out over the phone.
+      ...(q
+        ? {
+            OR: [
+              { trackingId: { contains: q, mode: 'insensitive' as const } },
+              { fromAddress: { contains: q, mode: 'insensitive' as const } },
+              { toAddress: { contains: q, mode: 'insensitive' as const } },
+              { receiver: { contains: q, mode: 'insensitive' as const } },
+              {
+                user: { email: { contains: q, mode: 'insensitive' as const } },
+              },
+            ],
+          }
+        : {}),
     };
     const [items, total] = await this.prisma.readWithFallback((c) =>
       c.$transaction([
@@ -402,7 +433,18 @@ export class AdminService {
   // ── Users / roles (ADMIN) ──
 
   async listUsers(query: AdminUserQueryDto) {
-    const where = query.role ? { role: query.role } : {};
+    const q = query.q?.trim();
+    const where: Prisma.UserWhereInput = {
+      ...(query.role ? { role: query.role } : {}),
+      ...(q
+        ? {
+            OR: [
+              { email: { contains: q, mode: 'insensitive' as const } },
+              { name: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
     const [items, total] = await this.prisma.readWithFallback((c) =>
       c.$transaction([
         c.user.findMany({
