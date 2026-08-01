@@ -960,6 +960,93 @@ describe('DeliveriesService', () => {
     });
   });
 
+  describe('create — drone claim (LIVE)', () => {
+    const liveDto = {
+      ...createDto,
+      trackingSource: 'LIVE',
+      droneId: 'drone-1',
+    };
+
+    it('claims a real aircraft atomically and binds it to the delivery', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+      prisma.drone.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.create(userId, liveDto as any);
+
+      // A conditional update, not a read-then-write: every precondition is in the
+      // WHERE, so two creates racing for the last aircraft cannot both win.
+      const arg = prisma.drone.updateMany.mock.calls[0][0];
+      expect(arg.where).toMatchObject({
+        id: 'drone-1',
+        airworthy: true,
+        activeDeliveryId: null,
+      });
+      expect(arg.where.maxPayloadKg).toEqual({ gte: createDto.packageWeight });
+      expect(arg.data.activeDeliveryId).toEqual(expect.any(String));
+
+      expect(prisma.delivery.create.mock.calls[0][0].data.assignedDroneId).toBe(
+        'drone-1',
+      );
+    });
+
+    it('rejects a LIVE delivery that names no aircraft', async () => {
+      // It used to mint `drone-${uuidv4()}` — an id referencing nothing — so the
+      // platform believed it had dispatched an aircraft that did not exist.
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          trackingSource: 'LIVE',
+        } as any),
+      ).rejects.toMatchObject({ status: 400 });
+
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the claim matches no row — busy, grounded or too small', async () => {
+      prisma.drone.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.create(userId, liveDto as any),
+      ).rejects.toMatchObject({ status: 409 });
+
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
+    });
+
+    it('does not touch the fleet for a SIMULATED delivery', async () => {
+      prisma.delivery.create.mockResolvedValue(mockDelivery);
+
+      await service.create(userId, createDto);
+
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+      expect(
+        prisma.delivery.create.mock.calls[0][0].data.assignedDroneId,
+      ).toBeNull();
+    });
+
+    it('releases the aircraft when the delivery terminates', async () => {
+      // A terminated delivery holding an aircraft leaks fleet capacity one stuck
+      // delivery at a time. Scoped to THIS delivery's claim, so a late release can
+      // never free a drone another delivery has since claimed.
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce({
+          ...mockDelivery,
+          status: DeliveryStatus.PENDING,
+        })
+        .mockResolvedValue({
+          ...mockDelivery,
+          status: DeliveryStatus.CANCELED,
+        });
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.cancel(userId, 'delivery-1');
+
+      expect(prisma.drone.updateMany).toHaveBeenCalledWith({
+        where: { activeDeliveryId: 'delivery-1' },
+        data: { activeDeliveryId: null, status: 'AVAILABLE' },
+      });
+    });
+  });
+
   describe('create — serviceability gate', () => {
     it('rejects out-of-area with 422 and NO side effects', async () => {
       serviceability.checkServiceability.mockResolvedValue({
