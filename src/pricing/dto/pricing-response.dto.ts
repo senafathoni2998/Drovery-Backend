@@ -7,6 +7,7 @@ import { ApiProperty } from '@nestjs/swagger';
 /** Machine-parseable codes explaining why a route is non-serviceable. */
 export type ServiceabilityCode =
   | 'OUT_OF_AREA'
+  | 'ROUTE_TOO_LONG'
   | 'NO_FLY_ZONE'
   | 'WEATHER_HOLD'
   | 'WEATHER_STORM';
