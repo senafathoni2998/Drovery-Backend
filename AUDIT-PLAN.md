@@ -130,15 +130,15 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 0 | Baseline capture | S | all | ☑ Done (2026-07-26) |
 | 1 | Pricing trust boundary | S | backend | ☑ Done (2026-07-26) |
 | 2 | Credentials hygiene | S | backend | ☑ Done (2026-07-26) |
-| 3 | Scheduled-delivery contract | S | backend + mobile | ☐ Not started |
-| 4 | Mobile stop-the-bleeding | S | mobile | ☐ Not started |
-| 5 | Price honesty at checkout | S | mobile | ☐ Not started |
-| 6 | Terminal-path atomicity | M | backend | ☐ Not started |
-| 7 | Admin console unblock | S | admin + backend | ☐ Not started |
-| 8 | Alerting & backups | S | backend/ops | ☐ Not started |
-| 9 | Realtime durability | M | backend + admin | ☐ Not started |
+| 3 | Scheduled-delivery contract | S | backend + mobile | ☑ Done (2026-07-26) |
+| 4 | Mobile stop-the-bleeding | S | mobile | ◐ Done except the Maps key (2026-07-26) |
+| 5 | Price honesty at checkout | S | mobile | ☑ Done (2026-07-26) |
+| 6 | Terminal-path atomicity | M | backend | ◐ Done except partial-refund accounting → Phase 10 (2026-07-26) |
+| 7 | Admin console unblock | S | admin + backend | ◐ Done except toasts + customer ticket entry (2026-07-26) |
+| 8 | Alerting & backups | S | backend/ops | ☑ Done (2026-07-26) |
+| 9 | Realtime durability | M | backend + admin | ◐ Backend done; admin socket + hot-store drain deferred (2026-07-26) |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
-| 11 | Drone entity + dispatch engine | L | backend + admin | ☐ Not started |
+| 11 | Drone entity + dispatch engine | L | backend + admin | ◐ Entity + claim + fleet surface done; dispatch engine remains (2026-08-01) |
 | 12 | Flight-ops layer | M | backend + admin | ☐ Not started |
 
 Status values: `☐ Not started` · `◐ In progress` · `☑ Done` · `⊘ Skipped (reason)`

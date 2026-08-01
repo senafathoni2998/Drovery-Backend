@@ -340,3 +340,685 @@ placeholder secrets, so bodies logged there are acceptable.
 - **New information for later phases:** `revokedAt` now has exactly one meaning. Any future
   code that soft-revokes a refresh token for a new reason MUST add `revokedReason` first, or
   it will silently turn benign flows into mass logouts.
+
+---
+
+## Phases 3 + 4 + 5 — Scheduled-delivery contract · Mobile stop-the-bleeding · Price honesty — DONE
+**Date:** 2026-07-26
+**Session:** same session as the audit and phases 1–2; user was away, so all judgment calls were made autonomously per their instruction
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-3-schedule-contract` — 11 commits, branched off `fix/audit-remediation-phases-1-2` (NOT `main`: it edits `create-delivery.dto.ts`, which that branch already changed)
+- mobile `fix/audit-phases-3-4-5` — 26 commits, branched off `docs/readme-and-app-fixes` (NOT `main`: it edits `CongratulatoryScreen.tsx`, which commit `a87fb26` on that branch already changed — branching off main would have folded someone else's commit into this diff)
+
+### What changed
+
+**Phase 3 — the scheduled-delivery contract (the audit's highest-severity bug)**
+- mobile **NEW** `features/delivery/utils/pickupDateTime.ts` — the single source of truth for
+  the wire format. Form state now HOLDS `YYYY-MM-DD` / 24h `HH:MM`; only what a human reads is
+  localized. `toWireDate` uses LOCAL calendar fields, not `toISOString`, which would report the
+  previous day for every user east of UTC.
+- mobile `DateTimePickerField` (displays formatted, emits wire, seeds the calendar),
+  `CustomTimePicker` (12-hour wheel kept — only the boundary value changed), `validators.ts`
+  (now REJECTS an unparseable pickup where it used to return `true`), `helpers.estimateDelivery`,
+  and the display sites on Confirmation / Congratulatory / DeliveryDetail / Orders / Home.
+- backend `delivery-schedule.ts` now EXPORTS `PICKUP_DATE_RE` + `PICKUP_TIME_RE` so a DTO
+  validator cannot drift from the parser, plus `isValidPickupDate()` (see *Deviations*).
+- backend `@Matches` on all three pickup DTOs; a service-level calendar check in `create()`;
+  dedicated i18n keys so the 400 says what shape is wanted.
+
+**Phase 4 — mobile stop-the-bleeding**
+- **NEW `AuthGate`** in `app/_layout.tsx`. One mechanism for two bugs: a cold start used to
+  discard a valid session (`app/index.tsx` was `export { default } from './login'`), and on
+  refresh-token expiry the app cleared auth state but never navigated. `index.tsx` is now a
+  neutral spinner the gate redirects away from.
+- The four `BackHandler.exitApp()` sites: Home is `useFocusEffect` + double-press-to-exit, Login
+  is `useFocusEffect` + exit (it is the root of the signed-out stack), Profile and Signup are
+  removed. Tab screens never unmount in Expo Router, so a mount-scoped handler stayed registered
+  for the whole session and quit the app from anywhere.
+- `TrackPackageScreen`: `number-pad` → `default` + `autoCapitalize="characters"`. Tracking IDs
+  are `uuidv4().slice(0,8).toUpperCase()`, so ~98% contain a letter and could not be typed.
+- `DeliveryDetailScreen.handleAction` passes `apiDelivery.id`, and `WorkflowScreen` alerts
+  instead of swallowing a failed step (see *Deviations* — the audit's line reference was wrong).
+
+**Phase 5 — price honesty at checkout**
+- mobile **NEW** `utils/currency.ts` — one `formatCurrency`. The app had four formatters, two on
+  the same screen: the price bar read `$37` while the promo card directly above rendered the
+  SAME total as `Rp37.000`.
+- `ConfirmationDeliveryScreen`: no client-side seed; the estimate now sends the route and re-runs
+  when geocoding resolves; a distance-less quote is treated as INCOMPLETE rather than cheap; the
+  swallowed `.catch` is surfaced; a promo previewed against a superseded total is dropped;
+  confirm is blocked until a real server price is on screen.
+- `helpers.calcPrice` and `PriceEstimationScreen`'s `calcBreakdownLocal` both DELETED.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (0 errors, **98 warnings — unchanged baseline**) / **80 suites, 755 tests** (phase 2 left 746)
+- mobile: tsc ✔ / lint ✔ / **41 suites, 286 tests** (baseline 279)
+- admin: untouched.
+
+**On the mobile count.** It is 286, not 279 + everything added: 7 `calcPrice` tests and 6
+`calcBreakdownLocal` tests were deleted *with the functions they tested*, and 20 new ones added.
+Per Plan §1.1 a drop needs an explicit reason — this is it. Both suites asserted a client-side
+total with no distance term, i.e. exactly the number the screens must never show.
+
+**Mutation tests** — each applied, the targeted spec run, the file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| calendar guard back to shape-only | "calendar guard the regex cannot express" | ✔ failed |
+| calendar guard back to shape-only | "not a real calendar date" (service) | ✔ failed |
+
+**Manual checks beyond the suites:**
+- Enumerated all 33 route files under `app/` against the gate's segment sets. The 7 public ones
+  match exactly; everything else is protected; `(tabs)` correctly falls through as protected.
+  `reset-password` and `verify-email` are public, so email deep links still work signed out.
+- Grepped the whole mobile repo for surviving 12-hour parsing/emitting. The only AM/PM left is
+  the time-picker WHEEL and `formatWireTime` — both display-only. No other screen produces a
+  pickup value; `favoriteApi` merely declares the fields, and recurring only displays `timeOfDay`.
+- Confirmed Phase 1 did not break this: mobile's `geocodeAddress` goes through the backend's own
+  `/geo`, the same `GeoService` used for pricing, so client coords match the server geocode
+  exactly and the >1km deviation check never fires on a first-party request.
+
+### Decisions made
+- **Wire format stored, display format derived.** The alternative — carrying two values through
+  form state and route params — doubles the number of places that can disagree. `formatWire*`
+  passes unrecognized input through, which also makes old rows (stored as `"09:30 AM"`) render
+  correctly with no migration.
+- **The 12-hour wheel stays.** Only the value crossing the component boundary changed. Picking a
+  time is a UX question; the wire shape is a correctness one.
+- **Calendar validation in the service, not a custom class-validator constraint.** Same reasoning
+  as the Phase 1 weight cap: reorder, favorite-order and the materializer never see the
+  ValidationPipe. `@Matches` still guards the shape at the boundary for a fast, well-localized 400.
+- **One gate rather than per-screen redirects.** Cold-start and session-expiry are the same
+  question ("does auth state agree with the current route"), so they get one answer. Manual
+  `router.replace` calls that duplicated it were removed.
+- **Android Back differs per screen deliberately:** exit from Home (double-press) and Login (root
+  of the signed-out stack); plain back from Profile and Signup, where quitting mid-form is never
+  what the user meant.
+
+### Deviations from the plan
+- **Scope grew from the adversarial review of my own diff** (20 agents, 4 lenses, **13 findings
+  confirmed, 3 refuted**). One was a **critical bug I introduced**:
+  1. *AuthGate stranded every signed-out cold start.* I had `""` (the index route) in
+     `PUBLIC_SEGMENTS`, so a signed-out user at `/` was "public, nothing to do" — and `index`
+     renders only a spinner. Permanent spinner, `/login` unreachable. Fixed by removing `""` from
+     the public set, leaving it only in `AUTH_ONLY_SEGMENTS`.
+  2. *A quote whose route never resolved was rendered as the final Total* with the distance fee
+     missing and confirm still enabled. Now `!res.distanceKm` is treated as an incomplete quote.
+  3. *An applied promo went stale* when the price re-fetched after geocoding, so the bar showed a
+     discount computed against a total that no longer existed. The promo is now cleared.
+  4. *`CustomTimePicker` mapped 12 o'clock to the wheel's "01" slot* — pre-existing, but I
+     rewrote that function so I fixed it. Minute 58 also wrapped to "00" instead of "55".
+  5. *`PriceEstimationScreen` still had `calcBreakdownLocal`* — the surviving twin of the
+     `calcPrice` I deleted, on the screen whose entire purpose is showing a price.
+  6. *`PICKUP_DATE_RE` was shape-only.* `2026-02-31` matched and `Date.UTC` silently rolled it to
+     Mar 3; `2026-00-10` reached Prisma as an Invalid Date and 500'd instead of 400-ing. Added
+     `isValidPickupDate` — the same round-trip guard the mobile `parseWireDate` already had. The
+     two sides of the contract were not equivalent in both directions.
+- **Plan §1.4's "ghost" is resolved.** The audit claimed `DeliveryDetailScreen.tsx:205` passes a
+  trackingId. That line passes `delivery.id` — but the view-model at `:120` sets
+  `id: apiDelivery.trackingId`, *overwriting* the UUID. The bug was real and the line reference
+  was wrong, exactly as §1.4 warned. Fixed at the call site by passing `apiDelivery.id`.
+- **One commit is mislabelled.** Mobile `473ee70` ("fix(nav): scope the exit-on-back handler…")
+  also contains the `formatWireTime` change to the Home ETA, because I edited that file twice
+  before committing. The code is correct; the message under-describes it. Not rewritten — 26
+  commits of history churn is disproportionate to a message.
+
+### Left undone / follow-ups
+- **The Google Maps API key is still `YOUR_GOOGLE_MAPS_API_KEY`** (`app.json:26`), so the Android
+  map remains a grey rectangle. Blocked on a credential I do not have; I deliberately did not
+  invent one or convert `app.json` to `app.config.js` (a build-format change I could not verify
+  without running prebuild). **This is the only Phase 4 item not done** — hence the ◐ in §2.
+- **`MAX_WEIGHT_KG` is still duplicated** between backend `src/common/constants/index.ts` and
+  mobile `features/delivery/screens/CreateDeliveryScreen/validators.ts`. Byte-identical today; a
+  comment now says so on the mobile side. Carried over from Phase 1.
+- **`estimateDelivery` is still pickup + 2 hours, flat.** Kept only so the screen shows
+  something. The real fix is the backend populating `estimatedDelivery`, which is declared on the
+  model and never written (audit backlog).
+- **No test covers `AuthGate` itself.** It needs expo-router navigation mocking; I verified it by
+  enumerating all 33 routes by hand instead. Worth a real test when someone next touches routing.
+- Neither branch is merged. Backend stacks on the phases 1–2 branch, so merge that first.
+
+### Next
+- **Phase 6 — Terminal-path atomicity** (M, backend): CAS in `cancel()`, the missing card-refund
+  leg, narrowing the watchdog reap CAS, gating `submitProof`. Independent of everything above.
+- **New information for later phases:** the mobile app now has two shared utility modules worth
+  reusing rather than re-inventing — `features/delivery/utils/pickupDateTime.ts` and
+  `utils/currency.ts`. Any new screen showing money or a pickup time should use them.
+
+---
+
+## Phase 6 — Terminal-path atomicity — DONE (one item deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions made autonomously per their instruction
+**Branch:** `fix/audit-phase-6-terminal-atomicity` — 10 commits, pushed, branched off
+`fix/audit-phase-3-schedule-contract` (stacks: it edits `deliveries.service.ts`, which that
+branch already changed)
+
+### What changed
+- `deliveries.service.ts` `cancel()` — **now single-winner**. It was the only status transition
+  in the file without a CAS: read, three network round-trips of cleanup, then an
+  *unconditional* write. The read is advisory, so a lost race both refunded a completed
+  delivery and overwrote its terminal status with CANCELED. The CAS now runs BEFORE any
+  cleanup, so only the winner cleans up.
+- `cancel()` and `adminForceCancel` — **now refund both legs**. Both released the promo and
+  returned the wallet-credit portion but never `refundChargeToWallet`, so a customer who paid
+  partly by card was silently short-refunded while every exception path returned both.
+- `cleanupAfterException` → **`cleanupAfterTermination`**, now shared by all four terminal
+  paths (failExceptional, beginReturnToBase, cancel, adminForceCancel) so a new terminal
+  cannot refund one leg and forget the other.
+- `failExceptional` takes an optional `allowedStatuses`; `delivery-watchdog.ts` passes
+  `WATCHDOG_STUCK_STATUSES`. The reap CAS was **wider than the query that selected the row**:
+  `FAILABLE_STATUSES` includes `AWAITING_HANDOFF`, which the candidate query deliberately
+  excludes. A delivery picked up as IN_TRANSIT that reached handoff mid-scan was failed and
+  auto-refunded while the customer was walking outside. The stranded-ack path keeps the wider
+  default on purpose — it replays an admin ABORT, legitimately allowed from AWAITING_HANDOFF.
+- `proof.service.ts` `submitProof` — **gated on DELIVERED**. Ungated it minted proof for
+  CANCELED/PENDING deliveries and, because it upserts, let the owner overwrite the lat/lng and
+  recipientName recorded at the real handoff. Sibling `RatingService.rate` already gated this way.
+- New i18n key `error.delivery.proof.not_delivered` in both locales + `ERROR_KEYS`.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (0 errors, **98 warnings — unchanged baseline**) /
+  **80 suites, 758 tests** (phase 3 left 755)
+- mobile / admin: untouched.
+
+**Mutation tests** — each applied, targeted spec run, file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| cancel back to an unconditional write | "does NOT clean up…when it loses the race" | ✔ failed |
+| delete the `refundChargeToWallet` call | "refunds BOTH legs" | ✔ failed |
+| watchdog reap back to the default CAS | "reaps a stuck LIVE IN_TRANSIT" | ✔ failed |
+| remove the submitProof gate | "refuses to mint proof…never completed" | ✔ failed |
+
+**The second mutation initially PASSED**, which would have meant a worthless test. The cause was
+my mutation, not the test: I string-replaced the first occurrence of `refundChargeToWallet`
+after the function start, which landed on a *comment* two lines above the call. Deleting the
+actual call block fails the test correctly. Worth recording because it is the same failure mode
+as a vacuous assertion, and only re-running it a second way surfaced it.
+
+### Decisions made
+- **CAS before cleanup, not after.** Ordering is the whole fix. Cleaning up first and writing
+  second is what let a loser refund a delivery that had already completed.
+- **One shared `cleanupAfterTermination`.** The two cancel paths had drifted from the exception
+  paths by exactly one refund leg. Sharing the helper makes that drift impossible rather than
+  merely fixed.
+- **The watchdog narrows its own CAS; the stranded-ack path does not.** They look identical but
+  mean different things: one is "this looks stuck", the other is "an operator explicitly ordered
+  an abort". Only the first must exclude AWAITING_HANDOFF.
+- **Partial-refund accounting DEFERRED to Phase 10** (see below) rather than half-fixed.
+
+### Deviations from the plan
+- **Plan item 5 (cumulative refunded amount on Payment) is NOT done.** Doing it properly needs
+  either a schema column or a sum over the WalletTransaction ledger, AND a per-refund
+  idempotency key instead of today's per-delivery `admin-refund:<id>` — a money-safety change
+  that wants a real payments integration to test against, and Phase 10 rewrites this path
+  anyway. I verified the admin console *does* expose a partial-amount field
+  (`DeliveryDetailPage.tsx:169-172`), so simply rejecting partials would have removed a used
+  capability. Documented in a block comment at the `refund()` site instead, with the precise
+  reason and a pointer to Phase 10.
+  **Not a double-refund**: the CAS still guarantees at most one credit per delivery across both
+  channels. The failure mode is under-refunding, which is why leaving it is tolerable.
+- No adversarial review workflow was run for this phase — the four changes are small, each is
+  mutation-tested, and three of them are narrowing guards rather than new behaviour. Phases 1–5
+  each got one; this is a deliberate step down in ceremony, not an oversight.
+
+### Left undone / follow-ups
+- **Partial-refund accounting** — see above. Phase 10.
+- `cancel()` still does its cleanup outside a transaction (best-effort, idempotent, matching
+  every other terminal path). Making terminal cleanup transactional is a larger change and was
+  not in scope.
+
+### Next
+- **Phase 7 — Admin console unblock** (S, admin + backend), or **Phase 8 — Alerting & backups**
+  (S, independent). Phase 8 is the cheapest real risk reduction left and blocks nothing.
+
+---
+
+## Phase 8 — Alerting & backups — DONE
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-8-alerting-backups` — 6 commits, pushed, stacked on
+`fix/audit-phase-6-terminal-atomicity`
+
+### What changed
+- **`observability/alertmanager.yml` (new)** — routing for the nine SLO rules that had been
+  firing into nothing. `severity: critical` pages (10s group wait, hourly repeat); the rest is
+  ticketed. Inhibition so a DOWN tier pages once about the cause instead of three times about
+  its latency and error-rate symptoms.
+- **`observability/prometheus.yml`** — added the `alerting:` block. `rule_files` was set;
+  there was no `alerting:` block and no Alertmanager, so every rule evaluated and went nowhere
+  but the Prometheus UI.
+- **`docker-compose.observability.yml`** — Alertmanager service in the same profile.
+- **`scripts/backup.sh` (new)** — compressed custom-format dump, **verified** with
+  `pg_restore --list`, fails if the archive is unreadable or has no table data; retention runs
+  last and only after a verified success, so a run of failures cannot age out the last good
+  backup; non-zero exit so a timer surfaces it.
+- **`scripts/restore.sh` (new)** — the half that did not exist. Default mode restores into a
+  scratch database and asserts the result is *usable* (table count, `users`/`deliveries`
+  queryable, and **`deliveries` still has partition children**), prints elapsed time — the real
+  RTO — then drops the scratch DB. A real restore needs an explicit `CONFIRM`.
+- **`DEPLOY.md`** — backup/restore and alerting runbooks, plus removal of a **duplicated Notes
+  block** (secrets/backups/scaling/observability appeared twice, verbatim).
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / 80 suites, **758 tests** — unchanged by
+  this phase, which touches ops config and scripts only.
+- All four YAML files parse (`yaml.safe_load`), and every receiver referenced by a route in
+  `alertmanager.yml` is defined (checked programmatically, not by eye).
+- `bash -n` on both scripts; guard behaviour exercised by hand: missing `DATABASE_URL` → 2,
+  no args → 2, bad path → 2, unconfirmed overwrite → 3.
+- **Not verified:** the stack was not actually brought up. Docker was unavailable here, so
+  `docker compose config` could not run and no alert was fired end to end. The next person with
+  a Docker host should do exactly that — see *Left undone*.
+
+### Decisions made
+- **Empty receivers, not placeholder URLs.** My first draft used `${ALERTMANAGER_CRITICAL_WEBHOOK}`
+  in the config. **Alertmanager does not expand environment variables in its YAML** — that would
+  have been taken as a literal URL and stopped it from starting. Caught before committing.
+  Empty receivers are valid and give working grouping/inhibition/silences; enabling delivery is
+  a few uncommented lines, with Slack/PagerDuty/webhook blocks written out ready to fill in.
+- **The destructive guard is checked before the archive is read.** First version verified the
+  archive first, so an unconfirmed overwrite exited 1 (bad archive) instead of 3 (refused) —
+  the refusal should be immediate and not depend on anything else succeeding.
+- **Verify inside `backup.sh`, not as a separate step.** An unverified backup and no backup are
+  the same thing on the day you need it, and the check is one `pg_restore --list`.
+- **The rehearsal asserts partition children survive.** `deliveries` is RANGE-partitioned with
+  child DDL owned by the `partition_*` routines rather than Prisma, so "the restore exited 0"
+  is not evidence the schema came back intact.
+- **Health-readiness item SKIPPED, confirmed unreachable.** Plan Phase 8 item 3 said to confirm
+  first. All Redis roles fall back to the shared `REDIS_HOST` and no shipped config
+  (`.env.example`, compose, k8s) overrides them, so the cache ping does cover them. It only
+  becomes real if someone uses the per-role split `configuration.ts` supports — documented as a
+  caveat in DEPLOY.md rather than building client plumbing for a case nobody is in.
+
+### Deviations from the plan
+- Nothing beyond the two items above (empty receivers; readiness skipped as confirmed
+  unreachable). No adversarial review workflow — this phase adds ops config and shell scripts
+  with no application code path, and the checks that matter (YAML validity, receiver
+  resolution, guard exit codes) were run directly.
+
+### Left undone / follow-ups
+- **Nobody has fired a real alert.** Bring the profile up on a Docker host, stop the API
+  container, and confirm `DroveryTargetDown` reaches Alertmanager at :9093. Until that is done,
+  the alerting path is *configured*, not *proven*.
+- **Nobody has run a real restore.** `restore.sh` has never been executed against a real
+  archive. The rehearsal exists precisely so this is a scheduled, boring exercise — run it once
+  by hand first.
+- **No PITR.** Nightly snapshots only; worst case is losing a day. Needs WAL archiving.
+- **Backups are local by default.** `BACKUP_DIR` should point at off-host storage — a backup on
+  the same disk as the database does not survive the failure it exists for.
+- **No alert on a stale backup.** A silent backup failure is the same as no backup; the cron log
+  is the only signal. A `DroveryBackupStale` rule needs a freshness metric to alert on.
+
+### Next
+- **Phase 7 — Admin console unblock** (S, admin + backend) is the only remaining S-sized phase.
+- Then 9 (realtime durability), 10 (charge money — also picks up Phase 6's deferred partial-refund
+  accounting), 11–12 (Drone entity and flight ops).
+
+---
+
+## Phase 7 — Admin console unblock — DONE (two items deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-7-admin-unblock` — 6 commits, stacked on `fix/audit-phase-8-alerting-backups`
+- admin `fix/audit-phase-7-admin-unblock` — 13 commits, branched off `main` (the admin repo was
+  untouched by phases 1–6, so no stacking needed)
+
+### What changed
+
+**The three things that made the console unusable**
+- **Role-aware routing.** `/` rendered the ADMIN-only Dashboard for every authenticated user, so
+  an AGENT signing in hit a permanent 403 with no Dashboard entry in their sidebar to explain
+  it. New `navItems.tsx` is now the single source of the nav AND the guards (`rolesForPath`,
+  `homePathForRole`); `RequireRole` redirects a role to the first page it can actually open
+  instead of showing an error. `AppLayout` consumes the same list, so nav and guards cannot drift.
+- **Staff can subscribe to a ticket socket.** `assertOwnedTicket` is ownership-only and an agent
+  is never the owner, so live chat read "Offline" on every ticket, permanently. New
+  `assertTicketAccess(userId, role, ticketId)` gives AGENT/ADMIN an existence check; the role is
+  resolved once at `handleConnection` because the JWT carries only `{sub, email, jti}`.
+- **The admin client now handles `message:new`.** Every frame from this gateway is enveloped as
+  `{event, data}`; the client handled only `subscribed | error | message:sent`, so the broadcast
+  matched `'event' in obj`, fell through and returned — every inbound customer message was
+  dropped while the chip read "Live".
+
+**Search and URL state**
+- `q` on all three admin list DTOs + server-side filters. Deliveries match `trackingId` first —
+  it is what a customer reads out over the phone — then addresses, receiver, customer email;
+  tickets match the opening message and the customer; users match name and email.
+- `useListParams` holds page/filter/search in the URL (`useSearchParams` appeared nowhere in the
+  console before), plus a debounced `SearchField`. Wired into all three list pages.
+
+**Smaller fixes**
+- `DeliveryDetailPage` header Refresh now reloads the drone command history too — it reloaded
+  the delivery only, so a dispatcher watching for an ABORT ack saw PENDING forever and issued a
+  second command to an aircraft that had already obeyed the first.
+- Delivery rows are keyboard-reachable: the id cell is a real `<Link>`, so a keyboard or
+  screen-reader operator can open a record and middle-click opens a new tab.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 762 tests** (phase 8 left 758)
+- admin:   tsc ✔ / lint ✔ **clean** / **17 files, 74 tests** (baseline 65)
+- mobile:  untouched.
+
+**One real lint error caught and fixed before commit:** `SearchField` resynced its draft with
+`useEffect(() => setDraft(value), [value])`, which trips `react-hooks/set-state-in-effect` —
+setState in an effect forces a second render pass. Replaced with the render-time adjustment
+pattern (compare against a `lastValue` state and adjust during render). The admin lint baseline
+was clean, so this would have been a regression.
+
+### Decisions made
+- **Guards derived from the nav list, not written twice.** The sidebar already had the correct
+  role map; the routes had none. One list means a page cannot be advertised under one rule and
+  guarded under another.
+- **Redirect, don't 403.** An AGENT sent to a page they cannot open should land somewhere they
+  can work, not read an error. `homePathForRole` returns the first nav entry the role can see.
+- **Staff bypass is READ-only.** `assertTicketAccess` is used by `subscribe`, not by `send`.
+  `createUserMessage` hardcodes `senderRole: 'USER'`, and an agent's reply goes through the admin
+  REST endpoint which writes `senderRole: 'AGENT'`. Letting staff write through the socket path
+  would have recorded their replies as customer messages.
+- **Longest-prefix matching in `rolesForPath`.** `/` is itself a nav path, so a naive
+  `startsWith` would give `/support/t-1` the Dashboard's ADMIN-only rule and lock agents out of
+  ticket detail. There is a test for exactly this.
+- **Search on all three lists, not just deliveries.** Structurally identical and cheap; doing one
+  and leaving two would be worse than doing none.
+
+### Deviations from the plan
+- **Toasts / success feedback NOT done.** `Snackbar` still appears nowhere, so a refund still
+  gives no confirmation of the amount (`adminApi.refund` returns it and `onRefund` discards it).
+  It needs a provider plus a call site in every mutation across four pages — a coherent piece of
+  work in its own right, and the phase was already spanning two repos and seven items. This is
+  the single most user-visible thing still missing from the console.
+- **The customer-side ticket entry point NOT done.** `supportApi.createTicket` in the mobile app
+  still has zero call sites and `HelpSupportScreen`'s "Live Chat" row is still `() => {}`, so
+  customers cannot open a ticket and the admin inbox has no source. The plan explicitly allowed
+  deferring this; it belongs with the mobile work, not here. **Note the consequence: the agent
+  side of support is now fully working against an inbox nothing can fill.**
+- **No adversarial review workflow.** Consistent with phases 6 and 8: the changes are guards,
+  a frame-name fix, and query params, each covered by a test, and the highest-risk one (the lint
+  regression) was caught by tooling.
+
+### Left undone / follow-ups
+- **Toasts** — see above. Highest-value remaining console item.
+- **Customer ticket entry point** — mobile; the inbox has no source without it.
+- **Sticky headers and server-side column sort** were in the plan's item 4 and are not done;
+  search + URL state were the parts that blocked phone support.
+- **Support and Users rows are still not keyboard-reachable** — only the deliveries list was
+  converted. Same one-line `<Link>` change.
+- **No test covers `RequireRole` rendering** — the guard logic is tested through `navItems`
+  (`rolesForPath`/`homePathForRole`), but the component itself would need a router harness.
+
+### Next
+- **Phase 9 — Realtime durability** (M, backend + admin), or **Phase 10 — Charge money** (M,
+  needs Stripe keys and also picks up Phase 6's deferred partial-refund accounting).
+- Phases 11–12 (Drone entity, flight ops) are the structural work and want deliberate planning.
+- **Seven of thirteen phases are now done.** Five branches are stacked and unmerged; merging is
+  becoming the bottleneck.
+
+---
+
+## Phase 9 — Realtime durability — PARTIAL (backend done; two items deferred)
+**Date:** 2026-07-26
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-9-realtime-durability` — 5 commits, pushed, stacked on
+`fix/audit-phase-7-admin-unblock`
+
+### What changed
+- **`tracking.subscriber.ts` + `support-chat.subscriber.ts` — subscriptions survive a Redis
+  blip.** With `enableOfflineQueue:false` a SUBSCRIBE issued while Redis is unreachable rejects
+  immediately, and that was logged and dropped. The gateway had already added the socket to its
+  local map and answered `subscribed`, so the client was told it was live while no channel had
+  been registered — and nothing ever retried, because the non-empty map entry made a later
+  subscriber reuse it instead of re-subscribing. One blink deafened those clients for the life
+  of their socket. Both now record the desired channel *before* the SUBSCRIBE and re-arm on
+  ioredis `'ready'`, which is what `MqttService` already did on `'connect'`.
+- **`prisma.service.ts` — disconnect moved from `onModuleDestroy` to `onApplicationShutdown`.**
+  Verified against `node_modules/@nestjs/bullmq/dist/bull.explorer.js:32`, which closes workers
+  in `onApplicationShutdown`. Nest runs `onModuleDestroy` a full phase earlier, so every deploy
+  pulled the database out from under jobs that were still draining — killing exactly the
+  in-flight work `enableShutdownHooks` exists to protect.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 765 tests** (phase 7 left 762)
+- admin / mobile: untouched by this phase.
+
+**Mutation tests** — applied, targeted spec run, file restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| subscribe stops recording intent | "keeps the channel in the desired set" | ✔ failed |
+| subscribe stops recording intent | "re-subscribes every desired channel" | ✔ failed |
+| prisma back to `onModuleDestroy` | "onApplicationShutdown disconnects" | ✔ failed |
+
+**A test I wrote was initially worthless and I rewrote it.** The first version of
+"re-subscribes every desired channel" re-implemented the re-arm loop inline in the spec, so it
+asserted its own copy of the logic rather than the code. Fixed by extracting `rearmAll()` from
+the `'ready'` handler and having the spec call the real method — which is also why the mutation
+above can fail it.
+
+### Decisions made
+- **Record intent before subscribing, not after.** The ordering is the fix: a subscribe that
+  fails must still leave behind the fact that we wanted it, or there is nothing to re-arm.
+- **Re-arm on `'ready'` rather than awaiting the subscribe and rolling back the gateway's map**
+  (the plan's suggested alternative). Rolling back turns a transient outage into a hard client
+  error; re-arming turns it into a delay. The client is told `subscribed` and — once Redis is
+  back — that becomes true, which is the honest behaviour for a reconnecting transport.
+- **Prisma moved to the same phase as the worker close, not ordered before it.** Within a phase
+  Nest tears down in reverse initialisation order and PrismaModule is global and early, so it
+  goes last in practice. A guaranteed ordering would need the workers closed explicitly in
+  `beforeApplicationShutdown`; noted in the code comment rather than done, because it means
+  taking over lifecycle management from `@nestjs/bullmq`.
+
+### Deviations from the plan
+- **Item 2 (recoverable admin socket) NOT done.** `Drovery_Admin/src/api/supportSocket.ts` still
+  treats close 1008 as permanently fatal and still opens with whatever 15-minute access token is
+  in localStorage, so live chat dies for good once that token expires. It needs a token-refresh-
+  then-retry path plus surfacing the six distinct `UnavailableReason` values instead of
+  collapsing them into "Offline" — that is admin-side work of similar size to the backend half,
+  and Phase 7 already reworked this file.
+- **Item 3 (fair hot-store checkpoint drain) NOT done.** `tracking-hot-store.ts:158` still claims
+  a random `SPOP` batch with no aging, so above roughly 5k live deliveries an individual delivery
+  can starve past `WATCHDOG_SILENCE_MS` and be false-reaped. Replacing it with an aging ZSET plus
+  a backlog gauge is a self-contained change but a real data-structure swap on a hot path, and it
+  wants a load test to prove rather than a unit test — which is not available here.
+- **Item 5 (WS session revalidation) NOT done.** `tracking.gateway.ts:81` still authenticates
+  once at connect, so logout and token expiry never terminate a live stream. Same shape as the
+  `passwordChangedAt` decision in Phase 2: any revalidation adds per-frame or periodic I/O to a
+  hot path, and it should be designed alongside that one rather than twice.
+- No adversarial review workflow, consistent with phases 6–8: two focused changes, both
+  mutation-tested.
+
+### Left undone / follow-ups
+- The three items above. **Item 2 is the most user-visible** — an agent's chat still dies
+  permanently 15 minutes into a shift.
+- The re-arm is unit-tested but has never been exercised against a real Redis restart. Worth
+  doing once by hand: bounce Redis with a client subscribed and confirm frames resume.
+
+### Next
+- **Phase 10 — Charge money for real** (M, backend + mobile) — needs Stripe test keys from the
+  user, and also picks up Phase 6's deferred partial-refund accounting.
+- **Phases 11–12** — the Drone entity and flight ops. L-sized and structural.
+- **Eight of thirteen phases now touched.** Six branches stacked and unmerged; merging is well
+  past the point of being the bottleneck.
+
+---
+
+## Phase 11 — Drone entity — INCREMENT 1 DONE (dispatch engine + admin surface remain)
+**Date:** 2026-08-01
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-11-drone-entity` — 8 commits, pushed, stacked on
+`fix/audit-phase-9-realtime-durability`
+
+**Phase 10 was skipped, not forgotten:** it needs real Stripe test keys, and mock mode is
+precisely what hides the bug (`stripe.service.ts` returns a fake `succeeded` when
+`STRIPE_SECRET_KEY` is unset). Writing the confirm/SCA/refund path against mock mode would be
+writing it blind. Blocked on the user.
+
+### What changed
+- **`Drone` model (new).** Serial, model, firmware, `DroneStatus`, `airworthy`, `maxPayloadKg`,
+  `batteryPercent`, home base + current position, flight hours/cycles, `maintenanceDueAt`, a
+  per-aircraft `ingestKeyHash`, `lastSeenAt`.
+- **`Delivery.assignedDroneId` is now a real foreign key.** It was a bare nullable String
+  holding `drone-${uuidv4()}` and referencing nothing.
+- **`Drone.activeDeliveryId` is UNIQUE — the claim AND the lock.** The database now refuses to
+  let one aircraft hold two deliveries. It lives on `drones` rather than `deliveries` because
+  `deliveries` is RANGE-partitioned and **cannot carry a unique index that omits its partition
+  key** — the plan's suggested "partial unique index on deliveries" is not achievable.
+- **`claimDrone()`** — a LIVE delivery now requires a registered airframe. The claim is a
+  conditional update carrying every precondition (airworthy, AVAILABLE, unclaimed,
+  payload-capable), so two creates racing for the last aircraft cannot both win.
+- **`releaseDrone()`** in `cleanupAfterTermination`, scoped to the delivery's own claim so a
+  late release cannot free a drone another delivery has since taken.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 770 tests** (phase 9 left 765)
+- `prisma migrate status`: 33 migrations, **database schema up to date** — no drift.
+
+**The migration was verified against real data, not just generated.** A live Postgres turned out
+to be reachable at `localhost:5432`, so rather than hand-writing SQL blind:
+1. Seeded three legacy-shaped deliveries (two live, one delivered) with `drone-aaa/bbb/ccc`.
+2. Applied the migration.
+3. Confirmed: three aircraft materialised; the two live ones `IN_FLIGHT` with their
+   `activeDeliveryId` set; the delivered one `GROUNDED` and unclaimed; all `airworthy=false`.
+4. Confirmed the constraints actually bite — a dangling `assignedDroneId` is rejected by the FK,
+   and a second delivery on one drone is rejected by the unique index. **That is the audit's
+   "two deliveries, one aircraft" bug, now structurally impossible.**
+5. Cleaned the seed data; database back to empty.
+
+**Mutation tests** — applied, targeted spec run, restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| claim drops its preconditions | "claims a real aircraft atomically" | ✔ failed |
+| LIVE falls back to a phantom id | "rejects a LIVE delivery that names no aircraft" | ✔ failed |
+| release removed from cleanup | "releases the aircraft when the delivery terminates" | ✔ failed |
+
+### Decisions made
+- **Prisma's generated migration would have broken any populated database.** It adds the FK
+  directly, and every pre-existing `assignedDroneId` references nothing. I inserted a backfill
+  that materialises an aircraft per distinct legacy id *before* the constraint. The dev database
+  was empty, so I seeded rows specifically to make that path execute rather than shipping an
+  untested branch.
+- **Backfilled airframes are GROUNDED and not airworthy.** We know their id and nothing else —
+  no payload class, battery or home base. `maxPayloadKg = 0` is chosen to be obviously unusable
+  (it matches no package) rather than plausibly wrong.
+- **The claim lives on `drones`, not `deliveries`.** Forced by the partitioning, and it turns out
+  to be the better design anyway: the drone row is the natural lock for "is this aircraft free".
+- **A LIVE delivery without a registered drone is now a 400.** The alternative — auto-creating a
+  drone row — would reintroduce exactly the phantom aircraft this phase deletes.
+- **One error message for every claim failure.** Which aircraft is airworthy, charged or already
+  flying is fleet information, and `POST /deliveries` is reachable by any authenticated customer.
+
+### Deviations from the plan
+- **Scoped to increment 1.** The plan's Phase 11 is L-sized: entity, per-aircraft credentials,
+  DTO hardening, dispatch engine, haversine bound, admin fleet surface. The entity plus a real
+  atomic claim is the part everything else depends on, and it is coherent on its own.
+- **The `ingestKeyHash` column exists but nothing uses it yet.** `DroneAuthGuard` still checks the
+  single shared `INGEST_API_KEY`. The column is there so the credential migration is a code
+  change rather than another schema change.
+
+### Left undone / follow-ups
+- **Dispatch engine** — nothing *selects* an aircraft yet; the caller still names one. Nearest
+  available, out-and-back energy feasibility, saturation queue and reassignment on unresponsive
+  are all still absent.
+- **`droneId` / `trackingSource` are still on the customer-facing DTO.** Any authenticated user
+  can still ask for a LIVE delivery on a specific aircraft — though it now must be a real,
+  free, payload-capable one, and the claim is atomic, so the blast radius is much smaller than
+  the audit found. Proper fix is an operator-only create path.
+- **Per-aircraft ingest credentials** — column added, guard unchanged.
+- **Admin fleet surface** — no registry list, no ground/unground, no way to create a Drone. **In
+  practice this means LIVE deliveries cannot be created at all until someone inserts a drone
+  row**, since there is no UI or endpoint to register one. SIMULATED (the default) is unaffected.
+- **Haversine still unbounded** with `SERVICE_AREA_GLOBAL=true`.
+
+### Next
+- **Finish Phase 11**: the admin fleet surface is the most urgent gap (LIVE is unusable without
+  it), then the dispatch engine.
+- **Phase 12** (flight ops) depends on all of the above.
+- **Phase 10** remains blocked on Stripe test keys.
+- **Seven branches stacked and unmerged.** This is now a real risk, not a nag.
+
+---
+
+## Phase 11 — INCREMENT 2: admin fleet surface — DONE
+**Date:** 2026-08-01
+**Session:** same session, at the user's request ("add the admin fleet surface so LIVE
+deliveries work")
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-11-admin-fleet` — 7 commits, stacked on `fix/audit-phase-11-drone-entity`
+- admin `fix/audit-phase-11-admin-fleet` — 7 commits, stacked on the admin `fix/audit-phase-7-admin-unblock`
+
+### Why this was urgent
+Increment 1 made `assignedDroneId` a foreign key and required a real, claimable aircraft for a
+LIVE delivery — but there was no endpoint or UI to register one. The registry was empty and
+unfillable, so **LIVE deliveries could not be created by anyone**. SIMULATED (the default, and
+what everything actually uses) was unaffected, but that was a sharp edge I left behind and it is
+now closed.
+
+### What changed
+**Backend**
+- `AdminDroneQueryDto` / `CreateDroneDto` / `UpdateDroneDto`. Payload class and home base are
+  REQUIRED at registration, because dispatch reasons about both — an aircraft with unknown
+  capability can never be safely claimed, which is exactly the state the backfilled legacy rows
+  are parked in.
+- `AdminService.listDrones` (paginated, status filter, search over serial/model),
+  `getDrone` (404s rather than returning null), `createDrone` (P2002 → a 409 naming the serial,
+  not a raw Prisma error), `updateDrone`.
+- Routes under the existing `@Roles(Role.ADMIN)` controller.
+
+**Admin console**
+- `FleetListPage` — registry table (serial, model, status, airworthy, payload, battery, active
+  delivery), a register dialog, search + status filter in the URL, and a ground / return-to-
+  service action.
+- Nav entry in `navItems.tsx`, which — because Phase 7 made the nav and the route guards derive
+  from one list — created the ADMIN route guard at the same time.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 775 tests** (increment 1 left 770)
+- admin:   tsc ✔ / lint ✔ clean / **17 files, 75 tests** (phase 7 left 74)
+
+**Proved end to end against the real database**, not just unit-tested. A throwaway script using
+the real `PrismaService`:
+1. registered an aircraft → `AVAILABLE`, `airworthy=true`
+2. claimed it with the exact `claimDrone` predicate (1.5 kg) → **CLAIMED**
+3. attempted a second claim → **REFUSED** (already flying)
+4. attempted a 5 kg payload against a 2 kg airframe → **REFUSED** (over capacity)
+5. released, grounded it, attempted another claim → **REFUSED**
+6. cleaned up.
+
+That is the whole point of the phase: an aircraft can be registered, claimed exactly once, and
+every safety precondition actually bites.
+
+### Decisions made
+- **Grounding stops the NEXT claim; it does not recall an aircraft already in the air.**
+  `airworthy` and `status` are dispatch preconditions. Recalling a flying drone is a
+  RETURN_TO_BASE command with different safety semantics, and conflating the two in one button
+  would be dangerous. The button label and the service docblock both say so.
+- **Payload and home base required, not optional-with-defaults.** A default would produce
+  plausible-looking aircraft that dispatch would happily claim. The legacy backfill deliberately
+  uses `maxPayloadKg = 0` for the opposite reason — obviously unusable rather than plausibly wrong.
+- **The empty state explains the consequence.** "No aircraft registered" alone would leave an
+  operator guessing why LIVE creates fail; it now says so and notes simulated deliveries are
+  unaffected.
+- **No `serial` edit.** It is the physical marking on the airframe; changing it in software would
+  desynchronise the registry from reality.
+
+### Left undone / follow-ups
+- **Dispatch engine** — nothing SELECTS an aircraft. The caller still names one, so a customer
+  must know a drone id. Nearest-available, out-and-back energy feasibility, saturation queue and
+  reassignment-on-unresponsive all remain.
+- **No fleet detail page** — the list has no drill-down to flight history, command log or
+  position. Phase 12 territory.
+- **Per-aircraft ingest credentials** — `ingestKeyHash` exists and is unique, but `DroneAuthGuard`
+  still checks the single shared `INGEST_API_KEY`, and nothing issues a per-aircraft key yet.
+- **`droneId`/`trackingSource` still on the customer DTO.** Blast radius is now small (it must be
+  a real, free, payload-capable aircraft, claimed atomically), but the proper fix is an
+  operator-only create path.
+- **The console page has never been opened in a browser.** It typechecks, lints and its guard is
+  tested, but no one has clicked Register.
+
+### Next
+- **Phase 12** (flight ops) now has a real fleet to build on.
+- **Phase 10** still blocked on Stripe test keys.
+- **Nine branches stacked and unmerged across two repos.**
