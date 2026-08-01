@@ -54,6 +54,7 @@ export class MetricsService {
   readonly watchdogSchedulerRegistered: Gauge<string>;
   // Backend→drone command channel (money-touching control path on LIVE deliveries).
   readonly droneCommandsTotal: Counter<string>;
+  readonly autoReturnsTotal: Counter<string>;
   readonly droneCommandTimeToAck: Histogram<string>;
   // MQTT push transport (optional; flat 0 when MQTT_URL is unset). frames by flow+result;
   // a connection gauge for parity with the HTTP ingest path's visibility.
@@ -160,6 +161,16 @@ export class MetricsService {
       // `type` is always a real DroneCommandType (RETURN_TO_BASE | ABORT) — the
       // watchdog expiry sweep increments per-type, never a synthetic aggregate.
       labelNames: ['type', 'result'],
+      registers: [this.registry],
+    });
+
+    this.autoReturnsTotal = new Counter({
+      name: 'drovery_auto_returns_total',
+      help: 'Return-to-base commands issued by the platform, not by an operator',
+      // reason ∈ CRITICAL_BATTERY | INSUFFICIENT_RANGE_HOME. A rising
+      // CRITICAL_BATTERY share means the geometry trigger is firing too late —
+      // the backstop should almost never be the one that catches it.
+      labelNames: ['reason'],
       registers: [this.registry],
     });
 
