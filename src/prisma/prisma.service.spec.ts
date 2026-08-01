@@ -27,7 +27,6 @@ jest.mock('@prisma/client', () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Prisma } = require('@prisma/client');
 
 describe('PrismaService', () => {
@@ -49,10 +48,14 @@ describe('PrismaService', () => {
       expect(service.$connect).toHaveBeenCalled();
     });
 
-    it('onModuleDestroy disconnects', async () => {
+    it('onApplicationShutdown disconnects — the SAME phase BullMQ drains in', async () => {
+      // Deliberately not onModuleDestroy: Nest runs that a full phase earlier than
+      // @nestjs/bullmq's worker close (bull.explorer.js onApplicationShutdown), so
+      // disconnecting there pulled the database out from under every job still
+      // draining and each deploy killed the in-flight work.
       delete process.env.DATABASE_REPLICA_URL;
       const service = new PrismaService();
-      await service.onModuleDestroy();
+      await service.onApplicationShutdown();
       expect(service.$disconnect).toHaveBeenCalled();
     });
   });

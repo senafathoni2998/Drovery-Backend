@@ -249,6 +249,43 @@ describe('AuthService', () => {
       );
     });
 
+    it('treats replay of an already-rotated token as a breach and kills the family', async () => {
+      // Rotation makes each refresh token single-use, so presenting a revoked one
+      // means it was captured. Legitimate holder or attacker is indistinguishable
+      // from here — end every session and force a fresh login.
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        ...validRecord,
+        revokedAt: new Date(),
+      });
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 3 });
+
+      await expect(service.refreshTokens('user-1', 'replayed')).rejects.toThrow(
+        UnauthorizedException,
+      );
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      // No new pair is minted for a replay.
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('does NOT let a stranger use a revoked-token replay to log someone else out', async () => {
+      // The record is revoked but belongs to another user, so the family-kill must
+      // not fire — otherwise presenting any captured hash would be a logout oracle.
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        ...validRecord,
+        userId: 'someone-else',
+        revokedAt: new Date(),
+      });
+
+      await expect(service.refreshTokens('user-1', 'stolen')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
     it('throws if the user no longer exists', async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(validRecord);
       prisma.user.findUnique.mockResolvedValue(null);
@@ -260,15 +297,30 @@ describe('AuthService', () => {
   });
 
   describe('logout', () => {
-    it('revokes the presented refresh token', async () => {
-      prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
+    it('deletes the presented refresh token', async () => {
+      prisma.refreshToken.deleteMany.mockResolvedValue({ count: 1 });
 
       const result = await service.logout('raw-refresh');
 
       expect(result).toEqual({ success: true });
-      const arg = prisma.refreshToken.updateMany.mock.calls[0][0];
-      expect(arg.where.revokedAt).toBeNull();
-      expect(arg.data.revokedAt).toEqual(expect.any(Date));
+      // DELETE, not revoke: `revokedAt` must mean "superseded by rotation" and
+      // nothing else, or reuse detection cannot tell a breach from a logout.
+      expect(prisma.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { tokenHash: expect.any(String) },
+      });
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('a logged-out token replayed later does NOT kill the rest of the family', async () => {
+      // The row is gone, so refreshTokens() sees no record and returns a plain 401
+      // instead of treating it as a replay. Without the delete, a stale device
+      // retrying after a logout would log the user out everywhere else.
+      prisma.refreshToken.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.refreshTokens('user-1', 'logged-out'),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
     });
   });
 
@@ -352,6 +404,34 @@ describe('AuthService', () => {
       expect(result).toEqual({ success: true });
       expect(mockedBcrypt.hash).toHaveBeenCalledWith('newpass123', 12);
       expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
+    it('ends every session in the same transaction', async () => {
+      // A reset is what a user does when they believe they are compromised. If the
+      // attacker's stolen refresh token survives it, the reset achieved nothing —
+      // rotation would let them mint access tokens for the token's full 7-day life.
+      prisma.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'tok-1',
+        userId: 'user-1',
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      (mockedBcrypt.hash as jest.Mock).mockResolvedValue('new-hash');
+
+      await service.resetPassword('raw-token', 'newpass123');
+
+      // DELETE rather than revoke, so a device that missed the reset and replays
+      // its old token gets a plain 401 instead of tripping reuse detection and
+      // killing the session the user just created by logging back in.
+      expect(prisma.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+
+      // Co-committed with the password write — never a second round trip that could
+      // fail on its own and leave the sessions alive.
+      const ops = prisma.$transaction.mock.calls[0][0];
+      expect(Array.isArray(ops)).toBe(true);
+      expect(ops).toHaveLength(3);
     });
 
     it('rejects an unknown token', async () => {

@@ -143,14 +143,112 @@ only once you've confirmed the images are pushed.
   is reproducible and rollback is exact; the Deploy workflow takes the tag as an input.
 - **Secrets**: never commit `.env`. The Postgres password feeds postgres + pgbouncer + the
   app connection strings; rotating it means recreating the postgres volume (or `ALTER ROLE`).
-- **Backups**: `docker compose ... exec postgres pg_dump -U postgres drovery > backup.sql`.
+- **Backups & restore**: see the runbook below — `scripts/backup.sh` / `scripts/restore.sh`.
 - **Scaling on a bigger box**: `--scale api=3 --scale worker=3` (Caddy load-balances the api
   replicas automatically); for real multi-node, see `k8s/` (HPA + KEDA) and `ARCHITECTURE.md`.
 - **Observability**: layer `docker-compose.observability.yml` for Prometheus + Grafana.
 
-- **Secrets**: never commit `.env`. The Postgres password feeds postgres + pgbouncer + the
-  app connection strings; rotating it means recreating the postgres volume (or `ALTER ROLE`).
-- **Backups**: `docker compose ... exec postgres pg_dump -U postgres drovery > backup.sql`.
-- **Scaling on a bigger box**: `--scale api=3 --scale worker=3` (Caddy load-balances the api
-  replicas automatically); for real multi-node, see `k8s/` (HPA + KEDA) and `ARCHITECTURE.md`.
-- **Observability**: layer `docker-compose.observability.yml` for Prometheus + Grafana.
+
+---
+
+## Backups and restore
+
+The previous instruction here was a single `pg_dump > backup.sql`. That produced an
+unverified, uncompressed, unrotated file, and — the part that actually matters — there
+was no documented restore, so the recovery path had never been executed. A backup you
+have never restored is a hope, not a backup.
+
+### Taking a backup
+
+```bash
+DATABASE_URL=postgres://... ./scripts/backup.sh
+# custom location + retention
+BACKUP_DIR=/mnt/backups RETAIN_DAYS=30 ./scripts/backup.sh
+```
+
+It writes a compressed custom-format archive, then **verifies** it with
+`pg_restore --list` and fails if the archive is unreadable or contains no table data.
+Retention runs last and only after a verified success, so a run of failures can never
+age out the last good backup. Non-zero exit on any failure, so a timer surfaces it.
+
+Suggested cron (daily 03:15 UTC, keep 14 days):
+
+```cron
+15 3 * * * cd /srv/drovery && DATABASE_URL=... BACKUP_DIR=/mnt/backups ./scripts/backup.sh >> /var/log/drovery-backup.log 2>&1
+```
+
+### Rehearsing the restore — do this on a schedule
+
+```bash
+DATABASE_URL=postgres://... ./scripts/restore.sh /mnt/backups/drovery-20260726T031500Z.dump
+```
+
+Restores into a scratch database, asserts the result is usable (table count, `users`
+and `deliveries` are queryable, and **`deliveries` still has partition children**),
+prints the elapsed time — your real RTO — then drops the scratch database. Exits
+non-zero if the archive does not restore to a working database.
+
+### Restoring for real
+
+```bash
+CONFIRM=i-understand-this-overwrites \
+  ./scripts/restore.sh /mnt/backups/drovery-<stamp>.dump "$DATABASE_URL"
+```
+
+The confirmation is checked before the file is even read. Two things to know:
+
+- **Do not run `prisma migrate deploy` into a freshly restored database** expecting it
+  to rebuild the partitions. `deliveries` and its co-partitioned children are
+  RANGE-partitioned and their child DDL is owned by the `partition_*` routines, not by
+  Prisma (`prisma/PARTITIONING.md`). The custom-format dump already carries the parent,
+  the children and the attachments.
+- **Stop the API and worker first.** The restore uses `--clean`, and a live connection
+  writing during it will produce a database that is neither the old one nor the new one.
+
+### What is still missing
+
+- **No point-in-time recovery.** These are nightly snapshots; the worst case is losing
+  a day. PITR needs WAL archiving (`archive_mode`/`archive_command` or a managed
+  Postgres that provides it) and is not configured.
+- **Backups are local by default.** Set `BACKUP_DIR` to mounted off-host storage, or
+  ship the archives somewhere else — a backup on the same disk as the database does not
+  survive the failure it exists for.
+- **No alert on a stale backup.** A silent backup failure is the same as no backup;
+  the cron log is the only signal today.
+
+---
+
+## Alerting
+
+`observability/alerts.yml` has always defined nine SLO rules, three of them
+`severity: critical`. Until now `prometheus.yml` had no `alerting:` block and there was
+no Alertmanager in the stack, so every one of them fired into the Prometheus UI and
+nowhere else — the platform could detect an outage and page nobody.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability up -d
+```
+
+- Prometheus  http://localhost:9090  (targets, rules, firing state)
+- Alertmanager http://localhost:9093  (grouping, inhibition, silences)
+- Grafana      http://localhost:3001  (admin/admin)
+
+Routing is in `observability/alertmanager.yml`: `severity: critical` pages with a 10s
+group wait and hourly repeat; everything else is ticketed. A tier that is DOWN inhibits
+its own latency and error-rate alerts, so an outage pages once about the cause instead
+of three times about the symptoms.
+
+**Receivers ship empty on purpose.** Alertmanager does not expand environment variables
+in its config, so a `${WEBHOOK}` placeholder would be taken literally and stop it from
+starting. Empty receivers are valid — you get grouping, inhibition and silences out of
+the box, and delivery is a few uncommented lines in that file (Slack, PagerDuty and
+generic-webhook blocks are all written out ready to fill in).
+
+### A caveat on `/health/ready`
+
+`DroveryReadinessFailing` watches `GET /health/ready`, which checks Postgres and the
+**cache** Redis. Every shipped config points all Redis roles at one instance, so that
+covers them — but `src/config/configuration.ts` explicitly supports splitting `queue`,
+`pubsub` and `throttle` onto separate hosts. If you use that, readiness silently stops
+covering the roles you split off, and this alert will not fire for them.

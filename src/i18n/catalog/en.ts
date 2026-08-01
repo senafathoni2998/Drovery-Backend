@@ -129,6 +129,8 @@ export const en: Record<string, string> = {
   'validation.invalid': '{property} is invalid',
   'validation.code.sixDigit': 'code must be a 6-digit number',
   'validation.timeOfDay.format': 'timeOfDay must be HH:MM (24-hour)',
+  'validation.pickupDate.format': 'pickupDate must be YYYY-MM-DD',
+  'validation.pickupTime.format': 'pickupTime must be HH:MM (24-hour)',
 
   // ── Thrown HTTP errors (one key per literal; the filter translates at the boundary) ──
   // Cross-cutting authz / user.
@@ -142,6 +144,12 @@ export const en: Record<string, string> = {
     'Delivery with tracking id "{trackingId}" not found',
   'error.delivery.schedule.too_far':
     'Pickup can be scheduled at most {maxDays} days ahead.',
+  'error.delivery.drone.required':
+    'A LIVE delivery must name the aircraft flying it.',
+  'error.delivery.drone.unavailable':
+    'Drone "{droneId}" is not available for this delivery.',
+  'error.delivery.schedule.invalid_date':
+    'pickupDate "{pickupDate}" is not a real calendar date.',
   'error.delivery.schedule.live_not_allowed':
     'A LIVE-tracked delivery cannot be scheduled for a future pickup window.',
   'error.delivery.tracking_id_alloc_failed':
@@ -150,6 +158,10 @@ export const en: Record<string, string> = {
     "We couldn't locate the pickup or dropoff. Pick the points on the map and try again.",
   'error.delivery.serviceability.not_flyable':
     'This delivery cannot be flown right now.',
+  'error.delivery.package.weight_exceeds_cap':
+    'A {size} package can weigh at most {maxKg} kg (you entered {weightKg} kg).',
+  'error.delivery.coords.address_mismatch':
+    'The selected location is {deviationKm} km from "{field}". It must be within {maxKm} km — check the address or drop the pin again.',
   'error.serviceability.OUT_OF_AREA':
     'Pickup or dropoff is outside our service area.',
   'error.serviceability.NO_FLY_ZONE':
@@ -171,6 +183,8 @@ export const en: Record<string, string> = {
   'error.delivery.handoff.invalid_code': 'Invalid handoff code.',
   'error.delivery.handoff.locked':
     'Too many incorrect attempts — the handoff is locked.',
+  'error.delivery.proof.not_delivered':
+    'Proof of delivery can only be submitted once the delivery is complete (currently {status}).',
   'error.delivery.proof.not_found': 'No proof of delivery for delivery "{id}"',
   'error.delivery.rating.not_delivered':
     'You can only rate a delivery once it has been delivered.',
@@ -215,6 +229,9 @@ export const en: Record<string, string> = {
     'Refund must be greater than 0 and at most the charged total.',
   'error.admin.refund.already_refunded':
     'This delivery has already been refunded.',
+  'error.admin.drone.not_found': 'Drone "{id}" not found',
+  'error.admin.drone.serial_exists':
+    'A drone with serial "{serial}" is already registered.',
   'error.admin.promo.code_exists':
     'A promo code with that code already exists.',
   'error.admin.promo.not_found': 'Promo "{id}" not found',

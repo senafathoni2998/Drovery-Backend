@@ -83,10 +83,14 @@ export class MailService {
     const from = this.config.get<string>('mail.from');
 
     if (!provider) {
-      // No provider configured (dev): log so the flow is testable locally.
+      // No provider configured (the DEFAULT deploy path — nothing is integrated
+      // yet), so this branch runs in production too. The rendered body carries the
+      // password-reset and email-verification tokens in cleartext; anyone with log
+      // access could complete either flow for any address. Metadata only.
       this.logger.log(
-        `[MAIL:dev] From: ${from} To: ${to} | Subject: ${subject} (html ${html.length}b)\n${text}`,
+        `[MAIL:dev] From: ${from} To: ${to} | Subject: ${subject} (text ${text.length}b, html ${html.length}b)`,
       );
+      this.logBodyInDevOnly('[MAIL:dev]', text);
       return;
     }
 
@@ -96,7 +100,25 @@ export class MailService {
       `Mail provider "${provider}" is configured but not implemented; logging instead.`,
     );
     this.logger.log(
-      `[MAIL] From: ${from} To: ${to} | Subject: ${subject} (html ${html.length}b)\n${text}`,
+      `[MAIL] From: ${from} To: ${to} | Subject: ${subject} (text ${text.length}b, html ${html.length}b)`,
     );
+    this.logBodyInDevOnly('[MAIL]', text);
+  }
+
+  /**
+   * Emits the rendered body — which contains reset/verification tokens — ONLY off
+   * production, and only at debug. Local development needs the token to be able to
+   * walk the reset flow without a mail provider; a production log file must never
+   * be a credential store. Gated on NODE_ENV rather than on `provider` because the
+   * no-provider branch above is exactly what production runs today.
+   */
+  private logBodyInDevOnly(tag: string, text: string): void {
+    if (process.env.NODE_ENV === 'production') return;
+    // Emitted at INFO, not debug: the pino level defaults to `info`
+    // (app.module.ts) and LOG_LEVEL is set nowhere in the repo, so a debug line
+    // would be dropped and this escape hatch would silently do nothing on a plain
+    // `npm run start:dev`. The NODE_ENV guard above — not the log level — is what
+    // carries the security property.
+    this.logger.log(`${tag} body (non-production only):\n${text}`);
   }
 }

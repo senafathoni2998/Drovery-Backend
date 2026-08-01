@@ -80,18 +80,37 @@ describe('GeoService', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null on HTTP error', async () => {
+    it('negative-caches a genuine "no such address" answer', async () => {
+      fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => [],
+      } as Response);
+
+      await service.geocode('nonexistent place');
+
+      // The provider answered — caching that saves a pointless re-query.
+      expect(cache.set).toHaveBeenCalledWith(
+        'geo:fwd:nonexistent place',
+        { miss: true },
+        expect.any(Number),
+      );
+    });
+
+    it('should return null on HTTP error, and NOT cache it', async () => {
       fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
         ok: false,
-        status: 500,
+        status: 429,
       } as Response);
 
       const result = await service.geocode('Bandung');
 
       expect(result).toBeNull();
+      // A 429/5xx says nothing about the address. Caching it would turn one blip
+      // into an hour of hard create() failures for every address queried during it.
+      expect(cache.set).not.toHaveBeenCalled();
     });
 
-    it('should return null on network error', async () => {
+    it('should return null on network error, and NOT cache it', async () => {
       fetchSpy = jest
         .spyOn(global, 'fetch')
         .mockRejectedValue(new Error('Network error'));
@@ -99,6 +118,19 @@ describe('GeoService', () => {
       const result = await service.geocode('Bandung');
 
       expect(result).toBeNull();
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('treats a malformed 200 payload as a provider failure, not a miss', async () => {
+      fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ unexpected: 'shape' }),
+      } as Response);
+
+      const result = await service.geocode('Bandung');
+
+      expect(result).toBeNull();
+      expect(cache.set).not.toHaveBeenCalled();
     });
   });
 

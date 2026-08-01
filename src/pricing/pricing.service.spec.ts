@@ -64,9 +64,24 @@ describe('PricingService', () => {
       }
     });
 
+    it('rejects a package over the per-size payload cap', async () => {
+      // Pins the assertWeightWithinCap call site in estimate(): the quote must refuse
+      // to price a package no drone can lift, rather than quoting it and failing later
+      // at create().
+      await expect(
+        service.estimate({
+          packageSize: 'Small',
+          packageWeight: 500,
+          packageTypes: [],
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
     it('should calculate weight fee as weight * 3', async () => {
+      // XL, because 2.5 kg is over the Small cap (0.5 kg) and estimate() now
+      // rejects a package no drone can lift.
       const result = await service.estimate({
-        packageSize: 'Small',
+        packageSize: 'XL',
         packageWeight: 2.5,
         packageTypes: [],
       });
@@ -98,13 +113,13 @@ describe('PricingService', () => {
     it('should calculate combined total correctly (no coords → no distance)', async () => {
       const result = await service.estimate({
         packageSize: 'Medium',
-        packageWeight: 2,
+        packageWeight: 1.5,
         packageTypes: ['electronics', 'fragile'],
       });
 
-      // base(2) + size.Medium(6) + weight(2*3=6) + electronics(2) + fragile(2) = 18
+      // base(2) + size.Medium(6) + weight(1.5*3=4.5) + electronics(2) + fragile(2) = 16.5
       expect(result.distanceFee).toBe(0);
-      expect(result.total).toBe(18);
+      expect(result.total).toBe(16.5);
     });
   });
 

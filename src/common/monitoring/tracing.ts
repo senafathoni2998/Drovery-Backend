@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/no-require-imports */
 // Lazy require() (not import) is intentional here: the OTel SDK + instrumentations
 // are loaded ONLY when tracing is enabled, so a deployment that never enables it
 // pays nothing and can't crash on a missing/incompatible OTel dep at boot.
@@ -34,7 +34,6 @@ let traceReady = false;
 if (tracingEnabled) {
   start();
 } else if (wanted && sentryEnabled) {
-  // eslint-disable-next-line no-console
   console.warn(
     '[tracing] SENTRY_DSN is set — Sentry owns OpenTelemetry; standalone tracing skipped. Unset SENTRY_DSN to enable OTel tracing.',
   );
@@ -129,12 +128,11 @@ function start(): void {
     nodeSdk.start();
     sdk = nodeSdk;
     traceReady = true;
-    // eslint-disable-next-line no-console
+
     console.log(
       `[tracing] OpenTelemetry enabled (service=${serviceName}, exporter=${useConsole ? 'console' : 'otlp'}, sampleRatio=${ratio}).`,
     );
     if (!useConsole && ratio >= 1 && process.env.NODE_ENV === 'production') {
-      // eslint-disable-next-line no-console
       console.warn(
         '[tracing] sampling 100% of traces in production — set OTEL_TRACES_SAMPLER_ARG (e.g. 0.05) to reduce cost.',
       );
@@ -145,7 +143,7 @@ function start(): void {
     otelApi = undefined;
     sdk = undefined;
     traceReady = false;
-    // eslint-disable-next-line no-console
+
     console.warn(
       `[tracing] OpenTelemetry init failed — running untraced: ${(error as Error).message}`,
     );

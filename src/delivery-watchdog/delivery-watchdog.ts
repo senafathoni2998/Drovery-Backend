@@ -91,7 +91,16 @@ export class DeliveryWatchdog {
         // default to MECHANICAL for a reasonless stuck row. Both are drone-fault
         // reasons → the customer is refunded (correct for lost-comms / stuck).
         const reason = d.failureReason ?? DeliveryFailureReason.MECHANICAL;
-        const applied = await this.deliveries.failExceptional(d.id, reason);
+        // Pass the watchdog's OWN candidate set as the CAS gate. The default
+        // (FAILABLE_STATUSES) is wider and includes AWAITING_HANDOFF, which this
+        // scan deliberately excludes — a drone at the door is waiting, not stuck.
+        // Without this, a row selected as IN_TRANSIT that reached handoff during
+        // the scan was still failed and auto-refunded.
+        const applied = await this.deliveries.failExceptional(
+          d.id,
+          reason,
+          WATCHDOG_STUCK_STATUSES,
+        );
         if (applied) {
           this.metrics.watchdogReapedTotal.inc({ status: d.status });
           this.logger.log(

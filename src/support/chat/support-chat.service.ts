@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Role } from '@prisma/client';
 
 import {
   AppBadRequestException,
@@ -19,6 +20,45 @@ export class SupportChatService {
       throw new AppNotFoundException('error.support.ticket.not_found');
     }
     return ticket;
+  }
+
+  /** The connecting user's role, for socket authorization. Null if the user is gone. */
+  async getUserRole(userId: string): Promise<Role | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+    return user?.role ?? null;
+  }
+
+  /**
+   * Read access to a ticket, by role.
+   *
+   * Staff get an EXISTENCE check; everyone else gets the ownership check. Support
+   * agents are never the ticket owner — that is the whole point of a support ticket —
+   * so gating the socket on ownership meant an agent could never subscribe to any
+   * ticket, and the console's live chat read "Offline" permanently.
+   *
+   * Deliberately NOT used for writing: `createUserMessage` hardcodes
+   * senderRole USER, and an agent's reply goes through the admin REST endpoint
+   * (AdminService, senderRole AGENT) so it is attributed correctly. Letting staff
+   * write through this path would record their replies as customer messages.
+   */
+  async assertTicketAccess(
+    userId: string,
+    role: Role | null,
+    ticketId: string,
+  ) {
+    if (role === 'AGENT' || role === 'ADMIN') {
+      const ticket = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+      });
+      if (!ticket) {
+        throw new AppNotFoundException('error.support.ticket.not_found');
+      }
+      return ticket;
+    }
+    return this.assertOwnedTicket(userId, ticketId);
   }
 
   /** Paginated, chronological message history for a ticket the user owns. */

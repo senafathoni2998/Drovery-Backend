@@ -93,8 +93,22 @@ import { SavedAddressesModule } from './saved-addresses/saved-addresses.module';
           res.setHeader('X-Request-Id', id);
           return id;
         },
-        // Never log secrets.
-        redact: ['req.headers.authorization', 'req.headers.cookie'],
+        // Never log secrets. Bodies are not serialized by default, but an
+        // interceptor or a future error serializer can pull them in — so the
+        // credential-bearing fields are listed explicitly rather than relied on
+        // being absent.
+        redact: [
+          'req.headers.authorization',
+          'req.headers.cookie',
+          'req.headers["x-ingest-key"]',
+          'res.headers["set-cookie"]',
+          'req.body.password',
+          'req.body.newPassword',
+          'req.body.currentPassword',
+          'req.body.token',
+          'req.body.refreshToken',
+          'req.body.code',
+        ],
         // Strip ?token= from logged URLs (the WS handshake puts the JWT there).
         serializers: {
           req: stdSerializers.wrapRequestSerializer((req) => {

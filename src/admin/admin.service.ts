@@ -22,6 +22,9 @@ import {
 import { WalletService } from '../wallet/wallet.service';
 import {
   AdminDeliveryQueryDto,
+  AdminDroneQueryDto,
+  CreateDroneDto,
+  UpdateDroneDto,
   AdminTicketQueryDto,
   AdminUserQueryDto,
   CreatePromoDto,
@@ -46,7 +49,23 @@ export class AdminService {
   // ── Support inbox (AGENT + ADMIN) ──
 
   async listTickets(query: AdminTicketQueryDto) {
-    const where = query.status ? { status: query.status } : {};
+    const q = query.q?.trim();
+    const where: Prisma.SupportTicketWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      // Search what an agent actually has in front of them: the opening message,
+      // or the customer's name/email from the caller on the phone.
+      ...(q
+        ? {
+            OR: [
+              { message: { contains: q, mode: 'insensitive' as const } },
+              {
+                user: { email: { contains: q, mode: 'insensitive' as const } },
+              },
+              { user: { name: { contains: q, mode: 'insensitive' as const } } },
+            ],
+          }
+        : {}),
+    };
     // Operator reporting list — lag-tolerant → read replica (one consistent
     // snapshot via the reader's $transaction; falls back to primary).
     const [items, total] = await this.prisma.readWithFallback((c) =>
@@ -132,9 +151,24 @@ export class AdminService {
   // ── Delivery oversight (ADMIN) ──
 
   async listDeliveries(query: AdminDeliveryQueryDto) {
+    const q = query.q?.trim();
     const where: Prisma.DeliveryWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.userId ? { userId: query.userId } : {}),
+      // trackingId first — it is the thing a customer reads out over the phone.
+      ...(q
+        ? {
+            OR: [
+              { trackingId: { contains: q, mode: 'insensitive' as const } },
+              { fromAddress: { contains: q, mode: 'insensitive' as const } },
+              { toAddress: { contains: q, mode: 'insensitive' as const } },
+              { receiver: { contains: q, mode: 'insensitive' as const } },
+              {
+                user: { email: { contains: q, mode: 'insensitive' as const } },
+              },
+            ],
+          }
+        : {}),
     };
     const [items, total] = await this.prisma.readWithFallback((c) =>
       c.$transaction([
@@ -180,8 +214,26 @@ export class AdminService {
     );
   }
 
-  /** Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent
-   * via the `admin-refund:<id>` key; marks the Payment REFUNDED for bookkeeping. */
+  /**
+   * Goodwill refund as a wallet credit (Stripe has no refund integration). Idempotent
+   * via the `admin-refund:<id>` key; marks the Payment REFUNDED for bookkeeping.
+   *
+   * KNOWN LIMITATION — PARTIAL REFUNDS CONSUME THE WHOLE BUDGET.
+   * The at-most-once gate below is a boolean on Payment.status, so refunding less
+   * than the full amount still flips the row to REFUNDED. The remainder can then
+   * never be refunded through this endpoint, and the automatic drone-fault refund
+   * (WalletService.refundChargeToWallet, keyed `exception-refund:<id>`) is dead for
+   * that delivery too. The admin console does expose a partial-amount field, so this
+   * is reachable.
+   *
+   * It is deliberately NOT fixed here. Doing it properly needs a cumulative refunded
+   * amount — either a column on Payment or a sum over the WalletTransaction ledger —
+   * AND a per-refund idempotency key instead of the per-delivery one, which is a
+   * money-safety change that wants a real payments integration to test against.
+   * Tracked as Phase 10 (`AUDIT-PLAN.md`), which rewrites this path anyway.
+   *
+   * What it is NOT: a double-refund. The CAS still guarantees at most one credit per
+   * delivery across both channels. The failure mode is under-refunding, not over-. */
   async refund(deliveryId: string, amount?: number) {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -233,6 +285,90 @@ export class AdminService {
       `admin refunded ${refundAmount} for delivery ${deliveryId}`,
     );
     return { deliveryId, refunded: refundAmount };
+  }
+
+// ── Fleet ──
+
+  /**
+   * The fleet registry. Until this existed there was no way to create a Drone at all,
+   * which — once assignedDroneId became a foreign key — meant a LIVE delivery could
+   * not be created by anyone. SIMULATED (the default) was unaffected.
+   */
+  async listDrones(query: AdminDroneQueryDto) {
+    const q = query.q?.trim();
+    const where: Prisma.DroneWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(q
+        ? {
+            OR: [
+              { serial: { contains: q, mode: 'insensitive' as const } },
+              { model: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.drone.findMany({
+          where,
+          orderBy: [{ status: 'asc' }, { serial: 'asc' }],
+          skip: query.skip,
+          take: query.limit,
+        }),
+        c.drone.count({ where }),
+      ]),
+    );
+    return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
+  }
+
+  async getDrone(id: string) {
+    const drone = await this.prisma.drone.findUnique({ where: { id } });
+    if (!drone) {
+      throw new AppNotFoundException('error.admin.drone.not_found', { id });
+    }
+    return drone;
+  }
+
+  /** Register an aircraft. `serial` is the physical marking and must be unique. */
+  async createDrone(dto: CreateDroneDto) {
+    try {
+      return await this.prisma.drone.create({ data: { ...dto } });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new AppConflictException('error.admin.drone.serial_exists', {
+          serial: dto.serial,
+        });
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Update an aircraft — including grounding it.
+   *
+   * Grounding does NOT recall a drone that is already flying: `airworthy` and
+   * `status` are dispatch preconditions, so clearing them stops the NEXT claim. A
+   * drone in the air is recalled with a RETURN_TO_BASE command, which is a different
+   * operation with different safety semantics.
+   */
+  async updateDrone(id: string, dto: UpdateDroneDto) {
+    await this.getDrone(id);
+    const drone = await this.prisma.drone.update({
+      where: { id },
+      data: {
+        ...dto,
+        ...(dto.maintenanceDueAt
+          ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
+          : {}),
+      },
+    });
+    this.logger.log(
+      `drone ${drone.serial} updated (status=${drone.status} airworthy=${drone.airworthy})`,
+    );
+    return drone;
   }
 
   // ── Drone commands (backend → drone) ──
@@ -384,7 +520,18 @@ export class AdminService {
   // ── Users / roles (ADMIN) ──
 
   async listUsers(query: AdminUserQueryDto) {
-    const where = query.role ? { role: query.role } : {};
+    const q = query.q?.trim();
+    const where: Prisma.UserWhereInput = {
+      ...(query.role ? { role: query.role } : {}),
+      ...(q
+        ? {
+            OR: [
+              { email: { contains: q, mode: 'insensitive' as const } },
+              { name: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
     const [items, total] = await this.prisma.readWithFallback((c) =>
       c.$transaction([
         c.user.findMany({

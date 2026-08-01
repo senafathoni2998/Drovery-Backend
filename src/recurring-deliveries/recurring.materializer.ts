@@ -153,10 +153,11 @@ export class RecurringMaterializer {
       // back to `occurrence` (so the kickoff fires at the exact instant).
       pickupDate: serviceDate(occurrence, serviceTz()),
       pickupTime: s.timeOfDay,
-      fromLat: s.fromLat ?? undefined,
-      fromLng: s.fromLng ?? undefined,
-      toLat: s.toLat ?? undefined,
-      toLng: s.toLng ?? undefined,
+      // No coords. create() geocodes the addresses and treats that as authoritative,
+      // so the schedule's stored pair is unused for pricing/serviceability — and
+      // forwarding it would run it through assertCoordAgreesWithAddress, whose 400
+      // lands in createInstance's catch AFTER the cursor has advanced. A single
+      // imprecise stored coord would then silently drop every future occurrence.
     };
   }
 }

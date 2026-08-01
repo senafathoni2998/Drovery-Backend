@@ -23,6 +23,42 @@ describe('TrackingSubscriber', () => {
     expect(sub.unsubscribe).toHaveBeenCalledWith(trackingChannel('d-1'));
   });
 
+  describe('re-arm after a Redis blip', () => {
+    // enableOfflineQueue:false means a SUBSCRIBE issued while Redis is unreachable
+    // rejects immediately. The gateway has already answered `subscribed`, so without
+    // a retry the client is told it is live while receiving nothing — for the life of
+    // the socket, because the non-empty local map stops anything re-subscribing.
+    it('keeps the channel in the desired set when the subscribe fails', async () => {
+      sub.subscribe.mockRejectedValueOnce(new Error("Stream isn't writeable"));
+
+      subscriber.subscribeToDelivery('d-1');
+      await Promise.resolve();
+
+      expect([...(subscriber as any).desired]).toContain(
+        trackingChannel('d-1'),
+      );
+    });
+
+    it('re-subscribes every desired channel when the connection is ready again', () => {
+      subscriber.subscribeToDelivery('d-1');
+      subscriber.subscribeToDelivery('d-2');
+      sub.subscribe.mockClear();
+
+      // The real method the 'ready' handler calls — not a reimplementation of it.
+      subscriber.rearmAll();
+
+      expect(sub.subscribe).toHaveBeenCalledWith(trackingChannel('d-1'));
+      expect(sub.subscribe).toHaveBeenCalledWith(trackingChannel('d-2'));
+    });
+
+    it('drops a channel from the desired set on unsubscribe, so it is not re-armed', () => {
+      subscriber.subscribeToDelivery('d-1');
+      subscriber.unsubscribeFromDelivery('d-1');
+
+      expect((subscriber as any).desired.size).toBe(0);
+    });
+  });
+
   it('routes through the sharded S-commands when mode is sharded', () => {
     (subscriber as any).mode = 'sharded';
     const ssub = {

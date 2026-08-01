@@ -127,6 +127,9 @@ export const id: Record<string, string> = {
   'validation.invalid': '{property} tidak valid',
   'validation.code.sixDigit': 'code harus berupa angka 6 digit',
   'validation.timeOfDay.format': 'timeOfDay harus dalam format HH:MM (24 jam)',
+  'validation.pickupDate.format': 'pickupDate harus dalam format YYYY-MM-DD',
+  'validation.pickupTime.format':
+    'pickupTime harus dalam format HH:MM (24 jam)',
 
   // ── Error HTTP yang dilempar (satu kunci per literal; diterjemahkan di batas) ──
   // Otorisasi / pengguna lintas-fitur.
@@ -140,6 +143,12 @@ export const id: Record<string, string> = {
     'Pengiriman dengan id pelacakan "{trackingId}" tidak ditemukan',
   'error.delivery.schedule.too_far':
     'Penjemputan dapat dijadwalkan paling lama {maxDays} hari ke depan.',
+  'error.delivery.drone.required':
+    'Pengiriman LIVE harus menyebutkan drone yang menerbangkannya.',
+  'error.delivery.drone.unavailable':
+    'Drone "{droneId}" tidak tersedia untuk pengiriman ini.',
+  'error.delivery.schedule.invalid_date':
+    'pickupDate "{pickupDate}" bukan tanggal kalender yang valid.',
   'error.delivery.schedule.live_not_allowed':
     'Pengiriman dengan pelacakan LIVE tidak dapat dijadwalkan untuk jendela penjemputan di masa depan.',
   'error.delivery.tracking_id_alloc_failed':
@@ -148,6 +157,10 @@ export const id: Record<string, string> = {
     'Kami tidak dapat menemukan lokasi penjemputan atau pengantaran. Pilih titiknya di peta dan coba lagi.',
   'error.delivery.serviceability.not_flyable':
     'Pengiriman ini tidak dapat diterbangkan saat ini.',
+  'error.delivery.package.weight_exceeds_cap':
+    'Paket {size} memiliki berat maksimum {maxKg} kg (Anda memasukkan {weightKg} kg).',
+  'error.delivery.coords.address_mismatch':
+    'Lokasi yang dipilih berjarak {deviationKm} km dari "{field}". Jaraknya harus dalam {maxKm} km — periksa alamatnya atau tandai ulang lokasinya.',
   'error.serviceability.OUT_OF_AREA':
     'Lokasi penjemputan atau pengantaran berada di luar area layanan kami.',
   'error.serviceability.NO_FLY_ZONE':
@@ -168,6 +181,8 @@ export const id: Record<string, string> = {
   'error.delivery.handoff.invalid_code': 'Kode serah terima tidak valid.',
   'error.delivery.handoff.locked':
     'Terlalu banyak percobaan yang salah — serah terima dikunci.',
+  'error.delivery.proof.not_delivered':
+    'Bukti pengiriman hanya dapat dikirim setelah pengiriman selesai (saat ini {status}).',
   'error.delivery.proof.not_found':
     'Tidak ada bukti pengiriman untuk pengiriman "{id}"',
   'error.delivery.rating.not_delivered':
@@ -220,6 +235,9 @@ export const id: Record<string, string> = {
     'Pengembalian dana harus lebih dari 0 dan paling banyak sebesar total yang ditagih.',
   'error.admin.refund.already_refunded':
     'Pengiriman ini sudah dikembalikan dananya.',
+  'error.admin.drone.not_found': 'Drone "{id}" tidak ditemukan',
+  'error.admin.drone.serial_exists':
+    'Drone dengan nomor seri "{serial}" sudah terdaftar.',
   'error.admin.promo.code_exists': 'Kode promo dengan kode itu sudah ada.',
   'error.admin.promo.not_found': 'Promo "{id}" tidak ditemukan',
   'error.admin.promo.percent_range':

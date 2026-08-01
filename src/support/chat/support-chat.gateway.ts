@@ -14,6 +14,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Role } from '@prisma/client';
 import { IncomingMessage } from 'http';
 import { Server, WebSocket } from 'ws';
 
@@ -30,6 +31,8 @@ import {
 
 interface AuthedSocket extends WebSocket {
   userId?: string;
+  /** Resolved once at connect — the JWT carries only {sub, email, jti}. */
+  role?: Role | null;
 }
 
 /**
@@ -95,6 +98,10 @@ export class SupportChatGateway
       // matching dec()). Setting userId + inc() is atomic w.r.t. the event loop.
       if (client.readyState !== WebSocket.OPEN) return;
       client.userId = payload.sub;
+      // Resolve the role ONCE per connection rather than per frame: the JWT does not
+      // carry it, and sockets are long-lived. Staff need it to subscribe to tickets
+      // they do not own.
+      client.role = await this.chat.getUserRole(payload.sub).catch(() => null);
       this.metrics?.wsSupportConnections.inc();
       // Never log the URL (it carries the token); log only the user.
       this.logger.log(`support chat client connected (user ${payload.sub})`);
@@ -136,7 +143,11 @@ export class SupportChatGateway
     }
 
     try {
-      await this.chat.assertOwnedTicket(client.userId, ticketId);
+      await this.chat.assertTicketAccess(
+        client.userId,
+        client.role ?? null,
+        ticketId,
+      );
     } catch {
       // Generic — don't reveal whether the ticket exists.
       return { event: 'error', data: { message: 'not found or no access' } };

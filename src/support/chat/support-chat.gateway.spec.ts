@@ -7,7 +7,12 @@ const req = (url: string) => ({ url, headers: { host: 'localhost' } }) as any;
 describe('SupportChatGateway', () => {
   let gateway: SupportChatGateway;
   let jwt: { verifyAsync: jest.Mock };
-  let chat: { assertOwnedTicket: jest.Mock; createUserMessage: jest.Mock };
+  let chat: {
+    assertOwnedTicket: jest.Mock;
+    assertTicketAccess: jest.Mock;
+    getUserRole: jest.Mock;
+    createUserMessage: jest.Mock;
+  };
   let publisher: { publishMessage: jest.Mock };
   let subscriber: {
     onUpdate: jest.Mock;
@@ -18,7 +23,14 @@ describe('SupportChatGateway', () => {
 
   beforeEach(() => {
     jwt = { verifyAsync: jest.fn() };
-    chat = { assertOwnedTicket: jest.fn(), createUserMessage: jest.fn() };
+    chat = {
+      assertOwnedTicket: jest.fn(),
+      // Subscribe is role-aware now: staff get an existence check, everyone else
+      // the ownership check. The role is resolved once at connect.
+      assertTicketAccess: jest.fn(),
+      getUserRole: jest.fn().mockResolvedValue('USER'),
+      createUserMessage: jest.fn(),
+    };
     publisher = { publishMessage: jest.fn().mockResolvedValue(undefined) };
     subscriber = {
       onUpdate: jest.fn(),
@@ -68,17 +80,54 @@ describe('SupportChatGateway', () => {
 
   describe('handleSubscribe (ownership)', () => {
     it('subscribes when the user owns the ticket + starts the Redis subscription', async () => {
-      chat.assertOwnedTicket.mockResolvedValue({ id: 't-1' });
+      chat.assertTicketAccess.mockResolvedValue({ id: 't-1' });
       const client = socket();
       client.userId = 'u-1';
+      client.role = 'USER'; // as handleConnection would have resolved it
       const res = await gateway.handleSubscribe(client, { ticketId: 't-1' });
-      expect(chat.assertOwnedTicket).toHaveBeenCalledWith('u-1', 't-1');
+      expect(chat.assertTicketAccess).toHaveBeenCalledWith(
+        'u-1',
+        'USER',
+        't-1',
+      );
       expect(res).toEqual({ event: 'subscribed', data: { ticketId: 't-1' } });
       expect(subscriber.subscribeToTicket).toHaveBeenCalledWith('t-1');
     });
 
+    it('lets an AGENT subscribe to a ticket they do not own', async () => {
+      // The reason live chat was permanently "Offline" in the console: a support
+      // agent is never the ticket owner, and the gate was ownership-only.
+      chat.assertTicketAccess.mockResolvedValue({ id: 't-1' });
+      const client = socket();
+      client.userId = 'agent-1';
+      client.role = 'AGENT';
+
+      const res = await gateway.handleSubscribe(client, { ticketId: 't-1' });
+
+      expect(chat.assertTicketAccess).toHaveBeenCalledWith(
+        'agent-1',
+        'AGENT',
+        't-1',
+      );
+      expect(res).toEqual({ event: 'subscribed', data: { ticketId: 't-1' } });
+    });
+
+    it('resolves the role once at connect, not per frame', async () => {
+      jwt.verifyAsync.mockResolvedValue({ sub: 'agent-1' });
+      chat.getUserRole.mockResolvedValue('ADMIN');
+      const client = socket();
+
+      await gateway.handleConnection(client, {
+        url: '/ws/support?token=t',
+        headers: { host: 'x' },
+      } as any);
+
+      expect(client.role).toBe('ADMIN');
+      expect(chat.getUserRole).toHaveBeenCalledTimes(1);
+    });
+
     it('only opens ONE Redis subscription for multiple local subscribers', async () => {
-      chat.assertOwnedTicket.mockResolvedValue({ id: 't-1' });
+      chat.assertTicketAccess.mockResolvedValue({ id: 't-1' });
       const a = socket();
       a.userId = 'u-1';
       const b = socket();
@@ -89,7 +138,7 @@ describe('SupportChatGateway', () => {
     });
 
     it('rejects when the user does NOT own the ticket (no info leak)', async () => {
-      chat.assertOwnedTicket.mockRejectedValue(new NotFoundException());
+      chat.assertTicketAccess.mockRejectedValue(new NotFoundException());
       const client = socket();
       client.userId = 'u-2';
       const res = await gateway.handleSubscribe(client, { ticketId: 't-1' });
@@ -101,7 +150,7 @@ describe('SupportChatGateway', () => {
     it('rejects an unauthenticated socket', async () => {
       const res = await gateway.handleSubscribe(socket(), { ticketId: 't-1' });
       expect(res.event).toBe('error');
-      expect(chat.assertOwnedTicket).not.toHaveBeenCalled();
+      expect(chat.assertTicketAccess).not.toHaveBeenCalled();
     });
   });
 
@@ -179,7 +228,7 @@ describe('SupportChatGateway', () => {
 
   describe('deliverToLocalClients', () => {
     it('sends the Redis frame to subscribed OPEN clients only', async () => {
-      chat.assertOwnedTicket.mockResolvedValue({ id: 't-1' });
+      chat.assertTicketAccess.mockResolvedValue({ id: 't-1' });
       const open = socket();
       open.userId = 'u-1';
       const closed = socket();
@@ -210,7 +259,7 @@ describe('SupportChatGateway', () => {
 
   describe('handleDisconnect', () => {
     it('drops the subscription, unsubscribes Redis, and decrements the gauge', async () => {
-      chat.assertOwnedTicket.mockResolvedValue({ id: 't-1' });
+      chat.assertTicketAccess.mockResolvedValue({ id: 't-1' });
       const client = socket();
       client.userId = 'u-1';
       await gateway.handleSubscribe(client, { ticketId: 't-1' });

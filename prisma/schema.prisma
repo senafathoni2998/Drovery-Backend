@@ -155,6 +155,79 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+// ==================== FLEET ====================
+
+/// Operational state of an aircraft. AVAILABLE is the only state dispatch may claim.
+enum DroneStatus {
+  AVAILABLE
+  IN_FLIGHT
+  CHARGING
+  MAINTENANCE
+  GROUNDED
+}
+
+/// A physical aircraft.
+///
+/// Until now there was no Drone table at all: `Delivery.assignedDroneId` was a bare
+/// nullable String populated with `drone-${uuidv4()}` at order time, referencing
+/// nothing. Nothing prevented two concurrent LIVE deliveries binding the same
+/// aircraft, and there was nowhere to record airworthiness, battery, home base,
+/// maintenance or per-aircraft credentials — so grounding a drone, gating dispatch on
+/// charge, or revoking a lost aircraft's key were all impossible by construction.
+///
+/// `activeDeliveryId` is the claim AND the lock: it is UNIQUE, so the database itself
+/// refuses to let one aircraft hold two deliveries. Dispatch claims by conditionally
+/// updating this row, which is why the constraint lives here rather than on
+/// `deliveries` — that table is RANGE-partitioned, and a partitioned table cannot
+/// carry a unique index that does not include its partition key.
+model Drone {
+  id String @id @default(uuid())
+
+  /// Airframe identity. `serial` is the physical marking; `id` is ours.
+  serial          String  @unique
+  model           String
+  firmwareVersion String?
+
+  status    DroneStatus @default(AVAILABLE)
+  /// Cleared by an incident or a lapsed inspection; dispatch must never claim a
+  /// drone that is not airworthy, regardless of status.
+  airworthy Boolean     @default(true)
+
+  /// Capability + energy, the two things dispatch has to reason about.
+  maxPayloadKg   Float
+  batteryPercent Int    @default(100)
+
+  /// Where it lives and where it is now (nullable until the first telemetry frame).
+  homeBaseLat Float
+  homeBaseLng Float
+  currentLat  Float?
+  currentLng  Float?
+
+  /// Maintenance signals.
+  flightHours     Float     @default(0)
+  flightCycles    Int       @default(0)
+  maintenanceDueAt DateTime?
+
+  /// Per-aircraft ingest credential (SHA-256, never the raw key), so a lost airframe
+  /// can be revoked without rotating the whole fleet's shared INGEST_API_KEY.
+  ingestKeyHash String?   @unique
+  lastSeenAt    DateTime?
+
+  /// The delivery this aircraft is currently flying. UNIQUE — one active delivery per
+  /// aircraft, enforced by the database rather than by hope. Intentionally NOT a
+  /// Prisma relation: `deliveries` is partitioned, so a foreign key referencing it
+  /// would have to carry the partition key too.
+  activeDeliveryId String? @unique
+
+  deliveries Delivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, airworthy])
+  @@map("drones")
+}
+
 // ==================== DELIVERY ====================
 
 enum DeliveryStatus {
@@ -220,7 +293,10 @@ model Delivery {
   trackingSource TrackingSource @default(SIMULATED)
   // The drone bound to a LIVE delivery; telemetry whose droneId doesn't match is
   // rejected, so a stranger gateway can't drive a delivery it isn't assigned to.
+  // Now a real foreign key: it used to be an unconstrained string holding
+  // `drone-<uuid>` that referenced nothing.
   assignedDroneId String?
+  assignedDrone   Drone?  @relation(fields: [assignedDroneId], references: [id], onDelete: SetNull)
 
   // Set when the delivery ends as RETURNING/DELIVERY_FAILED/RETURNED_TO_BASE;
   // null on the happy path. Drives the failure comms + the refund decision.

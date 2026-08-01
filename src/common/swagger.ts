@@ -89,10 +89,9 @@ function applyEnvelopeAndErrors(doc: OpenAPIObject): OpenAPIObject {
   };
   for (const pathItem of Object.values(doc.paths)) {
     for (const method of HTTP_METHODS) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const op = (pathItem as Record<string, any>)[method];
       if (!op || typeof op !== 'object') continue;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const responses: Record<string, any> = op.responses ?? {};
 
       for (const [code, resp] of Object.entries(responses)) {

@@ -76,19 +76,29 @@ export class CreateRecurringDeliveryDto {
   @IsIn([...PACKAGE_TYPES], { each: true })
   packageTypes: string[];
 
+  // Advisory only — every materialized occurrence is priced from the server-side
+  // geocode of the addresses, not from these. See DeliveriesService.resolveCoords.
   @IsOptional()
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   fromLat?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   fromLng?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   toLat?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   toLng?: number;
 }

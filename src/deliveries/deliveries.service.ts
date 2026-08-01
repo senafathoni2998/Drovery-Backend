@@ -8,6 +8,7 @@ import {
 import {
   DeliveryFailureReason,
   DeliveryStatus,
+  DroneStatus,
   Prisma,
   TrackingSource,
 } from '@prisma/client';
@@ -22,6 +23,8 @@ import {
   AppUnauthorizedException,
   AppUnprocessableEntityException,
 } from '../common/exceptions/app-exception';
+import { haversineKm } from '../common/geo-distance';
+import { assertWeightWithinCap } from '../common/package-limits';
 import { GeoService } from '../geo/geo.service';
 import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -51,6 +54,7 @@ import {
   MAX_SCHEDULE_DAYS,
   SCHEDULE_THRESHOLD_MS,
   computeScheduledFor,
+  isValidPickupDate,
   nowInServiceTz,
 } from './delivery-schedule';
 import { CreateDeliveryDto, DeliveryQueryDto } from './dto';
@@ -97,6 +101,14 @@ const CANCELABLE_STATUSES: DeliveryStatus[] = [
 const MAX_SCHEDULE_MS = MAX_SCHEDULE_DAYS * 24 * 60 * 60 * 1000;
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * How far a caller-supplied coordinate may sit from the geocode of the address it
+ * claims to describe before we reject the pair outright. Generous enough to absorb
+ * the difference between a rooftop pin and the street centroid a geocoder returns,
+ * tight enough that "same address, wildly different point" is a 400.
+ */
+const MAX_COORD_DEVIATION_KM = 1;
 
 @Injectable()
 export class DeliveriesService {
@@ -158,7 +170,92 @@ export class DeliveriesService {
       );
   }
 
+  /**
+   * Claim a real aircraft for a LIVE delivery, atomically.
+   *
+   * `assignedDroneId` is now a foreign key, so a LIVE delivery cannot be created
+   * without a registered airframe — which is the correct constraint: you cannot
+   * dispatch what you do not have. It used to mint `drone-${uuidv4()}`, a string
+   * referencing nothing, so the system believed it had assigned an aircraft that
+   * did not exist and nothing stopped two deliveries binding the same one.
+   *
+   * The claim is a CONDITIONAL update on the drone row, not a read-then-write: the
+   * `WHERE` carries every precondition, so two concurrent creates racing for the
+   * last available aircraft cannot both win — the loser matches 0 rows. `drones` is
+   * not partitioned, which is exactly why the claim lives there and not on
+   * `deliveries` (a partitioned table cannot hold a unique index that omits its
+   * partition key).
+   */
+  private async claimDrone(
+    dto: CreateDeliveryDto,
+    deliveryId: string,
+  ): Promise<string> {
+    if (!dto.droneId) {
+      throw new AppBadRequestException('error.delivery.drone.required');
+    }
+
+    const { count } = await this.prisma.drone.updateMany({
+      where: {
+        id: dto.droneId,
+        airworthy: true,
+        status: DroneStatus.AVAILABLE,
+        activeDeliveryId: null,
+        maxPayloadKg: { gte: dto.packageWeight },
+      },
+      data: {
+        activeDeliveryId: deliveryId,
+        status: DroneStatus.IN_FLIGHT,
+      },
+    });
+
+    if (count === 0) {
+      // Deliberately one message for every reason. Which aircraft is airworthy,
+      // charged or already flying is fleet information, and this endpoint is
+      // reachable by any authenticated customer.
+      throw new AppConflictException('error.delivery.drone.unavailable', {
+        droneId: dto.droneId,
+      });
+    }
+
+    return dto.droneId;
+  }
+
+  /**
+   * Release the aircraft back to the fleet. Idempotent and scoped to THIS delivery's
+   * claim, so a late release can never free a drone that has since been claimed by
+   * another delivery.
+   */
+  private async releaseDrone(deliveryId: string): Promise<void> {
+    await this.prisma.drone
+      .updateMany({
+        where: { activeDeliveryId: deliveryId },
+        data: { activeDeliveryId: null, status: DroneStatus.AVAILABLE },
+      })
+      .catch((e) =>
+        this.logger.warn(
+          `drone release failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+  }
+
   async create(userId: string, dto: CreateDeliveryDto) {
+    // A drone can only lift so much. Reject an over-capacity package before any
+    // geocode / pricing / DB / queue work. Enforced HERE and not only on the DTO
+    // because reorder, favorite-order and the recurring materializer all call
+    // create() with a hand-built DTO that never sees the ValidationPipe.
+    assertWeightWithinCap(dto.packageSize, dto.packageWeight);
+
+    // The DTO's @Matches only checks SHAPE. "2026-02-31" and "2026-00-10" match it,
+    // and Date.UTC rolls them over rather than rejecting — the first would schedule a
+    // flight for a day the caller never asked for, the second reaches Prisma as an
+    // Invalid Date and 500s. Checked here so reorder, favorite-order and the recurring
+    // materializer are covered too; none of them pass through the ValidationPipe.
+    if (!isValidPickupDate(dto.pickupDate)) {
+      throw new AppBadRequestException('error.delivery.schedule.invalid_date', {
+        pickupDate: dto.pickupDate,
+      });
+    }
+
     const trackingId = uuidv4().slice(0, 8).toUpperCase();
     // Pre-generate the delivery's id (the Phase-3 §2 Stage-A1 keystone). Today this is
     // byte-identical to the DB `@default(uuid())` — the row just gets an explicit id —
@@ -173,8 +270,8 @@ export class DeliveriesService {
     const deliveryId = uuidv4();
 
     // Resolve pickup/dropoff coordinates so the drone can fly a real route.
-    // Uses client-provided coords when present; otherwise geocodes the
-    // addresses (best-effort — geocoding failures leave coords undefined).
+    // Server-side geocode of the addresses is authoritative — caller-supplied
+    // coords are validated against it but never priced from. See resolveCoords.
     const coords = await this.resolveCoords(dto);
 
     // Gate on serviceability BEFORE any DB/payment/queue side-effects: reject
@@ -263,11 +360,11 @@ export class DeliveriesService {
       userId,
       status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,
       trackingSource: isLive ? TrackingSource.LIVE : TrackingSource.SIMULATED,
-      // A LIVE delivery is bound to exactly one drone; telemetry from any other
-      // drone is rejected. The default is a high-entropy random id (NOT derived
-      // from the public trackingId) so the binding is a real second factor; it's
-      // returned on create so the operator/gateway knows which id to report under.
-      assignedDroneId: isLive ? (dto.droneId ?? `drone-${uuidv4()}`) : null,
+      // A LIVE delivery is bound to exactly one REGISTERED aircraft, claimed
+      // atomically below. This used to mint `drone-${uuidv4()}` — an id referencing
+      // nothing — so the platform believed it had dispatched an aircraft that did
+      // not exist, and two deliveries could hold the same one.
+      assignedDroneId: isLive ? await this.claimDrone(dto, deliveryId) : null,
       scheduledFor: isScheduled ? scheduledFor : null,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
@@ -483,31 +580,75 @@ export class DeliveriesService {
   }
 
   /**
-   * Fills in pickup/dropoff coordinates. Client-supplied coords win; any
-   * missing pair is geocoded from its address via the geo provider.
-   * Best-effort: a failed geocode simply leaves the coordinate undefined
-   * (the simulation then falls back to its default route).
+   * Resolves pickup/dropoff coordinates for pricing, serviceability and the stored
+   * flight route.
+   *
+   * SECURITY — the GEOCODE OF THE ADDRESS IS AUTHORITATIVE. Caller-supplied
+   * coordinates are validated but never used for any of the three. This used to be
+   * "client-supplied coords win", which meant the distance fee — the largest single
+   * component of the price (PER_KM_RATE × haversine) — was computed from a number
+   * the caller chose. Posting `fromLat/fromLng === toLat/toLng` zeroed it, and the
+   * same coords were then handed to `assertServiceable`, so the geofence was passed
+   * by construction rather than checked.
+   *
+   * Both addresses are geocoded on every create. `GeoService` caches, so a repeated
+   * address is a cache hit; correctness beats a saved round-trip on a money path.
+   *
+   * A failed geocode leaves the pair undefined, which `assertServiceable` then
+   * rejects as UNRESOLVED_LOCATION — deliberately fail-closed. We do NOT fall back
+   * to caller coords, because that is exactly the trust boundary being closed here.
    */
   private async resolveCoords(dto: CreateDeliveryDto): Promise<ResolvedCoords> {
-    let { fromLat, fromLng, toLat, toLng } = dto;
+    const [fromGeo, toGeo] = await Promise.all([
+      dto.fromAddress ? this.geoService.geocode(dto.fromAddress) : null,
+      dto.toAddress ? this.geoService.geocode(dto.toAddress) : null,
+    ]);
 
-    if ((fromLat == null || fromLng == null) && dto.fromAddress) {
-      const geo = await this.geoService.geocode(dto.fromAddress);
-      if (geo) {
-        fromLat = geo.lat;
-        fromLng = geo.lng;
-      }
+    // Caller coords are still worth something as an INPUT-SANITY signal: if the
+    // caller pinned a point that disagrees with the address they typed, one of the
+    // two is wrong, and 400 is a better answer than silently flying to whichever
+    // street centroid the geocoder returned.
+    this.assertCoordAgreesWithAddress(
+      fromGeo,
+      dto.fromLat,
+      dto.fromLng,
+      'fromAddress',
+    );
+    this.assertCoordAgreesWithAddress(toGeo, dto.toLat, dto.toLng, 'toAddress');
+
+    return {
+      fromLat: fromGeo?.lat,
+      fromLng: fromGeo?.lng,
+      toLat: toGeo?.lat,
+      toLng: toGeo?.lng,
+    };
+  }
+
+  /**
+   * Rejects a caller coordinate that sits further than MAX_COORD_DEVIATION_KM from
+   * the geocode of the address it claims to describe. No-ops when either side is
+   * absent — a missing geocode is `assertServiceable`'s error to raise, and callers
+   * that send no coords (every first-party client today) are unaffected.
+   */
+  private assertCoordAgreesWithAddress(
+    geo: { lat: number; lng: number } | null,
+    lat: number | undefined,
+    lng: number | undefined,
+    field: string,
+  ): void {
+    if (!geo || lat == null || lng == null) return;
+
+    const deviationKm = haversineKm(geo.lat, geo.lng, lat, lng);
+    if (deviationKm > MAX_COORD_DEVIATION_KM) {
+      throw new AppBadRequestException(
+        'error.delivery.coords.address_mismatch',
+        {
+          field,
+          maxKm: MAX_COORD_DEVIATION_KM,
+          deviationKm: Math.round(deviationKm * 10) / 10,
+        },
+      );
     }
-
-    if ((toLat == null || toLng == null) && dto.toAddress) {
-      const geo = await this.geoService.geocode(dto.toAddress);
-      if (geo) {
-        toLat = geo.lat;
-        toLng = geo.lng;
-      }
-    }
-
-    return { fromLat, fromLng, toLat, toLng };
   }
 
   /**
@@ -749,35 +890,37 @@ export class DeliveriesService {
       });
     }
 
-    // Remove the delivery's pending simulation jobs (best-effort).
-    try {
-      await this.simulationService.stopSimulation(deliveryId);
-    } catch {
-      // The processor also guards on CANCELED status, so this is non-fatal.
-    }
-
-    // Release any promo redemption + refund any spent wallet credits so the slot
-    // and the credits are returned (best-effort, idempotent). No-ops when unused.
-    try {
-      await this.promoService.releaseForDelivery(deliveryId);
-    } catch (error) {
-      this.logger.warn(
-        `Promo release failed for delivery ${deliveryId}: ${(error as Error).message}`,
-      );
-    }
-    try {
-      await this.walletService.refundForDelivery(deliveryId);
-    } catch (error) {
-      this.logger.warn(
-        `Credit refund failed for delivery ${deliveryId}: ${(error as Error).message}`,
-      );
-    }
-
-    return this.prisma.delivery.update({
-      where: {
-        id_createdAt: { id: deliveryId, createdAt: delivery.createdAt },
-      },
+    // SINGLE-WINNER CAS, and it runs BEFORE any cleanup.
+    //
+    // This used to be: read, then three network round-trips of cleanup, then an
+    // UNCONDITIONAL status write — the only transition in this file without a CAS.
+    // The read above is advisory (the delivery can be dispatched, delivered or
+    // failed while those round-trips are in flight), so a lost race both refunded a
+    // delivery that had already completed AND overwrote its terminal status with
+    // CANCELED. Claiming the transition first means only the winner cleans up, and
+    // a terminal can never be resurrected.
+    const { count } = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: CANCELABLE_STATUSES } },
       data: { status: DeliveryStatus.CANCELED },
+    });
+    if (count === 0) {
+      const current = await this.prisma.delivery.findFirst({
+        where: { id: deliveryId },
+        select: { status: true },
+      });
+      throw new AppConflictException('error.delivery.cancel.race_bad_status', {
+        status: current?.status ?? delivery.status,
+      });
+    }
+
+    // Refund BOTH legs. cancel() previously released the promo and returned the
+    // wallet-credit portion but never refundChargeToWallet, so a customer who paid
+    // partly by card was silently short-refunded — while every exception path
+    // returned both. Same helper now serves all terminal paths.
+    await this.cleanupAfterTermination(deliveryId, true);
+
+    return this.prisma.delivery.findFirst({
+      where: { id: deliveryId },
       include: {
         tracking: true,
         workflowSteps: true,
@@ -821,16 +964,9 @@ export class DeliveriesService {
       });
     }
 
-    // Best-effort cleanup (reuses the same services the owner-cancel uses).
-    await this.simulationService
-      .stopSimulation(deliveryId)
-      .catch(() => undefined);
-    await this.promoService
-      .releaseForDelivery(deliveryId)
-      .catch(() => undefined);
-    await this.walletService
-      .refundForDelivery(deliveryId)
-      .catch(() => undefined);
+    // Same cleanup as every other terminal path — including the card-charged leg,
+    // which this used to omit exactly like owner-cancel did.
+    await this.cleanupAfterTermination(deliveryId, true);
 
     return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -854,13 +990,26 @@ export class DeliveriesService {
   async failExceptional(
     deliveryId: string,
     reason: DeliveryFailureReason,
+    /**
+     * Statuses this particular caller is allowed to fail FROM. Defaults to the full
+     * failable set; the watchdog passes its own narrower one.
+     *
+     * Why it exists: FAILABLE_STATUSES includes AWAITING_HANDOFF, but the watchdog's
+     * candidate query deliberately EXCLUDES it — a drone hovering at the door is not
+     * "stuck", it is waiting for a person. Because the CAS was wider than the query
+     * that selected the row, a delivery picked up as IN_TRANSIT that reached handoff
+     * mid-scan still passed the CAS and was failed + auto-refunded while the customer
+     * was walking outside. The per-row recheck could not catch it: it re-reads
+     * in-memory values from the original query, not the current status.
+     */
+    allowedStatuses: DeliveryStatus[] = FAILABLE_STATUSES,
   ): Promise<boolean> {
     const { count } = await this.prisma.delivery.updateMany({
-      where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+      where: { id: deliveryId, status: { in: allowedStatuses } },
       data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
     await this.announceException(
       deliveryId,
       DeliveryStatus.DELIVERY_FAILED,
@@ -884,7 +1033,7 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.RETURNING, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterException(deliveryId, isDroneFaultReason(reason));
+    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
     await this.announceException(deliveryId, DeliveryStatus.RETURNING, reason);
     this.logger.log(`Delivery ${deliveryId} → RETURNING (${reason})`);
     return true;
@@ -935,10 +1084,23 @@ export class DeliveriesService {
 
   /** Stop the sim, and for a drone-fault release the promo slot + refund credits.
    * Idempotent + best-effort — the same trio cancel/adminForceCancel use. */
-  private async cleanupAfterException(
+  /**
+   * The one cleanup every terminal path runs: stop the simulation and, when the
+   * outcome warrants a refund, return BOTH legs of the charge (wallet credits and
+   * the card-charged portion credited back to the wallet — there is no live Stripe
+   * refund yet). Every step is idempotent and no-ops when unused.
+   *
+   * Shared by failExceptional, beginReturnToBase, cancel and adminForceCancel so a
+   * new terminal cannot quietly refund one leg and forget the other, which is how
+   * the two cancel paths came to short-refund card payers.
+   */
+  private async cleanupAfterTermination(
     deliveryId: string,
     refundCredits: boolean,
   ): Promise<void> {
+    // Give the aircraft back first — a terminated delivery must never keep holding
+    // one, or the fleet leaks capacity one stuck delivery at a time.
+    await this.releaseDrone(deliveryId);
     await this.simulationService
       .stopSimulation(deliveryId)
       .catch(() => undefined);
@@ -1035,10 +1197,10 @@ export class DeliveriesService {
       packageSize: src.packageSize,
       packageWeight: src.packageWeight,
       packageTypes: src.packageTypes,
-      fromLat: src.fromLat ?? undefined,
-      fromLng: src.fromLng ?? undefined,
-      toLat: src.toLat ?? undefined,
-      toLng: src.toLng ?? undefined,
+      // Deliberately NOT forwarding the source's coords. create() geocodes the
+      // addresses and ignores caller coords entirely, so replaying stored ones can
+      // only ever trip assertCoordAgreesWithAddress — a check meant for untrusted
+      // CALLER input, not for values this service wrote itself.
       pickupDate: overrides?.pickupDate ?? now.date,
       pickupTime: overrides?.pickupTime ?? now.time,
     });

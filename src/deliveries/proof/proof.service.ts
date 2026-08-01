@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { DeliveryStatus } from '@prisma/client';
 
-import { AppNotFoundException } from '../../common/exceptions/app-exception';
+import {
+  AppConflictException,
+  AppNotFoundException,
+} from '../../common/exceptions/app-exception';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { SubmitProofDto } from './dto/submit-proof.dto';
@@ -51,6 +55,17 @@ export class ProofService {
    */
   async submitProof(userId: string, deliveryId: string, dto: SubmitProofDto) {
     const delivery = await this.requireOwnedDelivery(userId, deliveryId);
+
+    // Proof of delivery only means anything once the package actually changed
+    // hands. Ungated, this minted proof for a CANCELED or still-PENDING delivery,
+    // and — because it upserts — let the owner overwrite the lat/lng/recipientName
+    // recorded at the real handoff with their own values, or with nulls. The
+    // sibling RatingService.rate gates the same way.
+    if (delivery.status !== DeliveryStatus.DELIVERED) {
+      throw new AppConflictException('error.delivery.proof.not_delivered', {
+        status: delivery.status,
+      });
+    }
 
     const photoUrl = await this.storage.storePodImage(
       deliveryId,
