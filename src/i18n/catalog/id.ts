@@ -143,6 +143,10 @@ export const id: Record<string, string> = {
     'Pengiriman dengan id pelacakan "{trackingId}" tidak ditemukan',
   'error.delivery.schedule.too_far':
     'Penjemputan dapat dijadwalkan paling lama {maxDays} hari ke depan.',
+  'error.delivery.drone.required':
+    'Pengiriman LIVE harus menyebutkan drone yang menerbangkannya.',
+  'error.delivery.drone.unavailable':
+    'Drone "{droneId}" tidak tersedia untuk pengiriman ini.',
   'error.delivery.schedule.invalid_date':
     'pickupDate "{pickupDate}" bukan tanggal kalender yang valid.',
   'error.delivery.schedule.live_not_allowed':
