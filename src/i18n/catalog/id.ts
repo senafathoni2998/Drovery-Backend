@@ -235,6 +235,9 @@ export const id: Record<string, string> = {
     'Pengembalian dana harus lebih dari 0 dan paling banyak sebesar total yang ditagih.',
   'error.admin.refund.already_refunded':
     'Pengiriman ini sudah dikembalikan dananya.',
+  'error.admin.drone.not_found': 'Drone "{id}" tidak ditemukan',
+  'error.admin.drone.serial_exists':
+    'Drone dengan nomor seri "{serial}" sudah terdaftar.',
   'error.admin.promo.code_exists': 'Kode promo dengan kode itu sudah ada.',
   'error.admin.promo.not_found': 'Promo "{id}" tidak ditemukan',
   'error.admin.promo.percent_range':
