@@ -9,6 +9,7 @@ import { DeliveryStatus, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 
 import { DeliveriesService } from './deliveries.service';
+import { FAILABLE_STATUSES } from './delivery-exceptions';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
@@ -603,6 +604,10 @@ describe('DeliveriesService', () => {
       jest.spyOn(service as any, 'debitFirstEnabled').mockReturnValue(true);
     });
 
+    afterEach(() => {
+      delete process.env.LIVE_DISPATCH;
+    });
+
     it('reserves promo + debit (own txns, keyed to the pre-generated id) and NOT inside the delivery tx', async () => {
       promoService.validateForRedeem.mockResolvedValue(fakeCode);
       promoService.computeDiscount.mockReturnValue({
@@ -643,6 +648,51 @@ describe('DeliveriesService', () => {
       // No compensation on the happy path.
       expect(promoService.releaseForDelivery).not.toHaveBeenCalled();
       expect(walletService.refundForDelivery).not.toHaveBeenCalled();
+    });
+
+    it('hands back the claimed aircraft when the debit fails', async () => {
+      // The claim commits on `drones` — a separate, non-partitioned row that no
+      // delivery rollback touches — so an aborted create() that skips the release
+      // strands the airframe against a deliveryId that will never exist. No later
+      // release can key on it, and no sweeper exists. The collision and
+      // tracking-id-exhausted paths below already do this; the reservation path
+      // was the one throw out of create() that did not.
+      process.env.LIVE_DISPATCH = 'true';
+      prisma.drone.findMany.mockResolvedValue([
+        {
+          id: 'drone-7',
+          maxPayloadKg: 5,
+          rangeKm: 40,
+          batteryPercent: 100,
+          homeBaseLat: createDto.fromLat,
+          homeBaseLng: createDto.fromLng,
+          currentLat: null,
+          currentLng: null,
+        },
+      ]);
+      prisma.drone.updateMany.mockResolvedValue({ count: 1 });
+      promoService.validateForRedeem.mockResolvedValue(fakeCode);
+      promoService.computeDiscount.mockReturnValue({
+        discountAmount: 0,
+        finalTotal: 18,
+      });
+      prisma.user.findUnique.mockResolvedValue({ creditBalance: 10 });
+      walletService.debitWithinTx.mockRejectedValue(
+        new Error('WALLET_INSUFFICIENT_CREDITS'),
+      );
+
+      await expect(
+        service.create(userId, {
+          ...createDto,
+          promoCode: 'WELCOME10',
+          useCredits: true,
+        }),
+      ).rejects.toThrow('WALLET_INSUFFICIENT_CREDITS');
+
+      expect(prisma.drone.updateMany).toHaveBeenCalledWith({
+        where: { activeDeliveryId: PREGEN_ID },
+        data: { activeDeliveryId: null, status: 'AVAILABLE' },
+      });
     });
 
     it('compensates BOTH reservations and aborts when the debit fails (no delivery, no charge)', async () => {
@@ -1217,7 +1267,7 @@ describe('DeliveriesService', () => {
       });
     });
 
-    it('grounds an aircraft implicated in the failure, but not one that is blameless', async () => {
+    it('grounds an aircraft implicated in the failure', async () => {
       prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
 
       // Drone fault — it does not rejoin the pool on the strength of the same
@@ -1227,20 +1277,147 @@ describe('DeliveriesService', () => {
         status: 'MAINTENANCE',
         airworthy: false,
       });
+    });
 
-      prisma.drone.updateMany.mockClear();
+    /**
+     * Model the DB, not the call shape: answer whichever conditional CAS the code
+     * issues according to the status the delivery is ACTUALLY in. `updateMany`
+     * cannot report which row it matched, so the disposition of the aircraft has
+     * to be derived from the status the transition fired FROM — and a test that
+     * hard-codes a count sequence would pass for the wrong reason.
+     */
+    const deliveryReallyIn = (
+      status: DeliveryStatus,
+      id: string = 'delivery-1',
+    ) => {
+      prisma.delivery.updateMany.mockImplementation((args: any) => {
+        const where = args?.where ?? {};
+        // Faithful to Postgres: an absent filter constrains NOTHING. A CAS that
+        // forgot its id therefore still "matches" here, exactly as it would in the
+        // database — which is why the WHERE shape is asserted directly below
+        // rather than inferred from a count.
+        if (where.id !== undefined && where.id !== id) {
+          return Promise.resolve({ count: 0 });
+        }
+        const gate = where.status;
+        const matches =
+          gate === undefined
+            ? true
+            : gate.in
+              ? gate.in.includes(status)
+              : gate.notIn
+                ? !gate.notIn.includes(status)
+                : gate === status;
+        return Promise.resolve({ count: matches ? 1 : 0 });
+      });
+    };
 
-      // Recipient fault — the aircraft is fine and goes straight back to work.
+    /** Every CAS a terminal path issues must be scoped to ONE delivery. */
+    const expectEveryCasScopedToOneDelivery = (id: string) => {
+      expect(prisma.delivery.updateMany.mock.calls.length).toBeGreaterThan(0);
+      for (const [args] of prisma.delivery.updateMany.mock.calls) {
+        // Without this, one admin force-cancel cancels every in-flight delivery
+        // in the fleet — and a count-based assertion cannot see it.
+        expect(args.where.id).toBe(id);
+      }
+    };
+
+    it('scopes every force-cancel CAS to the one delivery and the right statuses', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      await service.adminForceCancel('delivery-1');
+
+      expectEveryCasScopedToOneDelivery('delivery-1');
+      // The airborne CAS must carry a status gate too: an unguarded second CAS
+      // would flip a DELIVERED delivery to CANCELED and refund it.
+      const airborne = prisma.delivery.updateMany.mock.calls[1][0];
+      expect(airborne.where.status.in).toEqual(FAILABLE_STATUSES);
+    });
+
+    it('scopes the airborne failure CAS to the one delivery', async () => {
+      deliveryReallyIn(DeliveryStatus.AWAITING_HANDOFF);
+
+      await service.failExceptional('delivery-1', 'MECHANICAL' as any);
+
+      expectEveryCasScopedToOneDelivery('delivery-1');
+    });
+
+    it('force-cancel still refuses a settled terminal through BOTH CASes', async () => {
+      // The no-resurrect guard now has two predicates to get past, not one.
+      deliveryReallyIn(DeliveryStatus.DELIVERED);
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.DELIVERED,
+      });
+
+      await expect(service.adminForceCancel('delivery-1')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does NOT return an airborne aircraft to the pool on force-cancel', async () => {
+      // adminForceCancel is deliberately legal from the in-flight statuses. The
+      // delivery ends; the aircraft is still up there with the parcel, and the
+      // claim is the only thing keeping the engine from selling it to the next
+      // booking. Nulling it here is worse than a leak — it double-books an
+      // airframe that is physically mid-mission.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      await service.adminForceCancel('delivery-1');
+
+      expect(prisma.drone.updateMany).toHaveBeenCalledWith({
+        where: { activeDeliveryId: 'delivery-1' },
+        data: {
+          activeDeliveryId: null,
+          status: 'MAINTENANCE',
+          airworthy: false,
+        },
+      });
+    });
+
+    it('returns the aircraft to the fleet when the force-cancel beat the launch', async () => {
+      // Nothing has flown, so grounding the fleet on an admin cancel would be a
+      // self-inflicted capacity outage.
+      deliveryReallyIn(DeliveryStatus.PENDING);
+
+      await service.adminForceCancel('delivery-1');
+
+      expect(prisma.drone.updateMany).toHaveBeenCalledWith({
+        where: { activeDeliveryId: 'delivery-1' },
+        data: { activeDeliveryId: null, status: 'AVAILABLE' },
+      });
+    });
+
+    it('keeps an airborne aircraft out of the pool even when it is blameless', async () => {
+      // "The airframe is not implicated" and "the airframe is parked" are different
+      // questions, and only the second one licenses a release. A no-show at the door
+      // leaves a drone hovering over someone's garden holding their parcel.
+      deliveryReallyIn(DeliveryStatus.AWAITING_HANDOFF);
+
       await service.failExceptional(
-        'delivery-2',
+        'delivery-1',
         'RECIPIENT_UNAVAILABLE' as any,
       );
+
+      expect(prisma.drone.updateMany.mock.calls[0][0].data).not.toMatchObject({
+        status: 'AVAILABLE',
+      });
+    });
+
+    it('still re-pools a blameless aircraft that never left the ground', async () => {
+      // The pre-flight abort fires from SCHEDULED, where no airframe is claimed and
+      // none has moved. Grounding on this path would punish the fleet for weather.
+      deliveryReallyIn(DeliveryStatus.SCHEDULED);
+
+      await service.failExceptional(
+        'delivery-1',
+        'RECIPIENT_UNAVAILABLE' as any,
+        [DeliveryStatus.SCHEDULED],
+      );
+
       expect(prisma.drone.updateMany.mock.calls[0][0].data).toMatchObject({
         status: 'AVAILABLE',
       });
-      expect(
-        prisma.drone.updateMany.mock.calls[0][0].data.airworthy,
-      ).toBeUndefined();
     });
   });
 

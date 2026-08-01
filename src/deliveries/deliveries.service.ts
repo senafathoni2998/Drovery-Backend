@@ -384,6 +384,12 @@ export class DeliveriesService {
         // "in-process failures are compensated synchronously" invariant (only a process CRASH
         // falls through to the orphan reaper).
         await this.compensateReservations(deliveryId);
+        // And the airframe, for the same reason the collision path below does it:
+        // the claim committed on `drones` — a separate, non-partitioned row — so
+        // nothing here rolls it back, and every later release keys on a delivery
+        // that will never exist. This was the one throw out of create() after the
+        // claim that did not hand the aircraft back.
+        await this.releaseClaimedAircraft(dispatched.droneId, deliveryId);
         throw error;
       }
     }
@@ -901,17 +907,41 @@ export class DeliveriesService {
    * promo slot, spent credits). Caller must enforce the ADMIN role.
    */
   async adminForceCancel(deliveryId: string) {
-    const { count } = await this.prisma.delivery.updateMany({
+    // TWO conditional CASes, not one, because the disposition of the AIRCRAFT
+    // depends on which status we cancelled FROM and `updateMany` cannot report the
+    // row it matched. Their union is exactly the old `notIn: TERMINAL_STATUSES`,
+    // so what may be force-cancelled is unchanged — only what happens to the
+    // airframe afterwards is.
+    //
+    // The pre-launch set first: it is the common case and nothing is flying.
+    let { count } = await this.prisma.delivery.updateMany({
       where: {
         id: deliveryId,
         // Never resurrect a SETTLED terminal (DELIVERED/CANCELED and the exception
         // terminals DELIVERY_FAILED/RETURNED_TO_BASE) — that would corrupt the
         // recorded outcome and trigger a second, policy-violating cleanup/refund.
-        // RETURNING (transient/in-flight) remains force-cancelable.
-        status: { notIn: TERMINAL_STATUSES },
+        status: { notIn: [...TERMINAL_STATUSES, ...FAILABLE_STATUSES] },
       },
       data: { status: DeliveryStatus.CANCELED },
     });
+    let aircraft: AircraftDisposition = 'RETURN_TO_FLEET';
+
+    if (count === 0) {
+      // The in-flight set. Force-cancelling an airborne delivery stays legal —
+      // RETURNING included — but the aircraft is up there with the parcel and the
+      // claim is the only thing keeping the engine from selling it to the next
+      // booking. It is taken out of service instead: not because it is suspect,
+      // but because a mission ended mid-air and a human has to find out where it
+      // is. STILL_AIRBORNE would be the honest label and the wrong behavior — a
+      // CANCELED delivery never reaches completeReturnToBase, so the claim would
+      // be held forever.
+      ({ count } = await this.prisma.delivery.updateMany({
+        where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+        data: { status: DeliveryStatus.CANCELED },
+      }));
+      if (count > 0) aircraft = 'GROUND_FOR_INSPECTION';
+    }
+
     if (count === 0) {
       const existing = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },
@@ -929,7 +959,7 @@ export class DeliveriesService {
 
     // Same cleanup as every other terminal path — including the card-charged leg,
     // which this used to omit exactly like owner-cancel did.
-    await this.cleanupAfterTermination(deliveryId, true);
+    await this.cleanupAfterTermination(deliveryId, true, aircraft);
 
     return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -967,19 +997,54 @@ export class DeliveriesService {
      */
     allowedStatuses: DeliveryStatus[] = FAILABLE_STATUSES,
   ): Promise<boolean> {
-    const { count } = await this.prisma.delivery.updateMany({
-      where: { id: deliveryId, status: { in: allowedStatuses } },
-      data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
-    });
-    if (count === 0) return false;
-    // A drone-fault failure means the aircraft is implicated — lost comms, a
-    // mechanical abort. It does not go back into the dispatchable pool on the
-    // strength of the same telemetry silence that got the delivery reaped; a human
-    // signs it off. Customer-fault failures (nobody at the door) leave it airworthy.
+    // Split the caller's allowed set by whether a drone is AIRBORNE in that status,
+    // and run whichever halves are non-empty. Every caller today passes a set that
+    // is entirely one or the other (FAILABLE_STATUSES is in-flight by definition;
+    // the pre-flight abort passes [SCHEDULED]), so this is one round trip in
+    // practice — but the answer is derived rather than assumed, which is what makes
+    // it survive the next caller.
+    const airborneAllowed = allowedStatuses.filter((s) =>
+      FAILABLE_STATUSES.includes(s),
+    );
+    const groundedAllowed = allowedStatuses.filter(
+      (s) => !FAILABLE_STATUSES.includes(s),
+    );
+
+    let matched = 0;
+    let airborne = false;
+    if (groundedAllowed.length) {
+      ({ count: matched } = await this.prisma.delivery.updateMany({
+        where: { id: deliveryId, status: { in: groundedAllowed } },
+        data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
+      }));
+    }
+    if (matched === 0 && airborneAllowed.length) {
+      ({ count: matched } = await this.prisma.delivery.updateMany({
+        where: { id: deliveryId, status: { in: airborneAllowed } },
+        data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
+      }));
+      airborne = matched > 0;
+    }
+    if (matched === 0) return false;
+
+    // TWO independent reasons to keep an aircraft out of the dispatchable pool,
+    // and the second one used to be missing.
+    //
+    // Implicated: a drone-fault failure — lost comms, a mechanical abort. It does
+    // not rejoin the pool on the strength of the same telemetry silence that got
+    // the delivery reaped; a human signs it off.
+    //
+    // Airborne: it is still flying, whatever the reason. A no-show at the door is
+    // a blameless RECIPIENT_UNAVAILABLE, and the aircraft is nonetheless hovering
+    // over a stranger's garden holding their parcel — re-pooling it hands a flying
+    // drone to the next booking. "The airframe is not at fault" and "the airframe
+    // is parked" are different questions; only the second one licenses a release.
     await this.cleanupAfterTermination(
       deliveryId,
       isDroneFaultReason(reason),
-      isDroneFaultReason(reason) ? 'GROUND_FOR_INSPECTION' : 'RETURN_TO_FLEET',
+      isDroneFaultReason(reason) || airborne
+        ? 'GROUND_FOR_INSPECTION'
+        : 'RETURN_TO_FLEET',
     );
     await this.announceException(
       deliveryId,

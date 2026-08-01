@@ -1047,6 +1047,13 @@ engine), 11.5 (bound the haversine)
 - Refusal is split in two: `no_capacity` (no airframe in the fleet could EVER lift this) vs
   `unavailable` (everything else). The first is the only fleet fact worth telling a customer,
   because "try again later" is a lie when the answer will never change.
+  > **Correction (increment 3):** the count behind `no_capacity` is
+  > `{ airworthy: true, maxPayloadKg: { gte: payloadKg } }`, so a temporarily **grounded**
+  > capable airframe reads as absent and the customer is told to split a package the fleet
+  > can in fact carry. "could EVER lift this" overstates it; the in-code log line is accurate.
+  > Left as-is deliberately — dropping `airworthy` from the count would give a written-off
+  > fleet a permanent "try again shortly", and the `Drone` model has no retired/decommissioned
+  > concept to distinguish them. Logged in the backlog rather than fixed blind.
 
 **`Drone.rangeKm`** (new column, migration `20260801042637_add_drone_range_km`). Without it
 selection degrades to a payload comparison and "can it get home" is unanswerable.
@@ -1063,6 +1070,17 @@ SIMULATED, byte-identical to before).
 | A **successful** delivery never released | The fleet leaked one airframe per completed delivery until dispatch had nothing to assign |
 | `RETURNING` released while still airborne | The engine could hand a flying drone to the next booking |
 | A failed `create()` never released its claim | The claim commits on a separate non-partitioned row, so the delivery rollback did not undo it and every later release keyed on a delivery that would never exist |
+
+> **Correction (Phase 12 increment 3, 2026-08-01).** Rows 2 and 3 of that table claim more than
+> was delivered, and the overstatement is the reason both survived another two increments:
+> - *"`RETURNING` released while still airborne"* was fixed **at one call site**, not as a class.
+>   `beginReturnToBase` got `STILL_AIRBORNE`; `adminForceCancel` walked straight past it into the
+>   `RETURN_TO_FLEET` default while its own CAS deliberately permits force-cancelling an in-flight
+>   delivery, and `failExceptional`'s `RECIPIENT_UNAVAILABLE` branch re-pooled an airborne aircraft
+>   by design. Both fixed in increment 3.
+> - *"A failed `create()` never released its claim"* was fixed for the tracking-id collision and
+>   exhaustion paths only. The debit-first reservation catch — the one remaining post-claim throw —
+>   still returned without handing the airframe back. Fixed in increment 3.
 
 A drone implicated in a failure (lost comms, mechanical, any return-to-base) is now **grounded**
 rather than returned to the pool, `airworthy` cleared — not just the status, or an operator
@@ -1114,6 +1132,12 @@ round trip does not, and it fails under that mutation.
   independent of the engine, and was left out to keep this increment reviewable.
 - **No saturation QUEUE.** The plan allows "queued or rejected"; this rejects. A queue needs a
   retry loop and a customer-visible pending state — its own increment.
+  > **Correction (increment 3):** accurate for `create()`, where the rejection is a 409 the
+  > customer sees and can act on. Increment 2 then moved the same refusal to a call site with
+  > no caller — the kickoff job — where "rejects" meant the job died and an already-charged
+  > delivery sat in SCHEDULED indefinitely. That change in consequence was not recorded at the
+  > time. Increment 3 routes it into the pre-flight's HOLD/ABORT machinery; a genuine
+  > saturation queue is still outstanding.
 - **No reassignment-on-unresponsive.** A drone that goes silent mid-flight physically still has
   the parcel, so the mission cannot simply be handed to another airframe. What IS handled: the
   watchdog reaps the delivery, the claim is released so the fleet is not blocked, and the
@@ -1342,6 +1366,13 @@ and the delay.
   refusal for the same reason.
 - **Claim before the CAS, release if the CAS loses** — the same ordering rule `create()` uses,
   for the same reason.
+  > **Correction (increment 3):** true about the ORDERING, but the parity it asserts was not
+  > there. `create()` covers the CAS loss *and* a throw; `handleKickoff` covered only the loss,
+  > so a pool timeout on the transition write — exactly what `attempts: 5` exists for — leaked
+  > the claim and then poisoned every retry with a P2002 on `drones_activeDeliveryId_key`. The
+  > "12 mutations, 12 caught" set did not reach it either: the processor spec mocks `dispatch`
+  > as resolving in every case, so no test exercised a throw from that call or from the write
+  > after it. Fixed in increment 3.
 
 ### Deviations from the plan
 - **12.4 (airspace as data) not attempted.** Restricted airspace is still two hardcoded circles
@@ -1363,4 +1394,194 @@ and the delay.
 - **Phase 12 increment 3** — airspace as data (12.4) and/or the operator audit log (12.7).
   `forceCancel(deliveryId)` and `fail(deliveryId, reason)` still do not receive an admin id at
   all — the actor is dropped at the controller boundary.
+- **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 3) — Claim release + the refusal at launch — DONE
+
+**Date:** 2026-08-01
+**Branch:** `fix/audit-phase-12-claim-release` (backend)
+**Covers:** no new plan item. This increment is a **re-check of the day's own work** — phases 11
+(increments 1–3) and 12 (increments 1–2) were re-reviewed end to end, and this is what that found.
+
+### Why this exists
+
+The five increments above were each verified, mutation-tested and merged. Re-reviewing them as
+one body of work — nine independent lenses over `b1ce5c8..HEAD`, every finding then handed to a
+verifier told to refute it — turned up four defects that survived all five per-increment reviews.
+
+They share a shape worth recording: **the day's work was reviewed on the paths where a delivery
+STARTS, and the defects are all on the paths where one ENDS or FAILS.** Selection arithmetic, the
+claim CAS, the partitioned recorder and the HOLD/ABORT taxonomy were checked hard and hold up. The
+release half of the same lifecycle had one call site tested out of five, and the kickoff job's
+error paths had none.
+
+### What changed
+
+**An airborne aircraft is no longer returned to the dispatchable pool.** Two call sites did it:
+
+| Call site | What it did |
+|---|---|
+| `adminForceCancel` | Passed two arguments to `cleanupAfterTermination`, taking the `RETURN_TO_FLEET` default — while its own CAS deliberately fires from the in-flight statuses, `RETURNING` included |
+| `failExceptional` (`RECIPIENT_UNAVAILABLE`) | Decided the disposition on "is the airframe implicated?" alone, and a no-show at the door is blameless |
+
+With `LIVE_DISPATCH=on` the consequence is a drone flying with one customer's parcel being
+claimed for another's booking. The unique index cannot help — the release nulls the column it
+guards — and because the delivery goes terminal in the same breath,
+`COMMAND_TYPE_TO_LEGAL_STATUSES` stops permitting `RETURN_TO_BASE`, so the operator loses the
+recall channel at the instant the aircraft becomes re-dispatchable.
+
+The disposition is now derived from the status the transition fired **from**, not from the
+reason. `updateMany` cannot report the row it matched, so each of the two methods issues two
+conditional CASes — the pre-launch set, then the in-flight set — whose union is exactly the
+single predicate each replaced. What may be cancelled or failed is unchanged; only what happens
+to the airframe is.
+
+`GROUND_FOR_INSPECTION` and not `STILL_AIRBORNE`, deliberately: a CANCELED delivery never reaches
+`completeReturnToBase`, so keeping the claim would hold the aircraft forever. Grounding frees the
+claim while keeping it undispatchable, which is the honest state — a mission ended mid-air and a
+human has to find out where the aircraft is.
+
+**A dispatch refusal at launch holds or aborts; it never strands.** Kickoff is the first time the
+fleet is consulted about a delivery the customer has already paid for — `create()` deliberately
+claims nothing for a scheduled one. `dispatch()` was awaited with no `try`/`catch`, so a
+saturated fleet threw, the job burned its five attempts in ~15 s against a condition that changes
+on the timescale of a *flight*, and `onFailed` logged. The delivery then sat in `SCHEDULED`
+indefinitely: reachable by neither `WATCHDOG_STUCK_STATUSES` nor `FAILABLE_STATUSES`, with no
+`scheduledFor` sweeper — looking to its customer exactly like one about to happen, which is the
+precise outcome the pre-flight ABORT was built to prevent.
+
+The refusal now takes the same two outcomes as the weather check, **sharing its hold budget
+rather than getting its own** — the budget bounds how long a customer waits on a delivery that
+has not started, and that bound must not double because the reason for waiting changed.
+`no_capacity` aborts immediately; holding an hour for an airframe that does not exist is a lie.
+
+**A throw from the transition write no longer leaks the claim.** The release only ran inside
+`if (count === 0)`, so the pool timeout that `attempts: 5` exists for skipped it — and the retry
+then *poisoned itself*: the row was still SCHEDULED, the candidate query excluded the stuck drone,
+a second was picked, and writing its claim raised an unhandled **P2002** on
+`drones_activeDeliveryId_key`. All five attempts failed identically. A recoverable blip became a
+deterministic permanent failure.
+
+The release is conditional on **proof** the transition did not commit — a re-read showing the row
+still SCHEDULED. A rejected promise is not that proof; it can land with the row already written,
+which is the case `create()`'s reservation catch is explicitly built around. Releasing blind on
+that path would hand a drone that is about to fly back to the dispatchable pool, and the retry
+short-circuits on the leading status read so nothing re-claims it. A failed re-read also keeps
+the claim: unknown is not "did not commit", a leak self-heals through the re-entrant claim, and a
+double-booked airframe does not. (See *What the review caught* below — the first version of this
+fix released unconditionally.)
+
+**The claim is now re-entrant** (`selectAndClaim` returns the airframe this delivery already
+holds). That is what makes the retry above idempotent rather than merely lucky, and it closes the
+same window for `create()`.
+
+**The debit-first reservation catch releases the airframe** — the one throw path out of `create()`
+after the claim that did not.
+
+### Verification
+```
+tsc (tsconfig.build.json): clean
+tsc (tsconfig.json):       1 pre-existing error (deliveries.controller.spec.ts:120), unchanged
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 85 passed, 85 total
+Tests:       904 passed, 904 total          (+18)
+prisma:drift-check: No difference detected   (no schema change in this increment)
+```
+
+**Mutation testing — 19 mutations, 19 caught.** Skipping the refusal handler; forcing every
+refusal permanent; forcing every refusal transient; never exhausting the hold budget; resetting
+the attempt counter on each defer; widening the dispatch-abort CAS past `[SCHEDULED]`; never
+releasing when the transition write throws; releasing blind on an ambiguous failure; treating an
+unreadable status as proof the write did not land; dropping the re-entrant lookup; keying it on
+the drone id instead of the delivery; forcing force-cancel to `RETURN_TO_FLEET`; forcing it to
+`GROUND_FOR_INSPECTION`; dropping the airborne axis from the failure disposition; grounding on
+every failure regardless; dropping the debit-first release; dropping the status gate from the
+airborne force-cancel CAS; dropping the delivery id from that CAS; dropping it from the airborne
+failure CAS.
+
+One mutation was initially miscounted: widening the abort CAS to `FAILABLE_STATUSES` fails to
+**compile** in that file (it is not imported), so jest failing proved nothing about the tests.
+Re-run as an explicit two-status array, which compiles — and is caught by the test.
+
+**Baseline re-verified independently rather than read from this log:** every mechanically
+checkable claim in the day's five entries (test counts, lint counts, drift, the `flight_frames`
+partition key and its five partitions) was re-run and matched.
+
+### What the review caught
+
+This branch was itself reviewed before merging, by five lenses with an adversarial verifier on
+each finding. It found a regression **this increment introduced**, which is the entry's most
+useful line:
+
+- **The release-on-CAS-throw was unconditional.** A rejected `updateMany` can land with the row
+  already written. On that path the delivery is PENDING and bound to the aircraft, and
+  `handleKickoff` returns early on any status that is not SCHEDULED, so nothing re-claims it —
+  the release put a live delivery's airframe back in the dispatchable pool for the next booking
+  to take. **Before this increment the same connection reset was benign** (the claim simply
+  stayed, matching the committed state), so the first version of the fix strictly worsened it.
+  The new test even used `connection reset by peer` as its trigger — the exact error that makes
+  releasing wrong. Fixed by releasing only on proof, above.
+- **Two CAS mutations survived the new tests**: dropping the status gate from the airborne
+  force-cancel CAS (a DELIVERED delivery would be flipped to CANCELED and refunded), and dropping
+  `id: deliveryId` from it (**one admin force-cancel would cancel every in-flight delivery in the
+  fleet**). Both passed 103/103 because the disposition tests assert on `drone.updateMany` and the
+  no-resurrect test used a flat `count: 0`. The count-based helper models Postgres faithfully —
+  an absent filter constrains nothing — which is precisely why a count cannot see a missing
+  predicate. Now asserted directly: every terminal-path CAS must carry its delivery id.
+
+The lesson is the same one the corrections below record: a mock that answers "did it match?"
+cannot tell you *what* it matched on. Where a CAS predicate is the safety property, assert the
+predicate.
+
+### Decisions made
+- **Derive the disposition, don't pass it.** Threading an argument through `adminForceCancel`
+  would have fixed the one call site and left the next one to make the same mistake. The question
+  "was it flying?" has an answer in the data; the code now asks it.
+- **Two CASes, not a read-then-write.** An advisory read of the status before the CAS would
+  reintroduce exactly the race the single-winner CAS pattern exists to close.
+- **Ground rather than hold the claim.** `STILL_AIRBORNE` is the honest label for a force-cancel
+  and the wrong behavior — nothing would ever release it.
+- **Share the pre-flight's hold budget.** A separate dispatch budget would let a delivery
+  alternating between weather and saturation wait twice as long as either bound allows.
+- **Re-entrancy over catching P2002.** Catching the constraint violation treats the symptom; the
+  claim being non-idempotent is the defect.
+- **Keep the claim when the outcome is unknown.** The two failure modes are not symmetric: a
+  leaked claim is one aircraft out of service until someone looks, and the re-entrant claim heals
+  it on the next retry; a wrongly released one is two deliveries flying one airframe. Every
+  ambiguous branch resolves toward the leak.
+- **Left `no_capacity`'s grounded-airframe gloss alone.** Dropping `airworthy` from the count
+  would give a written-off fleet a permanent "try again shortly", and `Drone` has no
+  retired/decommissioned concept to tell the two apart. Corrected the log, filed the behavior.
+
+### Corrections to earlier entries
+Four claims in the increments above overstated what was delivered, and the overstatement is
+why three of these defects survived. Correction notes are inline at each claim (Phase 11
+increment 3's defect table and its `no_capacity` gloss; its saturation-queue disclosure; Phase 12
+increment 2's "same ordering rule `create()` uses"). The pattern to avoid: describing a fixed
+call site as a fixed class.
+
+### Left undone / follow-ups
+- **Battery state-of-charge only ever decreases.** `drones.batteryPercent` became telemetry-written
+  and a hard dispatch gate (`gte: 25`) on the same day; nothing raises it, and `DroneStatus.CHARGING`
+  has zero call sites. A LIVE fleet strands itself after a few flights while the aircraft sit on
+  chargers, and every booking gets "try again shortly" — a condition that never clears. Also
+  `CreateDroneDto` has no `batteryPercent`, so a newly registered airframe flies its first mission
+  on a fabricated `@default(100)`. **Required before any real fleet flies.**
+- **No stale-claim sweeper.** A LIVE delivery claimed at PENDING/CONFIRMED whose gateway never
+  sends a frame is covered by neither `WATCHDOG_STUCK_STATUSES` nor `FAILABLE_STATUSES`, so its
+  claim is freed only by a human. Pre-existing; today's work gave it a consequence.
+- **A mid-flight force-cancel leaves an aircraft the platform can no longer track.** Grounding
+  clears `activeDeliveryId`, and both `updateDroneState` and `maybeRecall` are scoped by it. The
+  trade (a double-dispatch for an untracked airframe) is the right one and is now explicit, but
+  the real answer is an incident workflow — 12.6.
+- **No customer notification on a dispatch hold**, same as the weather hold.
+- `no_capacity` counts grounded airframes as absent (above).
+- Per-aircraft ingest credentials (11.2); the saturation queue; Phase 12 items 12.4–12.7.
+
+### Next
+- **Phase 12 increment 4** — airspace as data (12.4) and/or the operator audit log (12.7).
+  `forceCancel(deliveryId)` and `fail(deliveryId, reason)` still do not receive an admin id.
+- Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
 - **Phase 10** still blocked on Stripe test keys.

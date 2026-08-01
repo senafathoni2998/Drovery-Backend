@@ -1,5 +1,6 @@
-import { DeliveryStatus } from '@prisma/client';
+import { DeliveryFailureReason, DeliveryStatus } from '@prisma/client';
 
+import { AppConflictException } from '../../common/exceptions/app-exception';
 import { SimulationProcessor } from './simulation.processor';
 import { STAGES } from './simulation.constants';
 import { PREFLIGHT_MAX_ATTEMPTS } from './preflight.constants';
@@ -513,6 +514,181 @@ describe('SimulationProcessor', () => {
       await processor.process(kickoffJob());
 
       expect(dispatchService.dispatch).not.toHaveBeenCalled();
+    });
+
+    it('gives the aircraft back when the transition write itself fails', async () => {
+      // The claim commits on a separate, non-partitioned row. If the write that was
+      // supposed to record it throws, nothing else will ever hand the airframe back:
+      // every later release is keyed on a delivery that never left SCHEDULED.
+      dispatchService.dispatch.mockResolvedValue({
+        trackingSource: 'LIVE',
+        droneId: 'drone-7',
+      });
+      prisma.delivery.updateMany.mockRejectedValue(
+        new Error('connection reset by peer'),
+      );
+
+      await expect(processor.process(kickoffJob())).rejects.toThrow(
+        'connection reset by peer',
+      );
+
+      expect(dispatchService.release).toHaveBeenCalledWith(
+        'd-1',
+        'RETURN_TO_FLEET',
+      );
+    });
+
+    it('keeps the airframe when the failed write may actually have landed', async () => {
+      // A rejected promise is NOT proof the statement did not commit — this repo
+      // reasons about the same post-commit reject in create()'s reservation catch.
+      // If the transition did land, the delivery is PENDING and bound to this
+      // aircraft, and the retry short-circuits on the status, so nothing re-claims
+      // it: releasing here would put a drone that is about to fly back into the
+      // dispatchable pool. Before the release existed at all, this case was benign.
+      dispatchService.dispatch.mockResolvedValue({
+        trackingSource: 'LIVE',
+        droneId: 'drone-7',
+      });
+      prisma.delivery.updateMany.mockRejectedValue(
+        new Error('connection reset by peer'),
+      );
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce(scheduled) // the leading read
+        .mockResolvedValue({ ...scheduled, status: DeliveryStatus.PENDING });
+
+      await expect(processor.process(kickoffJob())).rejects.toThrow(
+        'connection reset by peer',
+      );
+
+      expect(dispatchService.release).not.toHaveBeenCalled();
+    });
+
+    it('keeps the airframe when it cannot find out whether the write landed', async () => {
+      // Unknown is not "did not commit". Leaking a claim is recoverable by the
+      // re-entrant retry; double-booking an airframe is not.
+      dispatchService.dispatch.mockResolvedValue({
+        trackingSource: 'LIVE',
+        droneId: 'drone-7',
+      });
+      prisma.delivery.updateMany.mockRejectedValue(new Error('pool timeout'));
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce(scheduled)
+        .mockRejectedValue(new Error('still down'));
+
+      await expect(processor.process(kickoffJob())).rejects.toThrow(
+        'pool timeout',
+      );
+
+      expect(dispatchService.release).not.toHaveBeenCalled();
+    });
+  });
+
+  // A scheduled delivery is the ONE case create() never asks the dispatch engine
+  // about — you do not hold an airframe out of service for three weeks — so the
+  // first time the fleet is consulted is here, with the customer already charged.
+  // An unhandled refusal fails the job, and SCHEDULED is reachable by neither the
+  // watchdog nor FAILABLE_STATUSES: the delivery sits there looking to its customer
+  // exactly like one that is about to happen, forever.
+  describe('kickoff — a dispatch refusal at launch', () => {
+    const scheduled = {
+      status: DeliveryStatus.SCHEDULED,
+      createdAt: new Date(DCA),
+      fromLat: -6.9,
+      fromLng: 107.6,
+      toLat: -6.92,
+      toLng: 107.62,
+      packageWeight: 2.5,
+    };
+
+    const kickoffJob = (over: Record<string, unknown> = {}) =>
+      ({
+        name: 'kickoff',
+        data: {
+          deliveryId: 'd-1',
+          deliveryCreatedAt: DCA,
+          userId: 'u-1',
+          coords,
+          ...over,
+        },
+      }) as any;
+
+    beforeEach(() => {
+      prisma.delivery.findUnique.mockResolvedValue(scheduled);
+      prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('holds a launch the fleet cannot serve right now instead of burning the job', async () => {
+      dispatchService.dispatch.mockRejectedValue(
+        new AppConflictException('error.delivery.dispatch.unavailable'),
+      );
+
+      await processor.process(kickoffJob());
+
+      // Busy is transient — exactly what the weather hold budget already models.
+      expect(simulationService.deferKickoff).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryId: 'd-1' }),
+        1,
+      );
+      expect(deliveries.failExceptional).not.toHaveBeenCalled();
+    });
+
+    it('aborts immediately when no airframe could EVER lift the package', async () => {
+      dispatchService.dispatch.mockRejectedValue(
+        new AppConflictException('error.delivery.dispatch.no_capacity', {
+          weightKg: 20,
+        }),
+      );
+
+      await processor.process(kickoffJob());
+
+      // Holding for an hour is a lie when the answer will never change.
+      expect(simulationService.deferKickoff).not.toHaveBeenCalled();
+      expect(deliveries.failExceptional).toHaveBeenCalledWith(
+        'd-1',
+        DeliveryFailureReason.OTHER,
+        [DeliveryStatus.SCHEDULED],
+      );
+    });
+
+    it('gives up on a saturated fleet once the hold budget is spent', async () => {
+      dispatchService.dispatch.mockRejectedValue(
+        new AppConflictException('error.delivery.dispatch.unavailable'),
+      );
+
+      await processor.process(
+        kickoffJob({ preflightAttempt: PREFLIGHT_MAX_ATTEMPTS }),
+      );
+
+      expect(simulationService.deferKickoff).not.toHaveBeenCalled();
+      expect(deliveries.failExceptional).toHaveBeenCalledWith(
+        'd-1',
+        DeliveryFailureReason.OTHER,
+        [DeliveryStatus.SCHEDULED],
+      );
+    });
+
+    it('shares the hold budget with the pre-flight rather than doubling it', async () => {
+      dispatchService.dispatch.mockRejectedValue(
+        new AppConflictException('error.delivery.dispatch.unavailable'),
+      );
+
+      await processor.process(kickoffJob({ preflightAttempt: 2 }));
+
+      expect(simulationService.deferKickoff).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryId: 'd-1' }),
+        3,
+      );
+    });
+
+    it('never leaves the job to fail — the delivery must not stay SCHEDULED', async () => {
+      dispatchService.dispatch.mockRejectedValue(
+        new AppConflictException('error.delivery.dispatch.unavailable'),
+      );
+
+      // A rejected job burns 5 attempts in ~15s against a fleet that frees up on
+      // the timescale of a flight, then goes to onFailed, which only logs.
+      await expect(processor.process(kickoffJob())).resolves.toBeUndefined();
+      expect(simulationService.startSimulation).not.toHaveBeenCalled();
     });
   });
 

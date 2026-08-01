@@ -139,7 +139,7 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 9 | Realtime durability | M | backend + admin | ◐ Backend done; admin socket + hot-store drain deferred (2026-07-26) |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
 | 11 | Drone entity + dispatch engine | L | backend + admin | ◐ Entity, claim, fleet surface + dispatch engine done; per-aircraft credentials + saturation queue remain (2026-08-01) |
-| 12 | Flight-ops layer | M | backend + admin | ◐ Flight log, energy management + pre-flight re-check done; airspace-as-data, ops console, incidents, audit log remain (2026-08-01) |
+| 12 | Flight-ops layer | M | backend + admin | ◐ Flight log, energy management, pre-flight re-check + claim-release re-check done; airspace-as-data, ops console, incidents, audit log remain (2026-08-01) |
 
 Status values: `☐ Not started` · `◐ In progress` · `☑ Done` · `⊘ Skipped (reason)`
 
@@ -563,6 +563,14 @@ Real findings that did not make the critical path. Pull into a phase when releva
 - B2B/merchant platform (blocked on an Organization primitive above User).
 
 **Correctness / quality**
+- **Battery state-of-charge only ever decreases — blocks `LIVE_DISPATCH` entirely.** `drones.batteryPercent`
+  became telemetry-written and a hard dispatch precondition (`gte: 25`, plus a linear term in
+  `usableRangeKm`) in Phase 12 increment 1. Nothing raises it: `DroneStatus.CHARGING` has zero call
+  sites and the only increase is a human `PATCH /admin/drones/:id`. A live fleet strands itself after
+  a few flights — every booking gets "try again shortly" while the aircraft sit on chargers.
+  `CreateDroneDto` also has no `batteryPercent` (and `forbidNonWhitelisted` rejects one), so a newly
+  registered airframe flies its first mission on a fabricated `@default(100)`. Needs a
+  `CHARGING → AVAILABLE` transition with a replenishment source, or a reset on release.
 - Delivery list pagination has no unique tiebreaker for `sort=title|status` on a partitioned table.
 - Signup is an account-existence oracle; `login()` returns before `bcrypt.compare` on a missing user.
 - Admin rewrites every 401 as "Your session has expired", so a wrong password reports a session expiry.
