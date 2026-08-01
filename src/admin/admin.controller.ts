@@ -99,7 +99,7 @@ export class AdminController {
     return this.admin.listDroneCommands(id);
   }
 
-// ── Fleet ──
+  // ── Fleet ──
   @Get('drones')
   listDrones(@Query() query: AdminDroneQueryDto) {
     return this.admin.listDrones(query);
