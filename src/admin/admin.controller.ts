@@ -16,12 +16,15 @@ import { PaginationDto } from '../common/dto/pagination.dto';
 import { AdminService } from './admin.service';
 import {
   AdminDeliveryQueryDto,
+  AdminDroneQueryDto,
   AdminUserQueryDto,
+  CreateDroneDto,
   CreatePromoDto,
   FailDeliveryDto,
   IssueCommandDto,
   RefundDto,
   SetRoleDto,
+  UpdateDroneDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
 import {
@@ -94,6 +97,27 @@ export class AdminController {
   @ApiOkResponse({ type: [DroneCommandResponseDto] })
   listCommands(@Param('id') id: string) {
     return this.admin.listDroneCommands(id);
+  }
+
+// ── Fleet ──
+  @Get('drones')
+  listDrones(@Query() query: AdminDroneQueryDto) {
+    return this.admin.listDrones(query);
+  }
+
+  @Post('drones')
+  createDrone(@Body() dto: CreateDroneDto) {
+    return this.admin.createDrone(dto);
+  }
+
+  @Get('drones/:id')
+  getDrone(@Param('id') id: string) {
+    return this.admin.getDrone(id);
+  }
+
+  @Patch('drones/:id')
+  updateDrone(@Param('id') id: string, @Body() dto: UpdateDroneDto) {
+    return this.admin.updateDrone(id, dto);
   }
 
   // ── Promo codes ──
