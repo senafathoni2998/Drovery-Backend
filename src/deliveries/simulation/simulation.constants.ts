@@ -82,6 +82,12 @@ export interface KickoffJobData extends TraceCarrier {
   deliveryCreatedAt: string;
   userId: string;
   coords: DeliveryCoords;
+  // How many times the pre-flight check has already held this launch on the
+  // ground. Rides in the PAYLOAD rather than in worker memory so the retry budget
+  // survives a restart — otherwise a redeploy resets it and a delivery grounded by
+  // weather is held forever, which is the failure this budget exists to prevent.
+  // Absent on the original enqueue (≡ 0).
+  preflightAttempt?: number;
 }
 
 export interface StageJobData extends TraceCarrier {
