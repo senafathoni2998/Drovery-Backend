@@ -97,6 +97,34 @@ describe('DispatchService', () => {
       });
     });
 
+    it('reuses the airframe it already holds for this delivery', async () => {
+      // Re-entrancy, not an optimisation. `activeDeliveryId` is UNIQUE, so a caller
+      // that claimed and then died before recording it (a BullMQ retry, a create()
+      // re-run) would otherwise select a DIFFERENT airframe and hit an unhandled
+      // P2002 on every attempt — a recoverable blip turned into a permanent failure,
+      // with the first aircraft held out of service for good.
+      prisma.drone.findFirst.mockResolvedValue({ id: 'd9' });
+
+      await expect(service.dispatch(req())).resolves.toEqual({
+        trackingSource: 'LIVE',
+        droneId: 'd9',
+      });
+      expect(prisma.drone.findMany).not.toHaveBeenCalled();
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('looks for an existing claim by delivery, not by drone', async () => {
+      prisma.drone.findMany.mockResolvedValue([aircraft()]);
+      prisma.drone.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.dispatch(req());
+
+      expect(prisma.drone.findFirst).toHaveBeenCalledWith({
+        where: { activeDeliveryId: 'del-1' },
+        select: { id: true },
+      });
+    });
+
     it('puts every precondition in the claim WHERE, not in a prior read', () => {
       // A read-then-write lets two concurrent bookings both "win". The conditional
       // update is what makes the loser match zero rows.

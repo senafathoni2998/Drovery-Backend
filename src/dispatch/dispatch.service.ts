@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { DroneStatus, TrackingSource } from '@prisma/client';
 
 import {
@@ -39,6 +39,30 @@ export type ReleaseOutcome =
   | 'RETURN_TO_FLEET'
   /** The aircraft is implicated — lost comms, mechanical. A human looks at it. */
   | 'GROUND_FOR_INSPECTION';
+
+/** No airframe in the fleet can lift this payload — waiting will not change it. */
+export const DISPATCH_NO_CAPACITY_KEY = 'error.delivery.dispatch.no_capacity';
+/** Nothing free right now: busy, flat, or parked too far away. Transient. */
+export const DISPATCH_UNAVAILABLE_KEY = 'error.delivery.dispatch.unavailable';
+
+/**
+ * Can waiting fix this refusal?
+ *
+ * The same transient/permanent split the pre-flight check makes, asked of the
+ * FLEET instead of the weather — so a caller that can hold a launch on the
+ * ground (the kickoff job) can hold it for a saturated fleet too, and give up
+ * immediately on one that will never have a big enough aircraft. Lives next to
+ * the throw so the two cannot drift apart.
+ */
+export function isPermanentDispatchRefusal(error: unknown): boolean {
+  if (!(error instanceof HttpException)) return false;
+  const body = error.getResponse();
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { messageKey?: string }).messageKey === DISPATCH_NO_CAPACITY_KEY
+  );
+}
 
 /**
  * Chooses which aircraft flies a delivery, and claims it.
@@ -151,6 +175,24 @@ export class DispatchService {
     route: MissionRoute,
     payloadKg: number,
   ): Promise<string> {
+    // Re-entrant by design. `activeDeliveryId` is UNIQUE, so a caller that claimed
+    // and then died before recording the claim — a BullMQ retry, a re-run create()
+    // — would otherwise rank a DIFFERENT airframe, and writing a second claim for
+    // the same delivery raises P2002. That turns a recoverable blip into a
+    // deterministic failure on every remaining attempt, with the first aircraft
+    // held out of service permanently. If this delivery already holds one, that IS
+    // its aircraft.
+    const held = await this.prisma.drone.findFirst({
+      where: { activeDeliveryId: deliveryId },
+      select: { id: true },
+    });
+    if (held) {
+      this.logger.log(
+        `Delivery ${deliveryId} already holds drone ${held.id} — reusing the claim`,
+      );
+      return held.id;
+    }
+
     const available = await this.prisma.drone.findMany({
       where: {
         airworthy: true,
@@ -236,7 +278,7 @@ export class DispatchService {
         this.logger.warn(
           `No airworthy aircraft in the fleet can lift ${payloadKg} kg`,
         );
-        return new AppConflictException('error.delivery.dispatch.no_capacity', {
+        return new AppConflictException(DISPATCH_NO_CAPACITY_KEY, {
           weightKg: payloadKg,
         });
       }
@@ -245,7 +287,7 @@ export class DispatchService {
     this.logger.warn(
       `Fleet saturated: no aircraft could be claimed for a ${payloadKg} kg delivery`,
     );
-    return new AppConflictException('error.delivery.dispatch.unavailable');
+    return new AppConflictException(DISPATCH_UNAVAILABLE_KEY);
   }
 
   /**
