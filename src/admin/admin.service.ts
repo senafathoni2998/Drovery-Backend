@@ -22,6 +22,9 @@ import {
 import { WalletService } from '../wallet/wallet.service';
 import {
   AdminDeliveryQueryDto,
+  AdminDroneQueryDto,
+  CreateDroneDto,
+  UpdateDroneDto,
   AdminTicketQueryDto,
   AdminUserQueryDto,
   CreatePromoDto,
@@ -282,6 +285,90 @@ export class AdminService {
       `admin refunded ${refundAmount} for delivery ${deliveryId}`,
     );
     return { deliveryId, refunded: refundAmount };
+  }
+
+// ── Fleet ──
+
+  /**
+   * The fleet registry. Until this existed there was no way to create a Drone at all,
+   * which — once assignedDroneId became a foreign key — meant a LIVE delivery could
+   * not be created by anyone. SIMULATED (the default) was unaffected.
+   */
+  async listDrones(query: AdminDroneQueryDto) {
+    const q = query.q?.trim();
+    const where: Prisma.DroneWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(q
+        ? {
+            OR: [
+              { serial: { contains: q, mode: 'insensitive' as const } },
+              { model: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await this.prisma.readWithFallback((c) =>
+      c.$transaction([
+        c.drone.findMany({
+          where,
+          orderBy: [{ status: 'asc' }, { serial: 'asc' }],
+          skip: query.skip,
+          take: query.limit,
+        }),
+        c.drone.count({ where }),
+      ]),
+    );
+    return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
+  }
+
+  async getDrone(id: string) {
+    const drone = await this.prisma.drone.findUnique({ where: { id } });
+    if (!drone) {
+      throw new AppNotFoundException('error.admin.drone.not_found', { id });
+    }
+    return drone;
+  }
+
+  /** Register an aircraft. `serial` is the physical marking and must be unique. */
+  async createDrone(dto: CreateDroneDto) {
+    try {
+      return await this.prisma.drone.create({ data: { ...dto } });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new AppConflictException('error.admin.drone.serial_exists', {
+          serial: dto.serial,
+        });
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Update an aircraft — including grounding it.
+   *
+   * Grounding does NOT recall a drone that is already flying: `airworthy` and
+   * `status` are dispatch preconditions, so clearing them stops the NEXT claim. A
+   * drone in the air is recalled with a RETURN_TO_BASE command, which is a different
+   * operation with different safety semantics.
+   */
+  async updateDrone(id: string, dto: UpdateDroneDto) {
+    await this.getDrone(id);
+    const drone = await this.prisma.drone.update({
+      where: { id },
+      data: {
+        ...dto,
+        ...(dto.maintenanceDueAt
+          ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
+          : {}),
+      },
+    });
+    this.logger.log(
+      `drone ${drone.serial} updated (status=${drone.status} airworthy=${drone.airworthy})`,
+    );
+    return drone;
   }
 
   // ── Drone commands (backend → drone) ──
