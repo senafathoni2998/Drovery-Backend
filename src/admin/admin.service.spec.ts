@@ -223,6 +223,86 @@ describe('AdminService', () => {
     });
   });
 
+  describe('fleet', () => {
+    it('registers an aircraft', async () => {
+      prisma.drone.create.mockResolvedValue({ id: 'dr-1', serial: 'X1' });
+
+      const out = await service.createDrone({
+        serial: 'X1',
+        model: 'Drovery X1',
+        maxPayloadKg: 2,
+        homeBaseLat: -6.9,
+        homeBaseLng: 107.6,
+      } as any);
+
+      expect(prisma.drone.create).toHaveBeenCalled();
+      expect(out).toEqual({ id: 'dr-1', serial: 'X1' });
+    });
+
+    it('rejects a duplicate serial with a conflict, not a raw Prisma error', async () => {
+      const dup = Object.assign(
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'x',
+        }),
+      );
+      prisma.drone.create.mockRejectedValue(dup);
+
+      await expect(
+        service.createDrone({
+          serial: 'X1',
+          model: 'm',
+          maxPayloadKg: 1,
+          homeBaseLat: 0,
+          homeBaseLng: 0,
+        } as any),
+      ).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('404s an unknown drone rather than returning null', async () => {
+      prisma.drone.findUnique.mockResolvedValue(null);
+      await expect(service.getDrone('nope')).rejects.toMatchObject({
+        status: 404,
+      });
+    });
+
+    it('grounds an aircraft', async () => {
+      // Grounding clears a DISPATCH precondition — it stops the next claim. It does
+      // not recall a drone already in the air; that is a RETURN_TO_BASE command.
+      prisma.drone.findUnique.mockResolvedValue({ id: 'dr-1', serial: 'X1' });
+      prisma.drone.update.mockResolvedValue({
+        id: 'dr-1',
+        serial: 'X1',
+        airworthy: false,
+        status: 'GROUNDED',
+      });
+
+      await service.updateDrone('dr-1', { airworthy: false } as any);
+
+      expect(prisma.drone.update).toHaveBeenCalledWith({
+        where: { id: 'dr-1' },
+        data: { airworthy: false },
+      });
+    });
+
+    it('searches the registry by serial and model', async () => {
+      prisma.readWithFallback.mockResolvedValue([[], 0]);
+
+      await service.listDrones({ q: 'X1', limit: 20 } as any);
+
+      const cb = prisma.readWithFallback.mock.calls[0][0];
+      const client = {
+        $transaction: jest.fn().mockResolvedValue([[], 0]),
+        drone: { findMany: jest.fn(), count: jest.fn() },
+      };
+      cb(client);
+      const fields = client.drone.findMany.mock.calls[0][0].where.OR.map(
+        (c: Record<string, unknown>) => Object.keys(c)[0],
+      );
+      expect(fields).toEqual(['serial', 'model']);
+    });
+  });
+
   describe('promo CRUD', () => {
     it('creates a promo (uppercased code)', async () => {
       prisma.promoCode.create.mockResolvedValue({ id: 'p-1' });
