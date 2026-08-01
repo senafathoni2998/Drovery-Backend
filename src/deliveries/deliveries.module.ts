@@ -31,6 +31,7 @@ import { MqttTelemetrySubscriber } from './telemetry/mqtt-telemetry.subscriber';
 import { MqttCommandAckSubscriber } from './commands/mqtt-command-ack.subscriber';
 import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryService } from './telemetry/telemetry.service';
+import { FlightRecorderService } from './telemetry/flight-recorder.service';
 import { CommandController } from './commands/command.controller';
 import { DroneCommandService } from './commands/drone-command.service';
 import {
@@ -78,6 +79,7 @@ const RUN_PROCESSOR = IS_WORKER_TIER;
     TrackingPublisher,
     // Live drone telemetry ingest core (transport-agnostic) + its gateway auth.
     TelemetryService,
+    FlightRecorderService,
     DroneAuthGuard,
     // Backend → drone command outbox (issue/poll/ack). Provided on every tier so
     // AdminService (api) and the controller can reuse it.
