@@ -8,7 +8,6 @@ import {
 import {
   DeliveryFailureReason,
   DeliveryStatus,
-  DroneStatus,
   Prisma,
   TrackingSource,
 } from '@prisma/client';
@@ -25,6 +24,7 @@ import {
 } from '../common/exceptions/app-exception';
 import { haversineKm } from '../common/geo-distance';
 import { assertWeightWithinCap } from '../common/package-limits';
+import { DispatchService, ReleaseOutcome } from '../dispatch/dispatch.service';
 import { GeoService } from '../geo/geo.service';
 import { I18nService } from '../i18n/i18n.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -110,6 +110,15 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  */
 const MAX_COORD_DEVIATION_KM = 1;
 
+/**
+ * What happens to the claimed airframe when a delivery terminates.
+ *
+ * `STILL_AIRBORNE` is the one that is easy to get wrong, and was: a delivery can
+ * reach a terminal-for-the-customer state (RETURNING) while the aircraft is still
+ * in the air. Releasing it there hands a flying drone to the next booking.
+ */
+type AircraftDisposition = ReleaseOutcome | 'STILL_AIRBORNE';
+
 @Injectable()
 export class DeliveriesService {
   private readonly logger = new Logger(DeliveriesService.name);
@@ -127,6 +136,7 @@ export class DeliveriesService {
     private readonly notificationsService: NotificationsService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly i18n: I18nService,
+    private readonly dispatchService: DispatchService,
     // Optional so the many specs that build DeliveriesService don't all need it; the
     // app always provides it (DeliveriesModule). Freshens the poll under the hot-store.
     @Optional() private readonly trackingHotStore?: TrackingHotStore,
@@ -171,71 +181,18 @@ export class DeliveriesService {
   }
 
   /**
-   * Claim a real aircraft for a LIVE delivery, atomically.
+   * Undo a dispatch claim when the create that made it never committed.
    *
-   * `assignedDroneId` is now a foreign key, so a LIVE delivery cannot be created
-   * without a registered airframe — which is the correct constraint: you cannot
-   * dispatch what you do not have. It used to mint `drone-${uuidv4()}`, a string
-   * referencing nothing, so the system believed it had assigned an aircraft that
-   * did not exist and nothing stopped two deliveries binding the same one.
-   *
-   * The claim is a CONDITIONAL update on the drone row, not a read-then-write: the
-   * `WHERE` carries every precondition, so two concurrent creates racing for the
-   * last available aircraft cannot both win — the loser matches 0 rows. `drones` is
-   * not partitioned, which is exactly why the claim lives there and not on
-   * `deliveries` (a partitioned table cannot hold a unique index that omits its
-   * partition key).
+   * No-op for a SIMULATED delivery (nothing was claimed). Best-effort: it runs on
+   * a path that is already throwing, and turning a create failure into a DIFFERENT
+   * failure would hide the real one.
    */
-  private async claimDrone(
-    dto: CreateDeliveryDto,
+  private async releaseClaimedAircraft(
+    droneId: string | null,
     deliveryId: string,
-  ): Promise<string> {
-    if (!dto.droneId) {
-      throw new AppBadRequestException('error.delivery.drone.required');
-    }
-
-    const { count } = await this.prisma.drone.updateMany({
-      where: {
-        id: dto.droneId,
-        airworthy: true,
-        status: DroneStatus.AVAILABLE,
-        activeDeliveryId: null,
-        maxPayloadKg: { gte: dto.packageWeight },
-      },
-      data: {
-        activeDeliveryId: deliveryId,
-        status: DroneStatus.IN_FLIGHT,
-      },
-    });
-
-    if (count === 0) {
-      // Deliberately one message for every reason. Which aircraft is airworthy,
-      // charged or already flying is fleet information, and this endpoint is
-      // reachable by any authenticated customer.
-      throw new AppConflictException('error.delivery.drone.unavailable', {
-        droneId: dto.droneId,
-      });
-    }
-
-    return dto.droneId;
-  }
-
-  /**
-   * Release the aircraft back to the fleet. Idempotent and scoped to THIS delivery's
-   * claim, so a late release can never free a drone that has since been claimed by
-   * another delivery.
-   */
-  private async releaseDrone(deliveryId: string): Promise<void> {
-    await this.prisma.drone
-      .updateMany({
-        where: { activeDeliveryId: deliveryId },
-        data: { activeDeliveryId: null, status: DroneStatus.AVAILABLE },
-      })
-      .catch((e) =>
-        this.logger.warn(
-          `drone release failed for ${deliveryId}: ${(e as Error).message}`,
-        ),
-      );
+  ): Promise<void> {
+    if (!droneId) return;
+    await this.dispatchService.release(deliveryId, 'RETURN_TO_FLEET');
   }
 
   async create(userId: string, dto: CreateDeliveryDto) {
@@ -302,17 +259,6 @@ export class DeliveriesService {
       });
     }
 
-    // A LIVE delivery is driven by a real drone reporting its lifecycle now — it
-    // starts no simulation. Scheduling a future LIVE delivery has no sim kickoff
-    // to defer (and statusesBefore(PENDING) is empty, so telemetry couldn't lift
-    // it out of SCHEDULED), so reject the combination rather than strand it.
-    const isLive = dto.trackingSource === 'LIVE';
-    if (isLive && isScheduled) {
-      throw new AppBadRequestException(
-        'error.delivery.schedule.live_not_allowed',
-      );
-    }
-
     // Apply an optional promo code. validateForRedeem throws (422/409) BEFORE any
     // write; the actual redemption is co-committed with the delivery below so a
     // code can never be over-redeemed. No code → charge the full price.
@@ -354,17 +300,28 @@ export class DeliveriesService {
     // handoff). The drone won't finalize as DELIVERED without it.
     const handoffCode = this.generateHandoffCode();
 
+    // Who flies this — decided by the SERVER, not the request body. `trackingSource`
+    // and `droneId` used to be optional fields on the public create DTO, so any
+    // authenticated customer could declare their delivery LIVE and name the airframe
+    // that would carry it; the engine now picks one that can actually fly the route
+    // and claims it atomically, or refuses the booking.
+    //
+    // Claimed as LATE as possible: everything above (geocode, pricing, promo,
+    // wallet) can reject, and each of those would otherwise strand an aircraft.
+    const dispatched = await this.dispatchService.dispatch({
+      deliveryId,
+      payloadKg: dto.packageWeight,
+      route: coords,
+      isScheduled,
+    });
+
     const deliveryData = {
       id: deliveryId,
       trackingId,
       userId,
       status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,
-      trackingSource: isLive ? TrackingSource.LIVE : TrackingSource.SIMULATED,
-      // A LIVE delivery is bound to exactly one REGISTERED aircraft, claimed
-      // atomically below. This used to mint `drone-${uuidv4()}` — an id referencing
-      // nothing — so the platform believed it had dispatched an aircraft that did
-      // not exist, and two deliveries could hold the same one.
-      assignedDroneId: isLive ? await this.claimDrone(dto, deliveryId) : null,
+      trackingSource: dispatched.trackingSource,
+      assignedDroneId: dispatched.droneId,
       scheduledFor: isScheduled ? scheduledFor : null,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
@@ -512,6 +469,11 @@ export class DeliveriesService {
           // Debit-first: the reservations committed in their own txns but the delivery
           // never will — reverse them (idempotent) so the credits/promo aren't stranded.
           if (debitFirst) await this.compensateReservations(deliveryId);
+          // Same reasoning for the airframe. The claim committed on the `drones`
+          // table (a separate, non-partitioned row) so this rollback does not undo
+          // it, and every later release is keyed on a delivery row that will never
+          // exist — the aircraft would be held out of service permanently.
+          await this.releaseClaimedAircraft(dispatched.droneId, deliveryId);
           throw error;
         }
         deliveryData.trackingId = uuidv4().slice(0, 8).toUpperCase();
@@ -521,6 +483,7 @@ export class DeliveriesService {
     if (!delivery) {
       // Retries exhausted on collisions: same orphaned-reservation cleanup as above.
       if (debitFirst) await this.compensateReservations(deliveryId);
+      await this.releaseClaimedAircraft(dispatched.droneId, deliveryId);
       throw new AppConflictException('error.delivery.tracking_id_alloc_failed');
     }
 
@@ -549,7 +512,7 @@ export class DeliveriesService {
     // producer can never both drive one delivery. Otherwise either defer the
     // lifecycle to the pickup window (a single kickoff job) or start it now.
     // Best-effort: a queue/Redis hiccup must not fail creation.
-    if (!isLive) {
+    if (dispatched.trackingSource !== TrackingSource.LIVE) {
       try {
         if (isScheduled) {
           await this.simulationService.scheduleKickoff(
@@ -1009,7 +972,15 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
+    // A drone-fault failure means the aircraft is implicated — lost comms, a
+    // mechanical abort. It does not go back into the dispatchable pool on the
+    // strength of the same telemetry silence that got the delivery reaped; a human
+    // signs it off. Customer-fault failures (nobody at the door) leave it airworthy.
+    await this.cleanupAfterTermination(
+      deliveryId,
+      isDroneFaultReason(reason),
+      isDroneFaultReason(reason) ? 'GROUND_FOR_INSPECTION' : 'RETURN_TO_FLEET',
+    );
     await this.announceException(
       deliveryId,
       DeliveryStatus.DELIVERY_FAILED,
@@ -1033,7 +1004,15 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.RETURNING, failureReason: reason },
     });
     if (count === 0) return false;
-    await this.cleanupAfterTermination(deliveryId, isDroneFaultReason(reason));
+    // The aircraft KEEPS its claim here. RETURNING closes the delivery's money side
+    // but the drone is airborne with the parcel; it is handed back when the return
+    // flight lands (completeReturnToBase), and grounded then, because whatever
+    // aborted the drop is a reason to look at it before it flies again.
+    await this.cleanupAfterTermination(
+      deliveryId,
+      isDroneFaultReason(reason),
+      'STILL_AIRBORNE',
+    );
     await this.announceException(deliveryId, DeliveryStatus.RETURNING, reason);
     this.logger.log(`Delivery ${deliveryId} → RETURNING (${reason})`);
     return true;
@@ -1044,6 +1023,11 @@ export class DeliveriesService {
    * forward step OFF the happy-path order; non-resurrectable (re-firing against
    * the terminal matches 0 rows). No second cleanup — the refund already ran at
    * beginReturnToBase; the failureReason set at the abort is preserved.
+   *
+   * This IS where the aircraft comes back, though: beginReturnToBase deliberately
+   * left the claim in place because the drone was still flying. It has now landed,
+   * and it is grounded rather than returned to the pool — a return-to-base is an
+   * aborted mission, and the thing that aborted it has not been diagnosed.
    */
   async completeReturnToBase(deliveryId: string): Promise<boolean> {
     const { count } = await this.prisma.delivery.updateMany({
@@ -1051,6 +1035,7 @@ export class DeliveriesService {
       data: { status: DeliveryStatus.RETURNED_TO_BASE },
     });
     if (count === 0) return false;
+    await this.dispatchService.release(deliveryId, 'GROUND_FOR_INSPECTION');
     await this.announceException(deliveryId, DeliveryStatus.RETURNED_TO_BASE);
     this.logger.log(`Delivery ${deliveryId} → RETURNED_TO_BASE`);
     return true;
@@ -1097,10 +1082,19 @@ export class DeliveriesService {
   private async cleanupAfterTermination(
     deliveryId: string,
     refundCredits: boolean,
+    aircraft: AircraftDisposition = 'RETURN_TO_FLEET',
   ): Promise<void> {
     // Give the aircraft back first — a terminated delivery must never keep holding
     // one, or the fleet leaks capacity one stuck delivery at a time.
-    await this.releaseDrone(deliveryId);
+    //
+    // Except when it is still flying. RETURNING is a terminal outcome for the
+    // DELIVERY (the customer is refunded, the money side is closed) but not for the
+    // aircraft: it is airborne with the parcel, heading home, and the claim is the
+    // only thing stopping the dispatch engine from selecting it for a new booking
+    // mid-flight. It is released when the return flight actually lands.
+    if (aircraft !== 'STILL_AIRBORNE') {
+      await this.dispatchService.release(deliveryId, aircraft);
+    }
     await this.simulationService
       .stopSimulation(deliveryId)
       .catch(() => undefined);
@@ -1294,6 +1288,13 @@ export class DeliveriesService {
         'error.delivery.handoff.already_completed',
       );
     }
+
+    // The mission is over — give the aircraft back. This is the SUCCESS path, and
+    // it released nothing: every terminal path had a release except the one that
+    // actually happens, so a healthy fleet lost one airframe per completed
+    // delivery until every drone was permanently "in flight" and dispatch had
+    // nothing left to assign. Runs behind the single-winner CAS, so exactly once.
+    await this.dispatchService.release(deliveryId, 'RETURN_TO_FLEET');
 
     // Record proof of delivery now that the recipient has confirmed receipt
     // (best-effort — idempotent and non-fatal).
