@@ -2,12 +2,15 @@ import {
   DeliveryFailureReason,
   DeliveryStatus,
   DroneCommandType,
+  DroneStatus,
   PromoDiscountType,
   Role,
   SupportTicketStatus,
 } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
+  IsDateString,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -15,6 +18,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -199,4 +203,87 @@ export class AdminUserQueryDto extends PaginationDto {
 export class SetRoleDto {
   @IsEnum(Role)
   role: Role;
+}
+
+// ── Fleet ──
+
+export class AdminDroneQueryDto extends PaginationDto {
+  @IsOptional()
+  @IsEnum(DroneStatus)
+  status?: DroneStatus;
+
+  /** Free-text over serial and model. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+}
+
+/**
+ * Registering a real aircraft. Payload class and home base are REQUIRED because
+ * dispatch reasons about both — an aircraft with unknown capability is one that can
+ * never be safely claimed, which is exactly the state the backfilled legacy rows are
+ * parked in.
+ */
+export class CreateDroneDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  serial: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  model: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  firmwareVersion?: string;
+
+  @IsNumber()
+  @IsPositive()
+  maxPayloadKg: number;
+
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  homeBaseLat: number;
+
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  homeBaseLng: number;
+}
+
+/** Everything an operator can change after registration. */
+export class UpdateDroneDto {
+  @IsOptional()
+  @IsEnum(DroneStatus)
+  status?: DroneStatus;
+
+  /** Ground an airframe after an incident or a lapsed inspection. */
+  @IsOptional()
+  @IsBoolean()
+  airworthy?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  firmwareVersion?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  maxPayloadKg?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  batteryPercent?: number;
+
+  @IsOptional()
+  @IsDateString()
+  maintenanceDueAt?: string;
 }
