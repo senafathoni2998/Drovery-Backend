@@ -63,6 +63,90 @@ describe('ServiceabilityService', () => {
     }
   });
 
+  describe('route length — the physics bound', () => {
+    const withGlobal = async (fn: () => Promise<void>) => {
+      const prev = process.env.SERVICE_AREA_GLOBAL;
+      process.env.SERVICE_AREA_GLOBAL = 'true';
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.SERVICE_AREA_GLOBAL;
+        else process.env.SERVICE_AREA_GLOBAL = prev;
+      }
+    };
+
+    it('rejects Jakarta → London, which global mode used to wave through', async () => {
+      // The exact hole: SERVICE_AREA_GLOBAL makes the area check vacuous, so an
+      // ~11,000 km route was serviceable, priced, and accepted for dispatch.
+      await withGlobal(async () => {
+        const r = await service.checkServiceability(
+          -6.2088,
+          106.8456,
+          51.5074,
+          -0.1278,
+        );
+        expect(r.serviceable).toBe(false);
+        expect(r.codes).toContain('ROUTE_TOO_LONG');
+        expect(r.weatherHold).toBe(false); // hard, not retryable
+        expect(r.params).toMatchObject({ maxKm: expect.any(Number) });
+      });
+    });
+
+    it('rejects a too-long route even when BOTH endpoints are in a real service area', async () => {
+      // The geofence does not save you either: the two configured hubs are ~120 km
+      // apart, so a Jakarta pickup with a Bandung dropoff is in-area at both ends
+      // and still unflyable by any battery-electric multirotor.
+      const r = await service.checkServiceability(
+        -6.2088,
+        106.8456,
+        -6.9125,
+        107.611,
+      );
+      expect(r.serviceable).toBe(false);
+      expect(r.codes).toContain('ROUTE_TOO_LONG');
+    });
+
+    it('is checked BEFORE the weather call — a physically impossible route costs no I/O', async () => {
+      await withGlobal(async () => {
+        await service.checkServiceability(-6.2088, 106.8456, 51.5074, -0.1278);
+        expect(weather.getConditions).not.toHaveBeenCalled();
+      });
+    });
+
+    it('honors MAX_ROUTE_KM for a longer-range fleet', async () => {
+      const prev = process.env.MAX_ROUTE_KM;
+      process.env.MAX_ROUTE_KM = '200';
+      try {
+        // Jakarta → Bandung, rejected at the 50 km default, allowed at 200.
+        const r = await service.checkServiceability(
+          -6.2088,
+          106.8456,
+          -6.9125,
+          107.611,
+        );
+        expect(r.codes).not.toContain('ROUTE_TOO_LONG');
+      } finally {
+        if (prev === undefined) delete process.env.MAX_ROUTE_KM;
+        else process.env.MAX_ROUTE_KM = prev;
+      }
+    });
+
+    it('ignores a garbage MAX_ROUTE_KM rather than disabling the bound', async () => {
+      // An unparseable or non-positive override must not silently become "no limit".
+      for (const bad of ['banana', '0', '-10', '']) {
+        process.env.MAX_ROUTE_KM = bad;
+        const r = await service.checkServiceability(
+          -6.2088,
+          106.8456,
+          -6.9125,
+          107.611,
+        );
+        expect(r.codes).toContain('ROUTE_TOO_LONG');
+      }
+      delete process.env.MAX_ROUTE_KM;
+    });
+  });
+
   it('rejects an endpoint inside a no-fly zone (CGK airport)', async () => {
     const r = await service.checkServiceability(
       -6.1256,
