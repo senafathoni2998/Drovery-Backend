@@ -88,6 +88,63 @@ describe('SimulationService', () => {
     });
   });
 
+  describe('deferKickoff', () => {
+    const held = {
+      deliveryId: 'd-11',
+      deliveryCreatedAt: '2026-06-01T00:00:00.000Z',
+      userId: 'u-1',
+      coords: { fromLat: -6.9, fromLng: 107.6, toLat: -6.92, toLng: 107.62 },
+    };
+
+    it('uses a NEW jobId per attempt, or the hold is silently dropped', async () => {
+      // The original `${deliveryId}-kickoff` id is what makes the first enqueue
+      // idempotent. Reusing it here would be deduped against the job currently
+      // being processed — the delivery would never be re-checked and would sit in
+      // SCHEDULED forever, which is exactly the outcome the hold exists to avoid.
+      await service.deferKickoff(held as never, 1);
+      await service.deferKickoff({ ...held, preflightAttempt: 1 } as never, 2);
+
+      const ids = queue.add.mock.calls.map((c) => c[2].jobId);
+      expect(ids).toEqual(['d-11-kickoff-r1', 'd-11-kickoff-r2']);
+      expect(ids).not.toContain('d-11-kickoff');
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('carries the attempt counter in the PAYLOAD so a restart cannot reset it', async () => {
+      // In worker memory a redeploy would zero the budget and a weather-grounded
+      // delivery would be held indefinitely.
+      await service.deferKickoff(held as never, 3);
+
+      expect(queue.add.mock.calls[0][1]).toMatchObject({
+        deliveryId: 'd-11',
+        preflightAttempt: 3,
+      });
+    });
+
+    it('preserves the rest of the job payload across the hold', async () => {
+      await service.deferKickoff(held as never, 1);
+
+      expect(queue.add.mock.calls[0][1]).toMatchObject({
+        deliveryCreatedAt: held.deliveryCreatedAt,
+        userId: 'u-1',
+        coords: held.coords,
+      });
+    });
+
+    it('waits long enough for the condition to actually change', async () => {
+      await service.deferKickoff(held as never, 1);
+
+      // A 60-second retry would burn the whole budget on a squall line that takes
+      // tens of minutes to pass.
+      expect(queue.add.mock.calls[0][2].delay).toBeGreaterThanOrEqual(60_000);
+    });
+
+    it('enqueues it as a kickoff, not some other job type', async () => {
+      await service.deferKickoff(held as never, 1);
+      expect(queue.add.mock.calls[0][0]).toBe('kickoff');
+    });
+  });
+
   describe('stopSimulation', () => {
     it("removes the delivery's kickoff, stage and position jobs", async () => {
       await service.stopSimulation('d-1');
