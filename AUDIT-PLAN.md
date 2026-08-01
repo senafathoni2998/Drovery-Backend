@@ -138,7 +138,7 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 8 | Alerting & backups | S | backend/ops | ☑ Done (2026-07-26) |
 | 9 | Realtime durability | M | backend + admin | ◐ Backend done; admin socket + hot-store drain deferred (2026-07-26) |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
-| 11 | Drone entity + dispatch engine | L | backend + admin | ◐ Entity + claim done; dispatch engine + admin surface remain (2026-08-01) |
+| 11 | Drone entity + dispatch engine | L | backend + admin | ◐ Entity + claim + fleet surface done; dispatch engine remains (2026-08-01) |
 | 12 | Flight-ops layer | M | backend + admin | ☐ Not started |
 
 Status values: `☐ Not started` · `◐ In progress` · `☑ Done` · `⊘ Skipped (reason)`

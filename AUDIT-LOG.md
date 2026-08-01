@@ -938,3 +938,87 @@ to be reachable at `localhost:5432`, so rather than hand-writing SQL blind:
 - **Phase 12** (flight ops) depends on all of the above.
 - **Phase 10** remains blocked on Stripe test keys.
 - **Seven branches stacked and unmerged.** This is now a real risk, not a nag.
+
+---
+
+## Phase 11 — INCREMENT 2: admin fleet surface — DONE
+**Date:** 2026-08-01
+**Session:** same session, at the user's request ("add the admin fleet surface so LIVE
+deliveries work")
+**Branches (both pushed, neither merged):**
+- backend `fix/audit-phase-11-admin-fleet` — 7 commits, stacked on `fix/audit-phase-11-drone-entity`
+- admin `fix/audit-phase-11-admin-fleet` — 7 commits, stacked on the admin `fix/audit-phase-7-admin-unblock`
+
+### Why this was urgent
+Increment 1 made `assignedDroneId` a foreign key and required a real, claimable aircraft for a
+LIVE delivery — but there was no endpoint or UI to register one. The registry was empty and
+unfillable, so **LIVE deliveries could not be created by anyone**. SIMULATED (the default, and
+what everything actually uses) was unaffected, but that was a sharp edge I left behind and it is
+now closed.
+
+### What changed
+**Backend**
+- `AdminDroneQueryDto` / `CreateDroneDto` / `UpdateDroneDto`. Payload class and home base are
+  REQUIRED at registration, because dispatch reasons about both — an aircraft with unknown
+  capability can never be safely claimed, which is exactly the state the backfilled legacy rows
+  are parked in.
+- `AdminService.listDrones` (paginated, status filter, search over serial/model),
+  `getDrone` (404s rather than returning null), `createDrone` (P2002 → a 409 naming the serial,
+  not a raw Prisma error), `updateDrone`.
+- Routes under the existing `@Roles(Role.ADMIN)` controller.
+
+**Admin console**
+- `FleetListPage` — registry table (serial, model, status, airworthy, payload, battery, active
+  delivery), a register dialog, search + status filter in the URL, and a ground / return-to-
+  service action.
+- Nav entry in `navItems.tsx`, which — because Phase 7 made the nav and the route guards derive
+  from one list — created the ADMIN route guard at the same time.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 775 tests** (increment 1 left 770)
+- admin:   tsc ✔ / lint ✔ clean / **17 files, 75 tests** (phase 7 left 74)
+
+**Proved end to end against the real database**, not just unit-tested. A throwaway script using
+the real `PrismaService`:
+1. registered an aircraft → `AVAILABLE`, `airworthy=true`
+2. claimed it with the exact `claimDrone` predicate (1.5 kg) → **CLAIMED**
+3. attempted a second claim → **REFUSED** (already flying)
+4. attempted a 5 kg payload against a 2 kg airframe → **REFUSED** (over capacity)
+5. released, grounded it, attempted another claim → **REFUSED**
+6. cleaned up.
+
+That is the whole point of the phase: an aircraft can be registered, claimed exactly once, and
+every safety precondition actually bites.
+
+### Decisions made
+- **Grounding stops the NEXT claim; it does not recall an aircraft already in the air.**
+  `airworthy` and `status` are dispatch preconditions. Recalling a flying drone is a
+  RETURN_TO_BASE command with different safety semantics, and conflating the two in one button
+  would be dangerous. The button label and the service docblock both say so.
+- **Payload and home base required, not optional-with-defaults.** A default would produce
+  plausible-looking aircraft that dispatch would happily claim. The legacy backfill deliberately
+  uses `maxPayloadKg = 0` for the opposite reason — obviously unusable rather than plausibly wrong.
+- **The empty state explains the consequence.** "No aircraft registered" alone would leave an
+  operator guessing why LIVE creates fail; it now says so and notes simulated deliveries are
+  unaffected.
+- **No `serial` edit.** It is the physical marking on the airframe; changing it in software would
+  desynchronise the registry from reality.
+
+### Left undone / follow-ups
+- **Dispatch engine** — nothing SELECTS an aircraft. The caller still names one, so a customer
+  must know a drone id. Nearest-available, out-and-back energy feasibility, saturation queue and
+  reassignment-on-unresponsive all remain.
+- **No fleet detail page** — the list has no drill-down to flight history, command log or
+  position. Phase 12 territory.
+- **Per-aircraft ingest credentials** — `ingestKeyHash` exists and is unique, but `DroneAuthGuard`
+  still checks the single shared `INGEST_API_KEY`, and nothing issues a per-aircraft key yet.
+- **`droneId`/`trackingSource` still on the customer DTO.** Blast radius is now small (it must be
+  a real, free, payload-capable aircraft, claimed atomically), but the proper fix is an
+  operator-only create path.
+- **The console page has never been opened in a browser.** It typechecks, lints and its guard is
+  tested, but no one has clicked Register.
+
+### Next
+- **Phase 12** (flight ops) now has a real fleet to build on.
+- **Phase 10** still blocked on Stripe test keys.
+- **Nine branches stacked and unmerged across two repos.**
