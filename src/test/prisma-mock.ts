@@ -14,6 +14,7 @@ type MockPrismaService = {
     | 'passwordResetToken'
     | 'proofOfDelivery'
     | 'emailVerificationToken'
+    | 'drone'
     | 'refreshToken'
     | 'savedAddress'
     | 'deliveryRating'
@@ -91,6 +92,7 @@ export function createMockPrismaService(): MockPrismaService {
   const mock: Record<string, unknown> = {
     user: createModelMock(),
     delivery: createModelMock(),
+    drone: createModelMock(),
     deliveryTracking: createModelMock(),
     paymentMethod: createModelMock(),
     payment: createModelMock(),
