@@ -229,6 +229,9 @@ export const en: Record<string, string> = {
     'Refund must be greater than 0 and at most the charged total.',
   'error.admin.refund.already_refunded':
     'This delivery has already been refunded.',
+  'error.admin.drone.not_found': 'Drone "{id}" not found',
+  'error.admin.drone.serial_exists':
+    'A drone with serial "{serial}" is already registered.',
   'error.admin.promo.code_exists':
     'A promo code with that code already exists.',
   'error.admin.promo.not_found': 'Promo "{id}" not found',
