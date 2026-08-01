@@ -108,6 +108,8 @@ export const ERROR_KEYS = [
   'error.admin.ticket.closed',
   'error.admin.refund.invalid_amount',
   'error.admin.refund.already_refunded',
+  'error.admin.drone.not_found',
+  'error.admin.drone.serial_exists',
   'error.admin.promo.code_exists',
   'error.admin.promo.not_found',
   'error.admin.promo.percent_range',
