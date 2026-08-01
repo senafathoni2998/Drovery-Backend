@@ -1261,3 +1261,106 @@ call after the branch.
   weather-checked at booking and then launched by a kickoff job with zero re-check. The check
   that matters is the one immediately before rotor spin-up.
 - **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 2) — Pre-flight re-check + dispatch at launch — DONE
+
+**Date:** 2026-08-01
+**Branch:** `fix/audit-phase-12-preflight` (backend)
+**Covers plan items:** 12.3 (re-gate weather and airspace at dispatch) + the Phase 11 deferral
+(kickoff-time dispatch for scheduled deliveries)
+
+### What changed
+
+**Serviceability is now re-checked immediately before launch.** It was evaluated in the quote
+and in `create()` and **never again** — a delivery booked 60 days out was weather-checked at
+BOOKING and then launched by the kickoff job into whatever was actually happening two months
+later. A forecast is not a safety control.
+
+`handleKickoff` now runs a pre-flight check with three outcomes:
+
+| Outcome | When | What happens |
+|---|---|---|
+| `LAUNCH` | serviceable | proceed |
+| `HOLD` | `weatherHold` — the only transient blocker | defer 15 min, up to 4 attempts (~1 h) |
+| `ABORT` | no-fly zone, out of area, route too long, or holds exhausted | fail + refund |
+
+The HOLD/ABORT split is exactly the `weatherHold` flag serviceability already computed. Holding
+on a permanent blocker would leave a delivery in SCHEDULED looking to its customer precisely
+like one about to happen, until it silently expired.
+
+The abort passes `[SCHEDULED]` as the CAS gate — `FAILABLE_STATUSES` is wider and covers the
+in-flight states, so passing the default would let a pre-flight abort fail a delivery that had
+already launched. Same extension point the watchdog uses.
+
+**Dispatch now happens at launch** (the Phase 11 deferral). `create()` deliberately claims no
+airframe for a scheduled delivery — you do not hold one out of service for weeks — so the claim
+happens here, **co-committed with the `SCHEDULED → PENDING` transition** so the row is never
+PENDING while still claiming SIMULATED with a live drone bound. When the CAS loses (canceled
+during pre-flight, or another replica won) the aircraft is released explicitly: the claim
+commits on a separate, non-partitioned row that nothing else rolls back.
+
+**The retry budget rides in the job payload**, not worker memory — a redeploy would otherwise
+reset it to zero and hold a weather-grounded delivery forever, which is the exact failure the
+budget exists to prevent. Each defer uses a NEW jobId (`-kickoff-r2`, `-r3`, …); reusing the
+original would be deduped against the job currently being processed and the hold would silently
+become a drop.
+
+### Verification
+```
+tsc (tsconfig.build.json): clean
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 85 passed, 85 total
+Tests:       886 passed, 886 total          (+30)
+prisma:drift-check: No difference detected
+```
+
+**Mutation testing — 12 mutations, 12 caught.** Skipping the pre-flight entirely; holding a
+hard block; aborting a weather hold; never exhausting the budget; widening the abort CAS to
+`FAILABLE_STATUSES`; dropping the release when the CAS loses; dispatching as still-scheduled;
+starting the sim for a LIVE launch; not binding the drone in the transition write; reusing the
+original jobId on a defer; dropping the attempt counter from the payload; shortening the retry
+delay to 30 s.
+
+**Three mutations initially survived**, all against `deferKickoff`, which the processor spec
+mocks and which had no test of its own. The jobId one is the serious one — reusing the original
+id turns a hold into a *silent drop*, with every other test still passing while the delivery is
+never re-checked again. Added `SimulationService.deferKickoff` tests for the jobId, the payload
+and the delay.
+
+### Decisions made
+- **Weather holds, everything else aborts.** Reusing the existing `weatherHold` flag rather
+  than inventing a second transient/permanent taxonomy that could disagree with it.
+- **A held delivery is eventually failed, with a refund.** ~1 hour, then the honest answer is
+  "we could not fly this" rather than another hour of a customer watching a delivery that is
+  never going to happen.
+- **`UNSAFE_DROP_ZONE` for a no-fly abort, `OTHER` for the rest.** Both are drone-fault under
+  `isDroneFaultReason`, so the customer is refunded — correct, since nothing here is their doing.
+- **Fail-open on an unresolved route.** No coordinates means nothing to check geometrically, and
+  `DispatchService` rejects it independently, so failing at pre-flight would just be the second
+  refusal for the same reason.
+- **Claim before the CAS, release if the CAS loses** — the same ordering rule `create()` uses,
+  for the same reason.
+
+### Deviations from the plan
+- **12.4 (airspace as data) not attempted.** Restricted airspace is still two hardcoded circles
+  with no altitude dimension. The re-check now runs at the right *time*; making the zones
+  DB-backed with time windows and altitude ceilings is its own increment, and the flight log
+  from increment 1 now records the altitude it would need.
+
+### Left undone / follow-ups
+- **No customer notification on a HOLD.** The delivery is silently held for up to an hour. The
+  abort notifies via `failExceptional`'s existing comms, but a "your delivery is waiting for
+  weather" message would be better than silence.
+- **The hold is invisible in the API.** The delivery stays SCHEDULED with no indication it has
+  been deferred; a `heldUntil` / attempt count on the row would surface it.
+- Phase 12 items 12.4–12.7 remain (airspace as data, ops console, incident management, operator
+  audit log).
+- Per-aircraft ingest credentials (11.2) and the saturation queue still outstanding.
+
+### Next
+- **Phase 12 increment 3** — airspace as data (12.4) and/or the operator audit log (12.7).
+  `forceCancel(deliveryId)` and `fail(deliveryId, reason)` still do not receive an admin id at
+  all — the actor is dropped at the controller boundary.
+- **Phase 10** still blocked on Stripe test keys.
