@@ -16,6 +16,7 @@ import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { statusesBefore } from '../simulation/simulation.constants';
 import { TrackingService } from '../tracking/tracking.service';
 import { TrackingPublisher } from '../tracking/tracking.publisher';
+import { FlightRecorderService } from './flight-recorder.service';
 import {
   DRONE_STATUS_MAX_LEN,
   EXCEPTION_PHASE_TO_STATUS,
@@ -57,6 +58,7 @@ export class TelemetryService {
     private readonly trackingService: TrackingService,
     private readonly trackingPublisher: TrackingPublisher,
     private readonly deliveriesService: DeliveriesService,
+    private readonly flightRecorder: FlightRecorderService,
     private readonly i18n: I18nService,
   ) {}
 
@@ -88,6 +90,9 @@ export class TelemetryService {
         status: true,
         trackingSource: true,
         assignedDroneId: true,
+        // Payload mass — the recall check derates the aircraft's remaining range by
+        // what it is carrying, so a loaded drone is told to turn back sooner.
+        packageWeight: true,
         // Owner locale to localize the live-map drone-status label (no extra query).
         user: { select: { locale: true } },
       },
@@ -109,6 +114,27 @@ export class TelemetryService {
     if (!delivery.assignedDroneId || delivery.assignedDroneId !== droneId) {
       throw new AppForbiddenException('error.telemetry.drone_not_assigned');
     }
+
+    // ── Flight recorder. Placed HERE, after the auth/ownership guards and before
+    // the happy/exception branch, so EVERY frame the platform accepts as genuine
+    // is recorded — including the FAILED and RETURNING ones, which are the frames
+    // an incident review most wants and the ones a status-gated recorder would
+    // most likely drop. It also freshens the aircraft's live position and charge,
+    // and recalls it if it can no longer reach base.
+    //
+    // Best-effort by construction (every step inside catches its own errors): a
+    // recorder problem must never stop a drone reporting its position, because
+    // that stream is what tells the watchdog a flying aircraft from a crashed one.
+    await this.flightRecorder.record(
+      {
+        deliveryId,
+        deliveryCreatedAt: delivery.createdAt,
+        droneId,
+        status: delivery.status,
+        packageWeight: delivery.packageWeight,
+      },
+      msg,
+    );
 
     // Exception phases (FAILED/RETURNING/RETURNED) are BRANCHES off the happy
     // path — route them to the dedicated exception transitions (which own the

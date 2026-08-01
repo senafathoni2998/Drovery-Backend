@@ -39,5 +39,8 @@ export const PARTITIONED_TABLES: readonly string[] = [
   'notifications',
   'workflow_step_completions',
   'drone_commands',
+  // The flight recorder — by far the highest-volume child (one row per telemetry
+  // tick), so its aged months are the ones retention most needs to bare-DROP.
+  'flight_frames',
   'deliveries',
 ];

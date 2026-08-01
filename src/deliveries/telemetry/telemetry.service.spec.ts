@@ -5,6 +5,7 @@ import { createMockPrismaService } from '../../test/prisma-mock';
 import { I18nService } from '../../i18n/i18n.service';
 import { PHASE_TO_STATUS } from './telemetry.constants';
 import { TelemetryService } from './telemetry.service';
+import { FlightRecorderService } from './flight-recorder.service';
 
 describe('TelemetryService', () => {
   let service: TelemetryService;
@@ -16,6 +17,8 @@ describe('TelemetryService', () => {
     beginReturnToBase: jest.Mock;
     completeReturnToBase: jest.Mock;
   };
+  let commands: { issue: jest.Mock };
+  let recorder: FlightRecorderService;
 
   const liveDelivery = (status: DeliveryStatus, overrides = {}) => ({
     id: 'd-1',
@@ -23,6 +26,7 @@ describe('TelemetryService', () => {
     status,
     trackingSource: 'LIVE',
     assignedDroneId: 'drone-1',
+    packageWeight: 1,
     ...overrides,
   });
 
@@ -36,11 +40,20 @@ describe('TelemetryService', () => {
       beginReturnToBase: jest.fn().mockResolvedValue(true),
       completeReturnToBase: jest.fn().mockResolvedValue(true),
     };
+    commands = { issue: jest.fn().mockResolvedValue({}) };
+    // The REAL recorder, on the same mock prisma — so these specs prove the ingest
+    // path actually records frames rather than that a stub was called.
+    recorder = new FlightRecorderService(
+      prisma as any,
+      commands as any,
+      { autoReturnsTotal: { inc: jest.fn() } } as any,
+    );
     service = new TelemetryService(
       prisma as any,
       tracking as any,
       publisher as any,
       deliveries as any,
+      recorder,
       new I18nService(), // pure; localizes the happy-phase map label
     );
   });
@@ -509,6 +522,121 @@ describe('TelemetryService', () => {
       });
 
       expect(tracking.updateTracking).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the flight recorder is actually wired into ingest', () => {
+    // Without these, every recorder unit test can pass while the recorder is not
+    // called at all — the feature silently absent, fully green.
+    beforeEach(() => {
+      prisma.flightFrame.create.mockResolvedValue({});
+      // A healthy airframe by default; the recall test overrides the frame, not this.
+      prisma.drone.findUnique.mockResolvedValue({
+        id: 'drone-1',
+        serial: 'DRV-001',
+        rangeKm: 20,
+        maxPayloadKg: 5,
+        homeBaseLat: -6.9125,
+        homeBaseLng: 107.611,
+      });
+    });
+
+    it('records a frame for an accepted happy-path frame', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('PENDING'));
+
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'ASSIGNED',
+        lat: -6.9,
+        lng: 107.6,
+        altitudeM: 90,
+        batteryPercent: 80,
+        airspeedKph: 35,
+      });
+
+      expect(prisma.flightFrame.create.mock.calls[0][0].data).toMatchObject({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        altitudeM: 90,
+        batteryPercent: 80,
+        airspeedKph: 35,
+      });
+    });
+
+    it('records the EXCEPTION frames too — the ones an incident review needs most', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        phase: 'FAILED',
+        lat: -6.9,
+        lng: 107.6,
+        batteryPercent: 3,
+      });
+
+      expect(prisma.flightFrame.create.mock.calls[0][0].data).toMatchObject({
+        phase: 'FAILED',
+        batteryPercent: 3,
+      });
+    });
+
+    it('records nothing for a frame that failed the ownership guard', async () => {
+      // A stranger with a valid ingest key must not be able to write into another
+      // delivery's flight log.
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+      await expect(
+        service.ingest({
+          deliveryId: 'd-1',
+          droneId: 'someone-elses-drone',
+          lat: -6.9,
+          lng: 107.6,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(prisma.flightFrame.create).not.toHaveBeenCalled();
+    });
+
+    it('freshens the aircraft row from the frame', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        lat: -6.9,
+        lng: 107.6,
+        batteryPercent: 72,
+      });
+
+      expect(prisma.drone.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { activeDeliveryId: 'd-1' } }),
+      );
+    });
+
+    it('recalls a flat aircraft through the real command path', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(liveDelivery('IN_TRANSIT'));
+      prisma.drone.findUnique.mockResolvedValue({
+        id: 'drone-1',
+        serial: 'DRV-001',
+        rangeKm: 20,
+        maxPayloadKg: 5,
+        homeBaseLat: -6.9125,
+        homeBaseLng: 107.611,
+      });
+
+      await service.ingest({
+        deliveryId: 'd-1',
+        droneId: 'drone-1',
+        lat: -6.9,
+        lng: 107.6,
+        batteryPercent: 2,
+      });
+
+      expect(commands.issue).toHaveBeenCalledWith(null, 'd-1', {
+        type: 'RETURN_TO_BASE',
+      });
     });
   });
 });

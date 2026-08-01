@@ -27,6 +27,7 @@ type MockPrismaService = {
     | 'referral'
     | 'favorite'
     | 'droneCommand'
+    | 'flightFrame'
     | 'trackingIdRegistry'
     | 'webhookEvent'
     ? {
@@ -115,6 +116,7 @@ export function createMockPrismaService(): MockPrismaService {
     referral: createModelMock(),
     favorite: createModelMock(),
     droneCommand: createModelMock(),
+    flightFrame: createModelMock(),
     trackingIdRegistry: createModelMock(),
     webhookEvent: createModelMock(),
     $connect: jest.fn(),

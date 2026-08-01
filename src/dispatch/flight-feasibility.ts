@@ -96,7 +96,13 @@ export function missionDistanceKm(
  * aircraft ineligible — never accidentally eligible.
  */
 export function usableRangeKm(
-  drone: FeasibilityAircraft,
+  // Narrowed on purpose: range does not depend on where the aircraft IS, and saying
+  // so lets the in-flight recall check (telemetry/energy.ts) share this exact
+  // function instead of growing a second energy model that would drift from it.
+  drone: Pick<
+    FeasibilityAircraft,
+    'rangeKm' | 'maxPayloadKg' | 'batteryPercent'
+  >,
   payloadKg: number,
 ): number {
   if (!(drone.rangeKm > 0) || !(drone.maxPayloadKg > 0)) return 0;

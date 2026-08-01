@@ -61,9 +61,17 @@ export class DroneCommandService {
 
   // ── Operator side (ADMIN) ─────────────────────────────────────────────────
 
-  /** Issue a PENDING command. Does NOT touch the delivery — the ack does. */
+  /**
+   * Issue a PENDING command. Does NOT touch the delivery — the ack does.
+   *
+   * `adminId` is nullable because not every command comes from a person: the
+   * flight recorder issues RETURN_TO_BASE on its own when an aircraft can no
+   * longer reach its base. `issuedByUserId` was already nullable in the schema, so
+   * the audit row records "the platform did it" rather than attributing an
+   * automated recall to whichever operator happened to be logged in.
+   */
   async issue(
-    adminId: string,
+    adminId: string | null,
     deliveryId: string,
     dto: IssueCommandDto,
   ): Promise<DroneCommand> {
@@ -122,7 +130,7 @@ export class DroneCommandService {
       });
       this.metrics.droneCommandsTotal.inc({ type: dto.type, result: 'issued' });
       this.logger.log(
-        `command ${command.id} ${dto.type} issued by admin ${adminId} for delivery ${deliveryId} (reason ${reason})`,
+        `command ${command.id} ${dto.type} issued by ${adminId ? `admin ${adminId}` : 'the platform (automated)'} for delivery ${deliveryId} (reason ${reason})`,
       );
       // Best-effort PUSH to the drone over MQTT (a latency win vs the HTTP poll). Fail-open:
       // the DB outbox row + the HTTP poll remain the durable fallback, and it's a no-op when

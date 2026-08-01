@@ -58,6 +58,13 @@ export interface TelemetryMessage {
   lng?: number;
   droneStatus?: string;
   eta?: string;
+  // Flight-recorder fields. Optional because a gateway may not report them and a
+  // frame without them is still worth keeping — but batteryPercent is the one that
+  // decides whether the aircraft gets told to come home, so a fleet that never
+  // sends it gets no auto-return.
+  altitudeM?: number;
+  batteryPercent?: number;
+  airspeedKph?: number;
   // Only meaningful for exception phases (FAILED/RETURNING) — why it ended.
   failureReason?: DeliveryFailureReason;
 }
@@ -77,3 +84,13 @@ export const LAT_MAX = 90;
 export const LNG_MIN = -180;
 export const LNG_MAX = 180;
 export const DRONE_STATUS_MAX_LEN = 120;
+
+// Altitude bounds, metres AMSL. Deliberately far wider than any legal drone
+// operation: the job here is to reject a garbage reading (a sign-flipped or
+// unit-confused value), not to enforce airspace rules — that is the airspace
+// layer's job and it needs the real number to do it.
+export const ALTITUDE_MIN_M = -500;
+export const ALTITUDE_MAX_M = 10_000;
+
+// Above this a "drone" is an aircraft. Same reasoning: a sanity bound, not a rule.
+export const AIRSPEED_MAX_KPH = 400;

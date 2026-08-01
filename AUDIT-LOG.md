@@ -1134,3 +1134,130 @@ round trip does not, and it fails under that mutation.
 - **Phase 12** (flight ops) — append-only flight log, energy management, re-gating weather and
   airspace at dispatch, the flight-ops console, incident management, operator audit log.
 - **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 1) — Flight log + energy management — DONE
+
+**Date:** 2026-08-01
+**Branch:** `fix/audit-phase-12-flight-log` (backend)
+**Covers plan items:** 12.1 (append-only flight log), 12.2 (energy management)
+
+### What changed
+
+**`FlightFrame` — the flight recorder (new, partitioned from birth).**
+`DeliveryTracking` is ONE row that every frame overwrites, so the last transmission before a
+loss of comms had already been destroyed by the frame after it — after a crash or a watchdog
+reap there was nothing to reconstruct from. `routeJson` was declared and never written.
+
+It records **what was RECEIVED, not what was accepted**. A stale, out-of-order or
+out-of-bounds frame is still evidence of what the aircraft transmitted and when, and those are
+exactly what a failing GPS or a wedged flight controller looks like from the ground.
+
+Co-partitioned by `RANGE("deliveryCreatedAt")` following `drone_commands`. This is the
+highest-volume table in the system — one row per telemetry tick, where every other delivery
+child is one row per delivery or per operator action — so retention must be able to bare-DROP
+an aged month in O(1). Prisma cannot express `PARTITION BY`, so the generated migration was
+replaced with a hand-written one; verified against the live catalog:
+```
+partition key: deliveryCreatedAt
+partitions:    flight_frames_default, _y2026m08, _y2026m09, _y2026m10, _y2026m11
+```
+
+**Telemetry now carries altitude, battery and airspeed.** Bounds-checked as SANITY limits, not
+airspace rules — the job is to reject a sign-flipped or unit-confused reading before it lands
+in a log an incident review will later trust.
+
+**Energy management — the platform recalls its own aircraft.** Two triggers:
+
+| Trigger | Fires when |
+|---|---|
+| `INSUFFICIENT_RANGE_HOME` | remaining usable range no longer covers the way back, × a margin |
+| `CRITICAL_BATTERY` | state of charge alone, no geometry involved |
+
+Charge is checked FIRST. The geometry answer is only as good as `rangeKm` and the reported
+position; if either is wrong it will happily conclude a nearly flat aircraft is within budget.
+Charge is the one input that cannot be wrong about itself.
+
+`assessRecall` reuses `usableRangeKm` from the dispatch engine, so the recall threshold and the
+DISPATCH threshold cannot drift apart — an aircraft is sent out on a budget and recalled when
+that same budget stops covering the return. Two energy models would eventually disagree, and
+the disagreement would be discovered in the field.
+
+The RETURN_TO_BASE mechanism was already built and fully tested (issue/poll/ack/CAS +
+stranded-ack reconciler). **Nothing ever computed WHEN to fire it except a human clicking in
+the console.** `DroneCommandService.issue` now takes a nullable `adminId` so the audit row says
+the platform did it.
+
+**Live aircraft state.** Every frame pushes position + charge + `lastSeenAt` onto the `drones`
+row, so dispatch decides using where the aircraft actually is rather than what someone typed at
+registration. Scoped to `activeDeliveryId`, so a late frame from a finished flight cannot
+overwrite a drone another delivery has since claimed.
+
+### Verification
+```
+prisma generate: ok
+tsc (tsconfig.build.json): clean
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 84 passed, 84 total
+Tests:       856 passed, 856 total          (+34)
+prisma:drift-check: No difference detected
+partition key + 5 partitions confirmed against the live catalog
+```
+
+**Mutation testing — 12 mutations, 12 caught.** Dropping the range trigger; dropping the
+trigger margin; swapping the check order; skipping terminal-delivery frames; dropping the
+partition key from the insert; scoping the drone update by id instead of the active claim;
+recalling without a battery reading; dropping the exception-phase guard; dropping the cooldown;
+attributing the recall to a fake admin; unwiring the recorder from ingest; moving the record
+call after the branch.
+
+**Two mutations initially survived, both real gaps:**
+- *Swapping the check order* — the ordering test used a case where only one trigger fired, so
+  order could not matter. Rewritten to a case where BOTH fire and the reported reason is
+  decided purely by order.
+- *Unwiring the recorder from `ingest()` entirely* — every recorder unit test passed with the
+  feature completely absent. Added integration tests through `TelemetryService.ingest` that
+  assert a frame is recorded, exception frames are recorded, an ownership-guard failure records
+  nothing, the aircraft row is freshened, and a flat aircraft is recalled through the real
+  command path.
+
+### Decisions made
+- **Log what was received, not what was accepted.** A status-gated recorder would drop exactly
+  the frames an incident review needs.
+- **Record before the happy/exception branch**, after the auth and ownership guards. A stranger
+  with a valid ingest key still cannot write into another delivery's log.
+- **No auto-return without a real battery reading AND position.** A fleet whose gateway never
+  sends `batteryPercent` gets no auto-return. The platform will not invent a state of charge —
+  guessing wrong in the permissive direction is a drone that does not come back.
+- **The cooldown is a write-rate damper, not the dedupe.** The authoritative dedupe is the
+  existing one-open-command partial unique index; a second issue is a 409 and is swallowed. The
+  in-memory map is per-replica on purpose — it is an optimisation and does not deserve a
+  distributed failure mode.
+- **The trigger margin inflates the DISTANCE, not the range.** Applying it to the range would
+  make a low battery look better, which is the wrong direction for a safety margin.
+
+### Deviations from the plan
+- **12.3–12.7 not attempted** (re-gate weather/airspace at dispatch, airspace as data, the
+  flight-ops console, incident management, operator audit log). This increment is the data and
+  control layer the rest of them build on.
+- `routeJson` is still declared and never written. The flight log supersedes it; the column
+  should be dropped in a later increment rather than left as a decoy.
+
+### Left undone / follow-ups
+- **The recall costs one extra indexed read per frame** (battery + position + returnable status
+  + cooldown elapsed). Fine at current scale; at high-frequency streaming across a large fleet
+  it wants the drone row cached or folded into the state write.
+- **No flight-log read surface.** The frames are written and nothing reads them yet — no replay
+  endpoint, no admin timeline. That is the flight-ops console (12.5).
+- **`forget()` is never called.** The cooldown map entry is dropped only on explicit call; wire
+  it into terminal cleanup so a long-lived worker cannot accumulate entries.
+- Position ordering is still last-write-wins with no sequence guard (pre-existing).
+- Per-aircraft ingest credentials (11.2) and the saturation queue still outstanding.
+
+### Next
+- **Phase 12 increment 2** — re-gate weather and airspace at dispatch (12.3). Serviceability is
+  evaluated at the quote and at `create()` and never again: a delivery booked 60 days out is
+  weather-checked at booking and then launched by a kickoff job with zero re-check. The check
+  that matters is the one immediately before rotor spin-up.
+- **Phase 10** still blocked on Stripe test keys.

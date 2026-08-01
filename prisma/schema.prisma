@@ -15,13 +15,13 @@ enum Role {
 }
 
 model User {
-  id              String    @id @default(uuid())
-  email           String    @unique
-  name            String
-  phone           String?
-  address         String?
-  bio             String?
-  avatarUrl       String?
+  id               String    @id @default(uuid())
+  email            String    @unique
+  name             String
+  phone            String?
+  address          String?
+  bio              String?
+  avatarUrl        String?
   passwordHash     String
   emailVerified    Boolean   @default(false)
   emailVerifiedAt  DateTime?
@@ -57,14 +57,14 @@ model User {
   savedAddresses          SavedAddress[]
   deliveryRatings         DeliveryRating[]
   notificationPreference  NotificationPreference?
-  supportChatMessages     SupportChatMessage[] @relation("supportChatMessages")
+  supportChatMessages     SupportChatMessage[]     @relation("supportChatMessages")
   recurringDeliveries     RecurringDelivery[]
   promoRedemptions        PromoRedemption[]
   walletTransactions      WalletTransaction[]
-  referralsMade           Referral[] @relation("ReferralReferrer")
-  referralReceived        Referral?  @relation("ReferralReferee")
+  referralsMade           Referral[]               @relation("ReferralReferrer")
+  referralReceived        Referral?                @relation("ReferralReferee")
   favorites               Favorite[]
-  droneCommandsIssued     DroneCommand[] @relation("droneCommandsIssued")
+  droneCommandsIssued     DroneCommand[]           @relation("droneCommandsIssued")
 
   @@map("users")
 }
@@ -195,7 +195,7 @@ model Drone {
 
   /// Capability + energy, the two things dispatch has to reason about.
   maxPayloadKg   Float
-  batteryPercent Int    @default(100)
+  batteryPercent Int   @default(100)
 
   /// Still-air range at full charge with no payload, in km — the bench figure.
   /// Dispatch never spends all of it: it derates by state-of-charge and payload
@@ -212,8 +212,8 @@ model Drone {
   currentLng  Float?
 
   /// Maintenance signals.
-  flightHours     Float     @default(0)
-  flightCycles    Int       @default(0)
+  flightHours      Float     @default(0)
+  flightCycles     Int       @default(0)
   maintenanceDueAt DateTime?
 
   /// Per-aircraft ingest credential (SHA-256, never the raw key), so a lost airframe
@@ -298,13 +298,13 @@ model Delivery {
 
   // SIMULATED (default) → the in-memory simulation drives the lifecycle.
   // LIVE → real drone telemetry drives it; create() starts no simulation.
-  trackingSource TrackingSource @default(SIMULATED)
+  trackingSource  TrackingSource @default(SIMULATED)
   // The drone bound to a LIVE delivery; telemetry whose droneId doesn't match is
   // rejected, so a stranger gateway can't drive a delivery it isn't assigned to.
   // Now a real foreign key: it used to be an unconstrained string holding
   // `drone-<uuid>` that referenced nothing.
   assignedDroneId String?
-  assignedDrone   Drone?  @relation(fields: [assignedDroneId], references: [id], onDelete: SetNull)
+  assignedDrone   Drone?         @relation(fields: [assignedDroneId], references: [id], onDelete: SetNull)
 
   // Set when the delivery ends as RETURNING/DELIVERY_FAILED/RETURNED_TO_BASE;
   // null on the happy path. Drives the failure comms + the refund decision.
@@ -346,6 +346,7 @@ model Delivery {
   proofOfDelivery  ProofOfDelivery?
   rating           DeliveryRating?
   commands         DroneCommand[]
+  flightFrames     FlightFrame[]
   trackingRegistry TrackingIdRegistry?
 
   @@id([id, createdAt])
@@ -382,7 +383,7 @@ model TrackingIdRegistry {
 // can't express the WHERE) so two admins racing collapse to a DB-level 409.
 model DroneCommand {
   // `drone_commands` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) → composite PK.
-  id         String @default(uuid())
+  id                String   @default(uuid())
   deliveryId        String
   deliveryCreatedAt DateTime
   delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
@@ -395,7 +396,7 @@ model DroneCommand {
   // Resolved at issue (defaulted by type), carried into the transition on ack so
   // the audit row records exactly what reason the delivery will be stamped with.
   reason DeliveryFailureReason
-  status DroneCommandStatus @default(PENDING)
+  status DroneCommandStatus    @default(PENDING)
 
   // Audit: the admin who issued it. Nullable + SetNull so deleting that admin
   // never cascades away the audit row.
@@ -448,11 +449,11 @@ model RecurringDelivery {
 
   // Recurrence rule (all wall-clock parts interpreted in the service tz).
   freq       RecurrenceFreq
-  daysOfWeek Int[]    @default([]) // WEEKLY only; 0=Sun..6=Sat. Empty for DAILY.
+  daysOfWeek Int[]          @default([]) // WEEKLY only; 0=Sun..6=Sat. Empty for DAILY.
   timeOfDay  String // "HH:MM" 24h
   startDate  DateTime // inclusive lower bound (first occurrence is on/after this)
   endDate    DateTime? // inclusive upper bound; null = open-ended
-  active     Boolean  @default(true) // pause/resume
+  active     Boolean        @default(true) // pause/resume
 
   // Cursor (the CAS target): next occurrence we still owe a Delivery for; null once exhausted.
   nextRunAt          DateTime?
@@ -482,7 +483,7 @@ model RecurringDelivery {
 }
 
 model DeliveryRating {
-  id         String   @id @default(uuid())
+  id                String   @id @default(uuid())
   deliveryId        String   @unique
   deliveryCreatedAt DateTime
   delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
@@ -503,7 +504,7 @@ model DeliveryRating {
 // ==================== PROOF OF DELIVERY ====================
 
 model ProofOfDelivery {
-  id         String @id @default(uuid())
+  id                String   @id @default(uuid())
   deliveryId        String   @unique
   deliveryCreatedAt DateTime
 
@@ -524,7 +525,7 @@ model ProofOfDelivery {
 // ==================== TRACKING ====================
 
 model DeliveryTracking {
-  id         String @id @default(uuid())
+  id                String   @id @default(uuid())
   deliveryId        String   @unique
   deliveryCreatedAt DateTime
 
@@ -547,7 +548,7 @@ model DeliveryTracking {
 model WorkflowStepCompletion {
   // `workflow_step_completions` is RANGE("deliveryCreatedAt")-partitioned (Phase 2) →
   // composite PK, and the uniqueness rule must include the partition key.
-  id         String @default(uuid())
+  id                String   @default(uuid())
   deliveryId        String
   deliveryCreatedAt DateTime
   workflowId        String
@@ -592,7 +593,7 @@ model PaymentMethod {
 }
 
 model Payment {
-  id         String @id @default(uuid())
+  id                String   @id @default(uuid())
   deliveryId        String   @unique
   deliveryCreatedAt DateTime
 
@@ -641,20 +642,20 @@ enum OutboxStatus {
 }
 
 model OutboxEvent {
-  id            String       @id @default(uuid())
-  aggregateType String // e.g. 'delivery'
-  aggregateId   String // e.g. the delivery id (provenance / correlation)
-  eventType     String // routes to a handler, e.g. 'REFERRAL_REWARD'
-  payload       Json // handler input, e.g. { refereeUserId }
+  id             String       @id @default(uuid())
+  aggregateType  String // e.g. 'delivery'
+  aggregateId    String // e.g. the delivery id (provenance / correlation)
+  eventType      String // routes to a handler, e.g. 'REFERRAL_REWARD'
+  payload        Json // handler input, e.g. { refereeUserId }
   // Dedupes the enqueue itself (the create() tracking-id retry loop re-runs the whole
   // tx body; same key → P2002 on the retry → at-most-once enqueue per aggregate).
-  idempotencyKey String      @unique
-  status        OutboxStatus @default(PENDING)
-  attempts      Int          @default(0) // incremented on claim; FAILED when it exceeds the cap
-  lastError     String?
-  claimedAt     DateTime? // when the current PROCESSING claim was taken (drives the stale-claim reaper)
-  createdAt     DateTime     @default(now())
-  processedAt   DateTime?
+  idempotencyKey String       @unique
+  status         OutboxStatus @default(PENDING)
+  attempts       Int          @default(0) // incremented on claim; FAILED when it exceeds the cap
+  lastError      String?
+  claimedAt      DateTime? // when the current PROCESSING claim was taken (drives the stale-claim reaper)
+  createdAt      DateTime     @default(now())
+  processedAt    DateTime?
 
   // Supports the dispatcher claim (WHERE status=PENDING ORDER BY createdAt) and the
   // reaper (WHERE status=PROCESSING).
@@ -859,11 +860,11 @@ model SupportChatMessage {
   ticketId String
   ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
-  senderRole SupportChatSenderRole @default(USER)
+  senderRole   SupportChatSenderRole @default(USER)
   // The author for USER messages; null for AGENT/SYSTEM. SetNull (not Cascade)
   // so deleting a user preserves the readable thread.
   senderUserId String?
-  senderUser   User?   @relation("supportChatMessages", fields: [senderUserId], references: [id], onDelete: SetNull)
+  senderUser   User?                 @relation("supportChatMessages", fields: [senderUserId], references: [id], onDelete: SetNull)
 
   content String @db.VarChar(2000)
 
@@ -916,4 +917,55 @@ model Notification {
   @@id([id, createdAt])
   @@index([userId, read])
   @@map("notifications")
+}
+
+/// Append-only flight recorder.
+///
+/// `DeliveryTracking` is ONE row that every frame overwrites, so after a crash or a
+/// watchdog reap the last frame before loss of comms has already been destroyed by
+/// the frame before it — there is nothing to reconstruct from. This table keeps
+/// every frame the platform received.
+///
+/// It records what was RECEIVED, not what was accepted: a stale, out-of-order or
+/// out-of-bounds frame is still evidence of what the aircraft transmitted and when,
+/// and that is exactly what an incident review needs. The live map still reads
+/// `DeliveryTracking`; nothing here feeds a status decision.
+///
+/// Co-partitioned by RANGE("deliveryCreatedAt") like `drone_commands` — this is the
+/// highest-volume child in the system (one row per telemetry tick), so an aged month
+/// has to be a bare O(1) DROP rather than an O(rows) cascade DELETE.
+model FlightFrame {
+  // `flight_frames` is RANGE("deliveryCreatedAt")-partitioned → composite PK.
+  id                String   @default(uuid())
+  deliveryId        String
+  deliveryCreatedAt DateTime
+  delivery          Delivery @relation(fields: [deliveryId, deliveryCreatedAt], references: [id, createdAt], onDelete: Cascade)
+
+  /// Denormalized from delivery.assignedDroneId at ingest, so a frame remains
+  /// attributable to an airframe after the delivery has released its claim.
+  droneId String
+
+  lat Float?
+  lng Float?
+
+  /// The three fields the system had nowhere to put. Altitude is what makes
+  /// restricted airspace 3D rather than a disc; battery is the only thing that can
+  /// answer "could it still have got home"; airspeed separates a hover from a hold.
+  altitudeM      Float?
+  batteryPercent Int?
+  airspeedKph    Float?
+
+  /// The drone's own vocabulary, as reported — NOT our DeliveryStatus. Kept raw so a
+  /// replay shows what the aircraft said, not what we mapped it to.
+  phase       String? @db.VarChar(32)
+  droneStatus String? @db.VarChar(120)
+
+  /// When the platform accepted the frame. There is no device clock here on purpose:
+  /// a drone's clock is not trustworthy and an incident timeline built on it would be.
+  recordedAt DateTime @default(now())
+
+  @@id([id, deliveryCreatedAt])
+  @@index([deliveryId, recordedAt])
+  @@index([droneId, recordedAt])
+  @@map("flight_frames")
 }
