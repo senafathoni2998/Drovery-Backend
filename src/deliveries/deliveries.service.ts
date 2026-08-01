@@ -8,6 +8,7 @@ import {
 import {
   DeliveryFailureReason,
   DeliveryStatus,
+  DroneStatus,
   Prisma,
   TrackingSource,
 } from '@prisma/client';
@@ -169,6 +170,74 @@ export class DeliveriesService {
       );
   }
 
+  /**
+   * Claim a real aircraft for a LIVE delivery, atomically.
+   *
+   * `assignedDroneId` is now a foreign key, so a LIVE delivery cannot be created
+   * without a registered airframe — which is the correct constraint: you cannot
+   * dispatch what you do not have. It used to mint `drone-${uuidv4()}`, a string
+   * referencing nothing, so the system believed it had assigned an aircraft that
+   * did not exist and nothing stopped two deliveries binding the same one.
+   *
+   * The claim is a CONDITIONAL update on the drone row, not a read-then-write: the
+   * `WHERE` carries every precondition, so two concurrent creates racing for the
+   * last available aircraft cannot both win — the loser matches 0 rows. `drones` is
+   * not partitioned, which is exactly why the claim lives there and not on
+   * `deliveries` (a partitioned table cannot hold a unique index that omits its
+   * partition key).
+   */
+  private async claimDrone(
+    dto: CreateDeliveryDto,
+    deliveryId: string,
+  ): Promise<string> {
+    if (!dto.droneId) {
+      throw new AppBadRequestException('error.delivery.drone.required');
+    }
+
+    const { count } = await this.prisma.drone.updateMany({
+      where: {
+        id: dto.droneId,
+        airworthy: true,
+        status: DroneStatus.AVAILABLE,
+        activeDeliveryId: null,
+        maxPayloadKg: { gte: dto.packageWeight },
+      },
+      data: {
+        activeDeliveryId: deliveryId,
+        status: DroneStatus.IN_FLIGHT,
+      },
+    });
+
+    if (count === 0) {
+      // Deliberately one message for every reason. Which aircraft is airworthy,
+      // charged or already flying is fleet information, and this endpoint is
+      // reachable by any authenticated customer.
+      throw new AppConflictException('error.delivery.drone.unavailable', {
+        droneId: dto.droneId,
+      });
+    }
+
+    return dto.droneId;
+  }
+
+  /**
+   * Release the aircraft back to the fleet. Idempotent and scoped to THIS delivery's
+   * claim, so a late release can never free a drone that has since been claimed by
+   * another delivery.
+   */
+  private async releaseDrone(deliveryId: string): Promise<void> {
+    await this.prisma.drone
+      .updateMany({
+        where: { activeDeliveryId: deliveryId },
+        data: { activeDeliveryId: null, status: DroneStatus.AVAILABLE },
+      })
+      .catch((e) =>
+        this.logger.warn(
+          `drone release failed for ${deliveryId}: ${(e as Error).message}`,
+        ),
+      );
+  }
+
   async create(userId: string, dto: CreateDeliveryDto) {
     // A drone can only lift so much. Reject an over-capacity package before any
     // geocode / pricing / DB / queue work. Enforced HERE and not only on the DTO
@@ -291,11 +360,11 @@ export class DeliveriesService {
       userId,
       status: isScheduled ? DeliveryStatus.SCHEDULED : DeliveryStatus.PENDING,
       trackingSource: isLive ? TrackingSource.LIVE : TrackingSource.SIMULATED,
-      // A LIVE delivery is bound to exactly one drone; telemetry from any other
-      // drone is rejected. The default is a high-entropy random id (NOT derived
-      // from the public trackingId) so the binding is a real second factor; it's
-      // returned on create so the operator/gateway knows which id to report under.
-      assignedDroneId: isLive ? (dto.droneId ?? `drone-${uuidv4()}`) : null,
+      // A LIVE delivery is bound to exactly one REGISTERED aircraft, claimed
+      // atomically below. This used to mint `drone-${uuidv4()}` — an id referencing
+      // nothing — so the platform believed it had dispatched an aircraft that did
+      // not exist, and two deliveries could hold the same one.
+      assignedDroneId: isLive ? await this.claimDrone(dto, deliveryId) : null,
       scheduledFor: isScheduled ? scheduledFor : null,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
@@ -1029,6 +1098,9 @@ export class DeliveriesService {
     deliveryId: string,
     refundCredits: boolean,
   ): Promise<void> {
+    // Give the aircraft back first — a terminated delivery must never keep holding
+    // one, or the fleet leaks capacity one stuck delivery at a time.
+    await this.releaseDrone(deliveryId);
     await this.simulationService
       .stopSimulation(deliveryId)
       .catch(() => undefined);
