@@ -55,6 +55,8 @@ export class MetricsService {
   // Backend→drone command channel (money-touching control path on LIVE deliveries).
   readonly droneCommandsTotal: Counter<string>;
   readonly autoReturnsTotal: Counter<string>;
+  readonly preflightHoldsTotal: Counter<string>;
+  readonly preflightAbortsTotal: Counter<string>;
   readonly droneCommandTimeToAck: Histogram<string>;
   // MQTT push transport (optional; flat 0 when MQTT_URL is unset). frames by flow+result;
   // a connection gauge for parity with the HTTP ingest path's visibility.
@@ -171,6 +173,22 @@ export class MetricsService {
       // CRITICAL_BATTERY share means the geometry trigger is firing too late —
       // the backstop should almost never be the one that catches it.
       labelNames: ['reason'],
+      registers: [this.registry],
+    });
+
+    this.preflightHoldsTotal = new Counter({
+      name: 'drovery_preflight_holds_total',
+      help: 'Scheduled launches held on the ground by the pre-flight re-check',
+      labelNames: ['code'],
+      registers: [this.registry],
+    });
+
+    this.preflightAbortsTotal = new Counter({
+      name: 'drovery_preflight_aborts_total',
+      help: 'Scheduled deliveries failed at pre-flight (hard block, or holds exhausted)',
+      // A rising WEATHER_* share here means holds are timing out rather than
+      // clearing — the retry budget is too short for the conditions being seen.
+      labelNames: ['code'],
       registers: [this.registry],
     });
 

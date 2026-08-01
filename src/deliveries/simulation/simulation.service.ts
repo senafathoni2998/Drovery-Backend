@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import {
   DeliveryCoords,
   KICKOFF_JOB,
+  KickoffJobData,
   POSITION_JOB,
   POSITION_TICK_COUNT,
   SIM_QUEUE,
@@ -14,6 +15,7 @@ import {
   resolveCoords,
 } from './simulation.constants';
 import { injectTraceCarrier } from '../../common/monitoring/tracing';
+import { PREFLIGHT_RETRY_DELAY_MS } from './preflight.constants';
 
 const JOB_OPTS = {
   // Retry transient failures (DB blip, etc.) with backoff. Handlers are
@@ -125,6 +127,35 @@ export class SimulationService {
     );
     this.logger.log(
       `Scheduled kickoff for ${deliveryId} in ${Math.round(delay / 1000)}s`,
+    );
+  }
+
+  /**
+   * Re-arm a kickoff that was held on the ground by the pre-flight check.
+   *
+   * A NEW jobId per attempt (`-kickoff-r2`, `-r3`, …), because the original
+   * `${deliveryId}-kickoff` id is what makes the first enqueue idempotent — reusing
+   * it would be deduped against the job currently being processed and the hold
+   * would silently become a drop. The attempt number rides in the payload so the
+   * budget survives a worker restart, rather than living in the processor's memory
+   * where a redeploy would reset it to zero and hold the delivery forever.
+   */
+  async deferKickoff(data: KickoffJobData, attempt: number): Promise<void> {
+    await this.withTimeout(
+      this.queue.add(
+        KICKOFF_JOB,
+        injectTraceCarrier({ ...data, preflightAttempt: attempt }),
+        {
+          ...JOB_OPTS,
+          delay: PREFLIGHT_RETRY_DELAY_MS,
+          jobId: `${data.deliveryId}-kickoff-r${attempt}`,
+        },
+      ),
+      ENQUEUE_TIMEOUT_MS,
+      'defer kickoff',
+    );
+    this.logger.log(
+      `Deferred kickoff for ${data.deliveryId} by ${Math.round(PREFLIGHT_RETRY_DELAY_MS / 60_000)}m (attempt ${attempt})`,
     );
   }
 
