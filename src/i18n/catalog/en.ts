@@ -144,6 +144,10 @@ export const en: Record<string, string> = {
     'Delivery with tracking id "{trackingId}" not found',
   'error.delivery.schedule.too_far':
     'Pickup can be scheduled at most {maxDays} days ahead.',
+  'error.delivery.drone.required':
+    'A LIVE delivery must name the aircraft flying it.',
+  'error.delivery.drone.unavailable':
+    'Drone "{droneId}" is not available for this delivery.',
   'error.delivery.schedule.invalid_date':
     'pickupDate "{pickupDate}" is not a real calendar date.',
   'error.delivery.schedule.live_not_allowed':
