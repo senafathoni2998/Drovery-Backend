@@ -1022,3 +1022,115 @@ every safety precondition actually bites.
 - **Phase 12** (flight ops) now has a real fleet to build on.
 - **Phase 10** still blocked on Stripe test keys.
 - **Nine branches stacked and unmerged across two repos.**
+
+---
+
+## Phase 11 (increment 3) — Dispatch engine — DONE
+
+**Date:** 2026-08-01
+**Branches:** `fix/audit-phase-11-dispatch-engine` (backend),
+`fix/audit-phase-11-dispatch-fleet-range` (admin)
+**Covers plan items:** 11.3 (drop the operator fields from the customer DTO), 11.4 (dispatch
+engine), 11.5 (bound the haversine)
+
+### What changed
+
+**The engine — `src/dispatch/` (new).**
+- `flight-feasibility.ts` — pure arithmetic, no I/O. A mission is THREE legs: position to the
+  pickup, fly the delivery, get home. The range budget is `rangeKm × charge × payload-derate ×
+  (1 − reserve)`, so a bench figure is never spent in full. Ranking is by **smallest sufficient
+  capacity**, distance as tie-break, id as final tie-break for determinism.
+- `dispatch.service.ts` — candidate query (airworthy, available, unclaimed, big enough, charged,
+  inspection not lapsed), in-process feasibility ranking, then a conditional `updateMany` per
+  candidate until one sticks. A lost race walks to the next candidate rather than retrying from
+  the top; that is the normal outcome of two customers booking at once, not an error.
+- Refusal is split in two: `no_capacity` (no airframe in the fleet could EVER lift this) vs
+  `unavailable` (everything else). The first is the only fleet fact worth telling a customer,
+  because "try again later" is a lie when the answer will never change.
+
+**`Drone.rangeKm`** (new column, migration `20260801042637_add_drone_range_km`). Without it
+selection degrades to a payload comparison and "can it get home" is unanswerable.
+
+**`trackingSource` + `droneId` removed from `CreateDeliveryDto`.** Both were operator concerns in
+a public request body. The server decides via `LIVE_DISPATCH` (default OFF → everything is
+SIMULATED, byte-identical to before).
+
+**Route length bound** — `MAX_ROUTE_KM`, default 50, new `ROUTE_TOO_LONG` code.
+
+**Three claim-lifecycle defects fixed** (found while building on the merged Phase 11 work):
+| Defect | Consequence |
+|---|---|
+| A **successful** delivery never released | The fleet leaked one airframe per completed delivery until dispatch had nothing to assign |
+| `RETURNING` released while still airborne | The engine could hand a flying drone to the next booking |
+| A failed `create()` never released its claim | The claim commits on a separate non-partitioned row, so the delivery rollback did not undo it and every later release keyed on a delivery that would never exist |
+
+A drone implicated in a failure (lost comms, mechanical, any return-to-base) is now **grounded**
+rather than returned to the pool, `airworthy` cleared — not just the status, or an operator
+flipping it back to AVAILABLE would make it dispatchable with nobody having looked at it.
+
+**Admin fleet surface** — `rangeKm` is REQUIRED on registration and shown in the list.
+
+### Verification
+```
+prisma generate: ok
+tsc (tsconfig.build.json): clean
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 82 passed, 82 total
+Tests:       822 passed, 822 total          (+47)
+prisma:drift-check: No difference detected
+admin: tsc clean · lint 0 problems · 78 tests passed (+3)
+```
+
+**Mutation testing — 12 mutations, 12 caught.** Backend: removing the success release; releasing
+at RETURNING; dropping `airworthy: false` from grounding; dropping the recovery leg from the
+mission; removing the route bound; collapsing `no_capacity`; weakening the claim CAS; dropping
+the failed-create rollback; returning a candidate instead of throwing on saturation; claiming for
+a scheduled pickup. Admin: not sending `rangeKm`; dropping it from the submit gate.
+
+**One mutation initially survived** — dropping the recovery leg. The `-t` filter had matched a
+test that did not depend on it, and the RANGE test's numbers were too small to discriminate (both
+one-way and round-trip exceeded the budget). The test now asserts the one-way trip FITS and the
+round trip does not, and it fails under that mutation.
+
+### Decisions made
+- **`LIVE_DISPATCH` defaults OFF.** Every existing deployment, CI run and demo keeps working with
+  no fleet registered. Turning it on is an operational decision.
+- **Refuse rather than downgrade.** With live dispatch on and no aircraft available, the booking
+  is REJECTED. Falling back to SIMULATED would be a worse version of the bug being fixed — a
+  customer told a real drone is coming, watching an animation.
+- **Scheduled pickups stay SIMULATED under `LIVE_DISPATCH`.** You do not hold an airframe out of
+  service for three weeks. Kickoff-time dispatch is Phase 12.
+- **Smallest sufficient capacity beats nearest.** Sending the heavy-lift airframe on a 200 g job
+  is locally optimal and globally wrong: it is the only aircraft that can take the next heavy
+  booking, and while it is out that booking gets rejected.
+- **Two refusal messages, not five.** Which airframes are airworthy, charged or flying is fleet
+  information and this path is reachable by any authenticated customer.
+- **A returned-to-base aircraft is grounded, not pooled.** A return-to-base is an aborted mission
+  and the thing that aborted it has not been diagnosed.
+
+### Deviations from the plan
+- **11.2 (per-aircraft credentials) not done.** `ingestKeyHash` exists and is unique, but
+  `DroneAuthGuard` still checks the shared `INGEST_API_KEY`. It is a self-contained auth change,
+  independent of the engine, and was left out to keep this increment reviewable.
+- **No saturation QUEUE.** The plan allows "queued or rejected"; this rejects. A queue needs a
+  retry loop and a customer-visible pending state — its own increment.
+- **No reassignment-on-unresponsive.** A drone that goes silent mid-flight physically still has
+  the parcel, so the mission cannot simply be handed to another airframe. What IS handled: the
+  watchdog reaps the delivery, the claim is released so the fleet is not blocked, and the
+  aircraft is grounded.
+
+### Left undone / follow-ups
+- Per-aircraft ingest credentials (11.2).
+- Saturation queue; reassignment semantics for a lost airframe.
+- Kickoff-time dispatch for scheduled LIVE deliveries.
+- `rangeKm` has a schema default of 12 — legacy rows registered before this change carry it. The
+  admin form now requires a real value, but existing rows should be audited.
+- The fleet console still has never been opened in a browser.
+- Pre-existing, not introduced here: `deliveries.controller.spec.ts:120` fails a full-project
+  `tsc -p tsconfig.json` (`'result' is possibly 'null'`). `tsconfig.build.json`, which is what
+  builds and CI use, excludes specs and is clean.
+
+### Next
+- **Phase 12** (flight ops) — append-only flight log, energy management, re-gating weather and
+  airspace at dispatch, the flight-ops console, incident management, operator audit log.
+- **Phase 10** still blocked on Stripe test keys.
