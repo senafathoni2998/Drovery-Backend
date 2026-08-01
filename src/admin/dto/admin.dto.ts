@@ -245,6 +245,16 @@ export class CreateDroneDto {
   @IsPositive()
   maxPayloadKg: number;
 
+  /**
+   * Still-air range at full charge, km. REQUIRED for the same reason payload is:
+   * dispatch computes an out-and-back energy budget from it, and an aircraft
+   * registered without one would silently inherit the schema default and be
+   * dispatched on a mission it cannot complete.
+   */
+  @IsNumber()
+  @IsPositive()
+  rangeKm: number;
+
   @IsNumber()
   @Min(-90)
   @Max(90)
@@ -276,6 +286,11 @@ export class UpdateDroneDto {
   @IsNumber()
   @IsPositive()
   maxPayloadKg?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  rangeKm?: number;
 
   @IsOptional()
   @IsInt()

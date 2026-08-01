@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
 
+import { DispatchModule } from '../dispatch/dispatch.module';
 import { GeoModule } from '../geo/geo.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -49,6 +50,7 @@ const RUN_PROCESSOR = IS_WORKER_TIER;
     PaymentsModule,
     StorageModule,
     ServiceabilityModule,
+    DispatchModule,
     PromoModule,
     WalletModule,
     OutboxModule, // exports OutboxService (referral-reward enqueue in create())

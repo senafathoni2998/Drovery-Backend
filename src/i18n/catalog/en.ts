@@ -144,10 +144,10 @@ export const en: Record<string, string> = {
     'Delivery with tracking id "{trackingId}" not found',
   'error.delivery.schedule.too_far':
     'Pickup can be scheduled at most {maxDays} days ahead.',
-  'error.delivery.drone.required':
-    'A LIVE delivery must name the aircraft flying it.',
-  'error.delivery.drone.unavailable':
-    'Drone "{droneId}" is not available for this delivery.',
+  'error.delivery.dispatch.unavailable':
+    'No drone is available for this delivery right now. Please try again shortly.',
+  'error.delivery.dispatch.no_capacity':
+    'None of our drones can carry {weightKg} kg. Try splitting the package.',
   'error.delivery.schedule.invalid_date':
     'pickupDate "{pickupDate}" is not a real calendar date.',
   'error.delivery.schedule.live_not_allowed':
@@ -164,6 +164,8 @@ export const en: Record<string, string> = {
     'The selected location is {deviationKm} km from "{field}". It must be within {maxKm} km — check the address or drop the pin again.',
   'error.serviceability.OUT_OF_AREA':
     'Pickup or dropoff is outside our service area.',
+  'error.serviceability.ROUTE_TOO_LONG':
+    'This route is {routeKm} km — beyond our {maxKm} km flight range.',
   'error.serviceability.NO_FLY_ZONE':
     'Route is restricted near {zoneName} (no-fly zone).',
   'error.serviceability.WEATHER_STORM':

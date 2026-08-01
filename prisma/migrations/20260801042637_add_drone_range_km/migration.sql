@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "drones" ADD COLUMN     "rangeKm" DOUBLE PRECISION NOT NULL DEFAULT 12;

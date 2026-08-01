@@ -101,17 +101,13 @@ export class CreateDeliveryDto {
   @Max(180)
   toLng?: number;
 
-  // Who drives this delivery's lifecycle. Omitted/SIMULATED (default) runs the
-  // in-memory simulation as before; LIVE starts no simulation and is driven
-  // entirely by real drone telemetry via /ingest/telemetry.
-  @IsOptional()
-  @IsIn(['SIMULATED', 'LIVE'])
-  trackingSource?: 'SIMULATED' | 'LIVE';
-
-  // The drone bound to a LIVE delivery (telemetry must report this id). Defaults
-  // to a deterministic id derived from the tracking id when omitted.
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  droneId?: string;
+  // NOTE: `trackingSource` and `droneId` used to live here, and both were
+  // operator concerns sitting in a customer's request body. `trackingSource:
+  // 'LIVE'` let any authenticated user declare their delivery real, and `droneId`
+  // let them name the airframe that would fly it — which then became the MQTT
+  // topic operator commands were published to.
+  //
+  // Both are now decided server-side by DispatchService: a deployment either
+  // flies real aircraft or it does not (LIVE_DISPATCH), and the engine picks the
+  // airframe that can actually complete the mission. See src/dispatch/.
 }

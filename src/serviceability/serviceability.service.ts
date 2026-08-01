@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { EARTH_RADIUS_KM, haversineKm } from '../common/geo-distance';
-import { NO_FLY_ZONES, SERVICE_AREAS } from './serviceability.constants';
+import {
+  maxRouteKm,
+  NO_FLY_ZONES,
+  SERVICE_AREAS,
+} from './serviceability.constants';
 import {
   GeoCircle,
   RouteSegment,
@@ -48,6 +52,20 @@ export class ServiceabilityService {
       return this.blocked(
         'OUT_OF_AREA',
         'Pickup or dropoff is outside our service area.',
+      );
+    }
+
+    // --- HARD: route length. A drone has a finite battery, and nothing else in
+    // this method knows that: OUT_OF_AREA is satisfied by both endpoints being in
+    // SOME area (or by SERVICE_AREA_GLOBAL, which makes it vacuous), so the pair
+    // Jakarta → London passed every check above and was quoted and accepted.
+    const routeKm = haversineKm(fromLat, fromLng, toLat, toLng);
+    const limitKm = maxRouteKm();
+    if (routeKm > limitKm) {
+      return this.blocked(
+        'ROUTE_TOO_LONG',
+        `This route is ${routeKm.toFixed(0)} km — beyond our ${limitKm} km flight range.`,
+        { routeKm: Math.round(routeKm), maxKm: limitKm },
       );
     }
 

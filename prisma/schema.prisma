@@ -197,6 +197,14 @@ model Drone {
   maxPayloadKg   Float
   batteryPercent Int    @default(100)
 
+  /// Still-air range at full charge with no payload, in km — the bench figure.
+  /// Dispatch never spends all of it: it derates by state-of-charge and payload
+  /// fraction and holds a reserve back (src/dispatch/flight-feasibility.ts).
+  /// Without this, "can this aircraft get there AND get home" is unanswerable and
+  /// selection degrades to a payload comparison. The default is a conservative
+  /// small-multirotor figure; the fleet form should set a real per-model value.
+  rangeKm Float @default(12)
+
   /// Where it lives and where it is now (nullable until the first telemetry frame).
   homeBaseLat Float
   homeBaseLng Float

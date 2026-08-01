@@ -18,6 +18,7 @@ export interface RouteSegment {
 /** Machine-parseable reasons a route can't be flown. */
 export type ServiceabilityCode =
   | 'OUT_OF_AREA' // pickup/dropoff outside the service area (hard, non-retryable)
+  | 'ROUTE_TOO_LONG' // farther than any drone can fly (hard, non-retryable)
   | 'NO_FLY_ZONE' // endpoint or route crosses restricted airspace (hard)
   | 'WEATHER_HOLD' // high wind / rain grounding drones (soft, retryable)
   | 'WEATHER_STORM'; // severe weather (soft, retryable)

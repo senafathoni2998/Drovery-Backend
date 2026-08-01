@@ -143,10 +143,10 @@ export const id: Record<string, string> = {
     'Pengiriman dengan id pelacakan "{trackingId}" tidak ditemukan',
   'error.delivery.schedule.too_far':
     'Penjemputan dapat dijadwalkan paling lama {maxDays} hari ke depan.',
-  'error.delivery.drone.required':
-    'Pengiriman LIVE harus menyebutkan drone yang menerbangkannya.',
-  'error.delivery.drone.unavailable':
-    'Drone "{droneId}" tidak tersedia untuk pengiriman ini.',
+  'error.delivery.dispatch.unavailable':
+    'Tidak ada drone yang tersedia untuk pengiriman ini saat ini. Silakan coba lagi sebentar lagi.',
+  'error.delivery.dispatch.no_capacity':
+    'Tidak ada drone kami yang dapat mengangkut {weightKg} kg. Coba pisahkan paketnya.',
   'error.delivery.schedule.invalid_date':
     'pickupDate "{pickupDate}" bukan tanggal kalender yang valid.',
   'error.delivery.schedule.live_not_allowed':
@@ -163,6 +163,8 @@ export const id: Record<string, string> = {
     'Lokasi yang dipilih berjarak {deviationKm} km dari "{field}". Jaraknya harus dalam {maxKm} km — periksa alamatnya atau tandai ulang lokasinya.',
   'error.serviceability.OUT_OF_AREA':
     'Lokasi penjemputan atau pengantaran berada di luar area layanan kami.',
+  'error.serviceability.ROUTE_TOO_LONG':
+    'Rute ini sejauh {routeKm} km — melebihi jangkauan terbang kami yang {maxKm} km.',
   'error.serviceability.NO_FLY_ZONE':
     'Rute dibatasi di dekat {zoneName} (zona larangan terbang).',
   'error.serviceability.WEATHER_STORM':
