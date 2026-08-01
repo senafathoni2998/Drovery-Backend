@@ -841,3 +841,100 @@ above can fail it.
 - **Phases 11–12** — the Drone entity and flight ops. L-sized and structural.
 - **Eight of thirteen phases now touched.** Six branches stacked and unmerged; merging is well
   past the point of being the bottleneck.
+
+---
+
+## Phase 11 — Drone entity — INCREMENT 1 DONE (dispatch engine + admin surface remain)
+**Date:** 2026-08-01
+**Session:** same session; user away, decisions autonomous
+**Branch:** `fix/audit-phase-11-drone-entity` — 8 commits, pushed, stacked on
+`fix/audit-phase-9-realtime-durability`
+
+**Phase 10 was skipped, not forgotten:** it needs real Stripe test keys, and mock mode is
+precisely what hides the bug (`stripe.service.ts` returns a fake `succeeded` when
+`STRIPE_SECRET_KEY` is unset). Writing the confirm/SCA/refund path against mock mode would be
+writing it blind. Blocked on the user.
+
+### What changed
+- **`Drone` model (new).** Serial, model, firmware, `DroneStatus`, `airworthy`, `maxPayloadKg`,
+  `batteryPercent`, home base + current position, flight hours/cycles, `maintenanceDueAt`, a
+  per-aircraft `ingestKeyHash`, `lastSeenAt`.
+- **`Delivery.assignedDroneId` is now a real foreign key.** It was a bare nullable String
+  holding `drone-${uuidv4()}` and referencing nothing.
+- **`Drone.activeDeliveryId` is UNIQUE — the claim AND the lock.** The database now refuses to
+  let one aircraft hold two deliveries. It lives on `drones` rather than `deliveries` because
+  `deliveries` is RANGE-partitioned and **cannot carry a unique index that omits its partition
+  key** — the plan's suggested "partial unique index on deliveries" is not achievable.
+- **`claimDrone()`** — a LIVE delivery now requires a registered airframe. The claim is a
+  conditional update carrying every precondition (airworthy, AVAILABLE, unclaimed,
+  payload-capable), so two creates racing for the last aircraft cannot both win.
+- **`releaseDrone()`** in `cleanupAfterTermination`, scoped to the delivery's own claim so a
+  late release cannot free a drone another delivery has since taken.
+
+### Verification
+- backend: tsc ✔ / lint ✔ (98 warnings, unchanged) / **80 suites, 770 tests** (phase 9 left 765)
+- `prisma migrate status`: 33 migrations, **database schema up to date** — no drift.
+
+**The migration was verified against real data, not just generated.** A live Postgres turned out
+to be reachable at `localhost:5432`, so rather than hand-writing SQL blind:
+1. Seeded three legacy-shaped deliveries (two live, one delivered) with `drone-aaa/bbb/ccc`.
+2. Applied the migration.
+3. Confirmed: three aircraft materialised; the two live ones `IN_FLIGHT` with their
+   `activeDeliveryId` set; the delivered one `GROUNDED` and unclaimed; all `airworthy=false`.
+4. Confirmed the constraints actually bite — a dangling `assignedDroneId` is rejected by the FK,
+   and a second delivery on one drone is rejected by the unique index. **That is the audit's
+   "two deliveries, one aircraft" bug, now structurally impossible.**
+5. Cleaned the seed data; database back to empty.
+
+**Mutation tests** — applied, targeted spec run, restored:
+
+| Mutation | Intended test | Result |
+|---|---|---|
+| claim drops its preconditions | "claims a real aircraft atomically" | ✔ failed |
+| LIVE falls back to a phantom id | "rejects a LIVE delivery that names no aircraft" | ✔ failed |
+| release removed from cleanup | "releases the aircraft when the delivery terminates" | ✔ failed |
+
+### Decisions made
+- **Prisma's generated migration would have broken any populated database.** It adds the FK
+  directly, and every pre-existing `assignedDroneId` references nothing. I inserted a backfill
+  that materialises an aircraft per distinct legacy id *before* the constraint. The dev database
+  was empty, so I seeded rows specifically to make that path execute rather than shipping an
+  untested branch.
+- **Backfilled airframes are GROUNDED and not airworthy.** We know their id and nothing else —
+  no payload class, battery or home base. `maxPayloadKg = 0` is chosen to be obviously unusable
+  (it matches no package) rather than plausibly wrong.
+- **The claim lives on `drones`, not `deliveries`.** Forced by the partitioning, and it turns out
+  to be the better design anyway: the drone row is the natural lock for "is this aircraft free".
+- **A LIVE delivery without a registered drone is now a 400.** The alternative — auto-creating a
+  drone row — would reintroduce exactly the phantom aircraft this phase deletes.
+- **One error message for every claim failure.** Which aircraft is airworthy, charged or already
+  flying is fleet information, and `POST /deliveries` is reachable by any authenticated customer.
+
+### Deviations from the plan
+- **Scoped to increment 1.** The plan's Phase 11 is L-sized: entity, per-aircraft credentials,
+  DTO hardening, dispatch engine, haversine bound, admin fleet surface. The entity plus a real
+  atomic claim is the part everything else depends on, and it is coherent on its own.
+- **The `ingestKeyHash` column exists but nothing uses it yet.** `DroneAuthGuard` still checks the
+  single shared `INGEST_API_KEY`. The column is there so the credential migration is a code
+  change rather than another schema change.
+
+### Left undone / follow-ups
+- **Dispatch engine** — nothing *selects* an aircraft yet; the caller still names one. Nearest
+  available, out-and-back energy feasibility, saturation queue and reassignment on unresponsive
+  are all still absent.
+- **`droneId` / `trackingSource` are still on the customer-facing DTO.** Any authenticated user
+  can still ask for a LIVE delivery on a specific aircraft — though it now must be a real,
+  free, payload-capable one, and the claim is atomic, so the blast radius is much smaller than
+  the audit found. Proper fix is an operator-only create path.
+- **Per-aircraft ingest credentials** — column added, guard unchanged.
+- **Admin fleet surface** — no registry list, no ground/unground, no way to create a Drone. **In
+  practice this means LIVE deliveries cannot be created at all until someone inserts a drone
+  row**, since there is no UI or endpoint to register one. SIMULATED (the default) is unaffected.
+- **Haversine still unbounded** with `SERVICE_AREA_GLOBAL=true`.
+
+### Next
+- **Finish Phase 11**: the admin fleet surface is the most urgent gap (LIVE is unusable without
+  it), then the dispatch engine.
+- **Phase 12** (flight ops) depends on all of the above.
+- **Phase 10** remains blocked on Stripe test keys.
+- **Seven branches stacked and unmerged.** This is now a real risk, not a nag.
