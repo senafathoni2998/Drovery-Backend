@@ -231,6 +231,7 @@ describe('AdminService', () => {
         serial: 'X1',
         model: 'Drovery X1',
         maxPayloadKg: 2,
+        rangeKm: 15,
         homeBaseLat: -6.9,
         homeBaseLng: 107.6,
       } as any);
@@ -253,6 +254,7 @@ describe('AdminService', () => {
           serial: 'X1',
           model: 'm',
           maxPayloadKg: 1,
+          rangeKm: 10,
           homeBaseLat: 0,
           homeBaseLng: 0,
         } as any),
