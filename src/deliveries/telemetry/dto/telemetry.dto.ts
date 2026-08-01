@@ -1,5 +1,6 @@
 import {
   IsIn,
+  IsInt,
   IsISO8601,
   IsNotEmpty,
   IsNumber,
@@ -12,7 +13,12 @@ import {
 
 import { DeliveryFailureReason } from '@prisma/client';
 
-import { DRONE_PHASES } from '../telemetry.constants';
+import {
+  AIRSPEED_MAX_KPH,
+  ALTITUDE_MAX_M,
+  ALTITUDE_MIN_M,
+  DRONE_PHASES,
+} from '../telemetry.constants';
 import type { DronePhase } from '../telemetry.constants';
 
 /**
@@ -47,6 +53,33 @@ export class TelemetryDto {
   @Min(-180)
   @Max(180)
   lng?: number;
+
+  /**
+   * Altitude above mean sea level, metres. Bounded well above any legal drone
+   * ceiling and below sea level, so a garbage reading is rejected rather than
+   * recorded into a flight log an incident review will later trust.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(ALTITUDE_MIN_M)
+  @Max(ALTITUDE_MAX_M)
+  altitudeM?: number;
+
+  /**
+   * State of charge, whole percent. The single most consequential number a drone
+   * transmits: it is what decides whether the aircraft is told to come home.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  batteryPercent?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(AIRSPEED_MAX_KPH)
+  airspeedKph?: number;
 
   @IsOptional()
   @IsString()
