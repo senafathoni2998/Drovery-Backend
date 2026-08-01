@@ -9,6 +9,7 @@ import { DeliveryStatus, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 
 import { DeliveriesService } from './deliveries.service';
+import { FAILABLE_STATUSES } from './delivery-exceptions';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
@@ -1285,9 +1286,20 @@ describe('DeliveriesService', () => {
      * to be derived from the status the transition fired FROM — and a test that
      * hard-codes a count sequence would pass for the wrong reason.
      */
-    const deliveryReallyIn = (status: DeliveryStatus) => {
+    const deliveryReallyIn = (
+      status: DeliveryStatus,
+      id: string = 'delivery-1',
+    ) => {
       prisma.delivery.updateMany.mockImplementation((args: any) => {
-        const gate = args?.where?.status;
+        const where = args?.where ?? {};
+        // Faithful to Postgres: an absent filter constrains NOTHING. A CAS that
+        // forgot its id therefore still "matches" here, exactly as it would in the
+        // database — which is why the WHERE shape is asserted directly below
+        // rather than inferred from a count.
+        if (where.id !== undefined && where.id !== id) {
+          return Promise.resolve({ count: 0 });
+        }
+        const gate = where.status;
         const matches =
           gate === undefined
             ? true
@@ -1299,6 +1311,49 @@ describe('DeliveriesService', () => {
         return Promise.resolve({ count: matches ? 1 : 0 });
       });
     };
+
+    /** Every CAS a terminal path issues must be scoped to ONE delivery. */
+    const expectEveryCasScopedToOneDelivery = (id: string) => {
+      expect(prisma.delivery.updateMany.mock.calls.length).toBeGreaterThan(0);
+      for (const [args] of prisma.delivery.updateMany.mock.calls) {
+        // Without this, one admin force-cancel cancels every in-flight delivery
+        // in the fleet — and a count-based assertion cannot see it.
+        expect(args.where.id).toBe(id);
+      }
+    };
+
+    it('scopes every force-cancel CAS to the one delivery and the right statuses', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      await service.adminForceCancel('delivery-1');
+
+      expectEveryCasScopedToOneDelivery('delivery-1');
+      // The airborne CAS must carry a status gate too: an unguarded second CAS
+      // would flip a DELIVERED delivery to CANCELED and refund it.
+      const airborne = prisma.delivery.updateMany.mock.calls[1][0];
+      expect(airborne.where.status.in).toEqual(FAILABLE_STATUSES);
+    });
+
+    it('scopes the airborne failure CAS to the one delivery', async () => {
+      deliveryReallyIn(DeliveryStatus.AWAITING_HANDOFF);
+
+      await service.failExceptional('delivery-1', 'MECHANICAL' as any);
+
+      expectEveryCasScopedToOneDelivery('delivery-1');
+    });
+
+    it('force-cancel still refuses a settled terminal through BOTH CASes', async () => {
+      // The no-resurrect guard now has two predicates to get past, not one.
+      deliveryReallyIn(DeliveryStatus.DELIVERED);
+      prisma.delivery.findUnique.mockResolvedValue({
+        status: DeliveryStatus.DELIVERED,
+      });
+
+      await expect(service.adminForceCancel('delivery-1')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
 
     it('does NOT return an airborne aircraft to the pool on force-cancel', async () => {
       // adminForceCancel is deliberately legal from the in-flight statuses. The

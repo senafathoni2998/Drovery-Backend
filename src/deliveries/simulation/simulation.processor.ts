@@ -186,14 +186,35 @@ export class SimulationProcessor extends WorkerHost {
       }));
     } catch (error) {
       // A THROW here is not the same as a lost race, and it used to fall straight
-      // past the release below. The pool timeout / connection reset this retries
-      // for would leave the airframe claimed against a delivery still sitting in
-      // SCHEDULED, which nothing releases. The claim is re-entrant, so the retry
-      // picks the same aircraft back up either way; handing it back keeps the
-      // fleet correct in the meantime, and if the release itself fails it is the
-      // re-entrancy that saves us rather than a second, conflicting claim.
+      // past the release below: the pool timeout this retries for would leave the
+      // airframe claimed against a delivery still sitting in SCHEDULED, which
+      // nothing releases.
+      //
+      // But a rejected promise is NOT proof the statement did not commit — the
+      // same post-commit reject create()'s reservation catch is written around. If
+      // the transition DID land, the delivery is PENDING and bound to this
+      // aircraft, and the retry short-circuits on the leading status read, so
+      // nothing would ever re-claim it. Releasing blind would hand a drone that is
+      // about to fly back to the dispatchable pool — turning a recoverable leak
+      // into the double-booking this whole module exists to prevent.
+      //
+      // So: release only on PROOF the transition did not happen. Anything else,
+      // including a failed re-read, keeps the claim — a leak is recoverable (the
+      // claim is re-entrant, so the retry picks the same airframe back up), and a
+      // double-booked aircraft is not.
       if (dispatched.droneId) {
-        await this.dispatchService.release(deliveryId, 'RETURN_TO_FLEET');
+        const current = await this.prisma.delivery
+          .findFirst({ where: { id: deliveryId }, select: { status: true } })
+          .catch(() => null);
+        if (current?.status === DeliveryStatus.SCHEDULED) {
+          await this.dispatchService.release(deliveryId, 'RETURN_TO_FLEET');
+        } else {
+          this.logger.warn(
+            `Delivery ${deliveryId} kickoff write failed ambiguously ` +
+              `(status now ${current?.status ?? 'unknown'}) — keeping the claim on ` +
+              `${dispatched.droneId} rather than risk re-pooling a live airframe`,
+          );
+        }
       }
       throw error;
     }

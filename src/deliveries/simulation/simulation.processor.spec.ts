@@ -537,6 +537,50 @@ describe('SimulationProcessor', () => {
         'RETURN_TO_FLEET',
       );
     });
+
+    it('keeps the airframe when the failed write may actually have landed', async () => {
+      // A rejected promise is NOT proof the statement did not commit — this repo
+      // reasons about the same post-commit reject in create()'s reservation catch.
+      // If the transition did land, the delivery is PENDING and bound to this
+      // aircraft, and the retry short-circuits on the status, so nothing re-claims
+      // it: releasing here would put a drone that is about to fly back into the
+      // dispatchable pool. Before the release existed at all, this case was benign.
+      dispatchService.dispatch.mockResolvedValue({
+        trackingSource: 'LIVE',
+        droneId: 'drone-7',
+      });
+      prisma.delivery.updateMany.mockRejectedValue(
+        new Error('connection reset by peer'),
+      );
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce(scheduled) // the leading read
+        .mockResolvedValue({ ...scheduled, status: DeliveryStatus.PENDING });
+
+      await expect(processor.process(kickoffJob())).rejects.toThrow(
+        'connection reset by peer',
+      );
+
+      expect(dispatchService.release).not.toHaveBeenCalled();
+    });
+
+    it('keeps the airframe when it cannot find out whether the write landed', async () => {
+      // Unknown is not "did not commit". Leaking a claim is recoverable by the
+      // re-entrant retry; double-booking an airframe is not.
+      dispatchService.dispatch.mockResolvedValue({
+        trackingSource: 'LIVE',
+        droneId: 'drone-7',
+      });
+      prisma.delivery.updateMany.mockRejectedValue(new Error('pool timeout'));
+      prisma.delivery.findUnique
+        .mockResolvedValueOnce(scheduled)
+        .mockRejectedValue(new Error('still down'));
+
+      await expect(processor.process(kickoffJob())).rejects.toThrow(
+        'pool timeout',
+      );
+
+      expect(dispatchService.release).not.toHaveBeenCalled();
+    });
   });
 
   // A scheduled delivery is the ONE case create() never asks the dispatch engine
