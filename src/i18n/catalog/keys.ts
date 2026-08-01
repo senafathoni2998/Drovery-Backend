@@ -62,6 +62,8 @@ export const ERROR_KEYS = [
   'error.delivery.schedule.too_far',
   'error.delivery.schedule.live_not_allowed',
   'error.delivery.schedule.invalid_date',
+  'error.delivery.drone.required',
+  'error.delivery.drone.unavailable',
   'error.delivery.tracking_id_alloc_failed',
   'error.delivery.serviceability.unresolved_location',
   'error.delivery.serviceability.not_flyable',
