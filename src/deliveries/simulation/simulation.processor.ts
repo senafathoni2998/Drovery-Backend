@@ -9,7 +9,10 @@ import { I18nService } from '../../i18n/i18n.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { POSITION_FROZEN_STATUSES } from '../delivery-exceptions';
 import { DeliveriesService } from '../deliveries.service';
-import { DispatchService } from '../../dispatch/dispatch.service';
+import {
+  DispatchService,
+  isPermanentDispatchRefusal,
+} from '../../dispatch/dispatch.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { ServiceabilityService } from '../../serviceability/serviceability.service';
 import { TrackingService } from '../tracking/tracking.service';
@@ -128,18 +131,31 @@ export class SimulationProcessor extends WorkerHost {
     // Acquire an aircraft NOW rather than at booking. A scheduled delivery cannot
     // hold an airframe out of service for weeks, so `create()` deliberately claims
     // nothing for one — this is where that deferral is paid off.
-    const dispatched = await this.dispatchService.dispatch({
-      deliveryId,
-      payloadKg: delivery.packageWeight,
-      route: {
-        fromLat: delivery.fromLat ?? undefined,
-        fromLng: delivery.fromLng ?? undefined,
-        toLat: delivery.toLat ?? undefined,
-        toLng: delivery.toLng ?? undefined,
-      },
-      // Not scheduled ANY MORE — its window is now, which is the whole point.
-      isScheduled: false,
-    });
+    //
+    // Which also makes this the FIRST time the fleet is consulted about a delivery
+    // the customer has already paid for. An escaping refusal fails the job, and
+    // SCHEDULED is reachable by neither the watchdog nor FAILABLE_STATUSES, so the
+    // delivery would sit there indefinitely looking to its customer exactly like
+    // one about to happen — the precise outcome the pre-flight ABORT above exists
+    // to prevent. A refusal gets the same treatment as bad weather.
+    let dispatched: Awaited<ReturnType<DispatchService['dispatch']>>;
+    try {
+      dispatched = await this.dispatchService.dispatch({
+        deliveryId,
+        payloadKg: delivery.packageWeight,
+        route: {
+          fromLat: delivery.fromLat ?? undefined,
+          fromLng: delivery.fromLng ?? undefined,
+          toLat: delivery.toLat ?? undefined,
+          toLng: delivery.toLng ?? undefined,
+        },
+        // Not scheduled ANY MORE — its window is now, which is the whole point.
+        isScheduled: false,
+      });
+    } catch (error) {
+      await this.handleDispatchRefusal(data, error);
+      return;
+    }
 
     // A live delivery is driven by real telemetry and enqueues no simulation jobs;
     // that is what guarantees a sim and a live producer can never both drive one row.
@@ -152,20 +168,35 @@ export class SimulationProcessor extends WorkerHost {
       );
     }
 
-    const { count } = await this.prisma.delivery.updateMany({
-      where: { id: deliveryId, status: DeliveryStatus.SCHEDULED },
-      data: {
-        status: DeliveryStatus.PENDING,
-        // Co-committed with the transition, so a delivery is never PENDING while
-        // still claiming to be SIMULATED with a live airframe bound to it.
-        ...(dispatched.droneId
-          ? {
-              trackingSource: dispatched.trackingSource,
-              assignedDroneId: dispatched.droneId,
-            }
-          : {}),
-      },
-    });
+    let count: number;
+    try {
+      ({ count } = await this.prisma.delivery.updateMany({
+        where: { id: deliveryId, status: DeliveryStatus.SCHEDULED },
+        data: {
+          status: DeliveryStatus.PENDING,
+          // Co-committed with the transition, so a delivery is never PENDING while
+          // still claiming to be SIMULATED with a live airframe bound to it.
+          ...(dispatched.droneId
+            ? {
+                trackingSource: dispatched.trackingSource,
+                assignedDroneId: dispatched.droneId,
+              }
+            : {}),
+        },
+      }));
+    } catch (error) {
+      // A THROW here is not the same as a lost race, and it used to fall straight
+      // past the release below. The pool timeout / connection reset this retries
+      // for would leave the airframe claimed against a delivery still sitting in
+      // SCHEDULED, which nothing releases. The claim is re-entrant, so the retry
+      // picks the same aircraft back up either way; handing it back keeps the
+      // fleet correct in the meantime, and if the release itself fails it is the
+      // re-entrancy that saves us rather than a second, conflicting claim.
+      if (dispatched.droneId) {
+        await this.dispatchService.release(deliveryId, 'RETURN_TO_FLEET');
+      }
+      throw error;
+    }
 
     if (count === 0) {
       // Lost the race — canceled, or another replica kicked it off. Give the
@@ -180,6 +211,54 @@ export class SimulationProcessor extends WorkerHost {
     this.logger.log(
       `Delivery ${deliveryId} kicked off (SCHEDULED → PENDING)` +
         (dispatched.droneId ? ` on drone ${dispatched.droneId}` : ''),
+    );
+  }
+
+  /**
+   * The fleet refused the launch. Same two outcomes as the pre-flight check, for
+   * the same reason: hold what waiting can fix, give up on what it cannot.
+   *
+   * A saturated fleet is transient — an airframe lands every few minutes — so it
+   * shares the pre-flight's hold budget rather than getting its own. Sharing is
+   * deliberate: the budget exists to bound how long a customer is left watching a
+   * delivery that has not started, and that bound must not double because the
+   * reason for holding changed halfway through.
+   *
+   * `no_capacity` is permanent — nothing in the fleet can lift this payload, and
+   * an hour of holding ends in the same refusal. `create()` cannot catch this one
+   * for a scheduled delivery because it deliberately never asks the engine.
+   */
+  private async handleDispatchRefusal(
+    data: KickoffJobData,
+    error: unknown,
+  ): Promise<void> {
+    const { deliveryId } = data;
+    const attempt = data.preflightAttempt ?? 0;
+    const permanent = isPermanentDispatchRefusal(error);
+    const code = permanent ? 'DISPATCH_NO_CAPACITY' : 'DISPATCH_UNAVAILABLE';
+
+    if (!permanent && !holdExhausted(attempt, PREFLIGHT_MAX_ATTEMPTS)) {
+      this.logger.warn(
+        `Delivery ${deliveryId} held on the ground (${code}), ` +
+          `attempt ${attempt + 1}/${PREFLIGHT_MAX_ATTEMPTS}`,
+      );
+      await this.simulationService.deferKickoff(data, attempt + 1);
+      this.metrics.preflightHoldsTotal.inc({ code });
+      return;
+    }
+
+    this.logger.warn(
+      `Delivery ${deliveryId} aborted at pre-flight (${code}): ` +
+        `${(error as Error).message}`,
+    );
+    this.metrics.preflightAbortsTotal.inc({ code });
+    // Refunded, like every other pre-flight abort: the customer booked a delivery
+    // we accepted and then could not fly. Scoped to SCHEDULED for the same reason
+    // the pre-flight abort is — nothing here may fail a delivery that has launched.
+    await this.deliveries.failExceptional(
+      deliveryId,
+      DeliveryFailureReason.OTHER,
+      [DeliveryStatus.SCHEDULED],
     );
   }
 
