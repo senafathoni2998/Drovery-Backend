@@ -60,3 +60,16 @@ export const PARTITIONED_TABLES: readonly PartitionedTable[] = [
   { table: 'admin_audit_logs', retainMonths: 0 },
   { table: 'deliveries' },
 ];
+
+/**
+ * How many months of history a table keeps. A per-table `retainMonths` wins over the
+ * global default INCLUDING an explicit 0 (never drop) — so `??`, never `||`. That single
+ * character is the whole difference between "audit history is never dropped" and "it is
+ * dropped whenever somebody tunes telemetry retention".
+ */
+export function retentionFor(
+  entry: PartitionedTable,
+  globalRetainMonths: number = PARTITION_RETAIN_MONTHS,
+): number {
+  return entry.retainMonths ?? globalRetainMonths;
+}

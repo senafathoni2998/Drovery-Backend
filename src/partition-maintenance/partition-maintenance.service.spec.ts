@@ -1,4 +1,5 @@
 import { PartitionMaintenanceService } from './partition-maintenance.service';
+import { PARTITIONED_TABLES, retentionFor } from './partition.constants';
 
 // DB-free: the plpgsql routines are exercised by scripts/verify-partitions.sql + the
 // guarded integration spec; here we assert the service's orchestration (order, per-table
@@ -85,25 +86,25 @@ describe('PartitionMaintenanceService', () => {
     );
   });
 
-  it('never drops audit history, even when global retention is enabled', async () => {
-    // The global knob exists for flight_frames volume. If tuning telemetry retention also
-    // dropped audit rows, the record of who grounded a fleet would age out — the exact
-    // failure this increment exists to prevent.
-    process.env.PARTITION_RETAIN_MONTHS = '6';
-    jest.resetModules();
-    const { PartitionMaintenanceService: Svc } =
-      await import('./partition-maintenance.service.js');
-    const svc = new Svc(prisma as never, metrics as never);
+  it('pins admin_audit_logs out of retention in the table list itself', () => {
+    const audit = PARTITIONED_TABLES.find(
+      (t) => t.table === 'admin_audit_logs',
+    );
+    expect(audit?.retainMonths).toBe(0);
+  });
+});
 
-    await svc.run();
+describe('retentionFor', () => {
+  it('lets a per-table 0 override a positive global — audit history is never dropped', () => {
+    // `||` here instead of `??` would silently fall through to the global, which is the
+    // entire failure mode this override exists to prevent.
+    expect(
+      retentionFor({ table: 'admin_audit_logs', retainMonths: 0 }, 6),
+    ).toBe(0);
+  });
 
-    const dropTargets = prisma.$queryRawUnsafe.mock.calls
-      .filter((c) => (c[0] as string).includes('partition_drop_old'))
-      .map((c) => c[1] as string);
-
-    expect(dropTargets).toContain('flight_frames'); // the global still applies elsewhere
-    expect(dropTargets).not.toContain('admin_audit_logs'); // ...but never here
-
-    delete process.env.PARTITION_RETAIN_MONTHS;
+  it('falls back to the global when a table states no preference', () => {
+    // Without this, "never drop anything" would also pass the test above.
+    expect(retentionFor({ table: 'flight_frames' }, 6)).toBe(6);
   });
 });

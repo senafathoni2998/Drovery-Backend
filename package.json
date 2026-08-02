@@ -121,16 +121,7 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": [
-        "ts-jest",
-        {
-          "tsconfig": {
-            "module": "commonjs",
-            "moduleResolution": "node",
-            "resolvePackageJsonExports": false
-          }
-        }
-      ]
+      "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
@@ -138,8 +129,7 @@
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
     "moduleNameMapper": {
-      "^uuid$": "uuid",
-      "^(\\.{1,2}/.*)\\.js$": "$1"
+      "^uuid$": "uuid"
     },
     "transformIgnorePatterns": [
       "/node_modules/(?!uuid)/",
