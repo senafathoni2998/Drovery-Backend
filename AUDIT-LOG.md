@@ -1585,3 +1585,223 @@ call site as a fixed class.
   `forceCancel(deliveryId)` and `fail(deliveryId, reason)` still do not receive an admin id.
 - Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
 - **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 4) — Operator audit log — DONE
+
+**Date:** 2026-08-02
+**Branch:** `fix/audit-phase-12-operator-audit-log` (backend)
+**Covers plan items:** 12.7 (operator audit log), in full
+
+### Why this exists
+
+Force-cancel, fail-with-reason, goodwill refund, role changes and promo edits left a pino
+line that rotates away. Two of the routes did not even receive an admin id — the actor was
+dropped at the controller boundary, so the strongest available answer to "who cancelled this
+delivery" was a log line with no subject. Anything with a retention policy shorter than the
+dispute it would settle is not a record.
+
+### What changed
+
+**`admin_audit_logs`** — new table, `PARTITION BY RANGE("createdAt")` **from birth** (no
+copy-swap; it had no rows to move), composite PK `(id, "createdAt")` like every other
+partitioned table here. Retention is pinned **OFF** for it specifically, and that is a
+per-table override rather than a comment: `PARTITIONED_TABLES` entries now carry an optional
+`retainMonths`, resolved by `retentionFor(entry)` as `entry.retainMonths ?? PARTITION_RETAIN_MONTHS`.
+The `??` is the whole point — with `||`, an explicit `0` falls through to the global, and the
+first person to bound `flight_frames` (one row per telemetry tick, the only table whose volume
+motivates retention at all) would silently start deleting audit history alongside it.
+
+**The row co-commits with the mutation it records.** `AdminAuditService.recordWithinTx(tx,
+entry)` takes the **caller's** transaction client and never reaches for its own. Write failures
+propagate, rolling the operator's action back: a mutation that happened with no record of who
+did it is the exact state this exists to prevent. This is the guarantee the whole increment is
+built around, and it is the one that is easiest to lose silently — see the mock defect below.
+
+**An allowlist, not a denylist.** `AUDIT_FIELD_ALLOWLIST` declares, per action, which fields
+may reach `before`/`after`/`args`; `pickAllowed` / `diffAllowed` are the sole chokepoint, and
+every payload goes through them even where the literal is already exactly the allowed shape.
+A denylist means a field added to a DTO later starts appearing in the log until somebody
+remembers to exclude it. Nothing here captures a handoff code, a token, an ingest key or a
+full address. `SUPPORT_TICKET_REPLY` captures the message **length**, never its text — the
+content already lives in `support_chat_messages` with its own `senderUserId`.
+
+**All eleven mutating admin routes are wired:**
+
+| Target | Routes |
+|---|---|
+| Delivery | force-cancel, fail, goodwill refund |
+| Fleet | createDrone, updateDrone, issueDroneCommand |
+| Promo | createPromo, updatePromo |
+| User | setRole |
+| Support | replyAsAgent, setTicketStatus |
+
+**Automated actors get no row, deliberately.** `failExceptional` has five callers and
+`DroneCommandService.issue` two; only the operator ones pass the optional `auditWithinTx`
+callback. The watchdog, the pre-flight abort, drone-reported `FAILED`, an accepted `ABORT` and
+the flight recorder's automatic `RETURN_TO_BASE` pass nothing and write nothing. An audit log
+that fills with the system auditing itself is a log nobody reads.
+
+**The actor is assembled once.** `@AuditActor()` (backed by a plain exported
+`assembleAuditActor(ctx)`) replaces eleven hand-rolled `@CurrentUser('sub')` + role reads. It
+fails closed with a plain `Error` — a 500, not a 403, so a wiring mistake surfaces in error
+monitoring instead of hiding among ordinary denied traffic.
+
+**`GET /admin/audit`** — ADMIN-only, filterable by actor, target type, target id, action and
+range, ordered `[{createdAt:'desc'},{id:'desc'}]`. It defaults to a **30-day window** and
+echoes the effective window in the payload: `admin_audit_logs` is partitioned by `createdAt`,
+and an unbounded `ORDER BY createdAt DESC LIMIT n` has to prove no newer row exists in *any*
+partition, so it touches every one.
+
+### Verification
+```
+tsc (tsconfig.build.json): clean
+tsc (tsconfig.json):       1 pre-existing error (deliveries.controller.spec.ts:120), unchanged
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 88 passed, 88 total            (+3)
+Tests:       978 passed, 978 total          (+74)
+prisma:drift-check: No difference detected
+live catalog: admin_audit_logs → RANGE ("createdAt"), 5 children
+              (admin_audit_logs_default + y2026m08/09/10/11 — current month + 3 ahead)
+```
+
+**Mutation testing — 12 mutations, 12 caught**, re-run as one consolidated sweep across the
+whole feature rather than per-task, with every mutation gated on `tsc -p tsconfig.json
+--noEmit` staying at its one-error baseline first (a mutation the typechecker rejects proves
+nothing about the tests). `retentionFor` with `||`; `recordWithinTx` through `this.prisma`
+instead of `tx`; `recordWithinTx` swallowing the write error; `pickAllowed` returning the whole
+source object; `replyAsAgent` storing the reply text instead of its length; the audit write
+hoisted out of its transaction on `updateDrone` and on `setRole`; `setTicketStatus` auditing
+before its `count === 0` guard; `refund` auditing before the single-winner gate; `list`'s
+`count` ignoring the `where`; `list` dropping the `id` tiebreaker; `list` dropping the default
+window.
+
+One methodological note worth keeping: the first pass reported the `this.prisma` mutation as a
+**survivor**, and it was not. `jest -t` takes a *regex*, and the test's name contains `list()`
+— the unescaped parentheses matched an empty group, so no test ran, jest exited 0, and the
+harness read that as "the mutation passed". A mutation run that cannot distinguish "the test
+passed" from "no test ran" reports a clean bill of health for a suite that never executed. The
+script now escapes the filter and parses jest's summary for a non-zero executed count.
+
+### Decisions made
+
+- **Co-commit the audit row, and let its failure roll the mutation back.** A best-effort
+  after-the-fact write is the trail this replaces. The alternative — audit, then mutate — logs
+  actions that did not happen, which on a forensic surface is worse than a gap.
+- **The property is co-commitment, not the row.** "The mutation happened AND a row was
+  written" is satisfied by a write hoisted out of the transaction, which is precisely the
+  regression that matters. Every one of the eleven routes has a test that goes red if its
+  audit write is hoisted — either an ordering assertion (`['begin', 'update', 'audit',
+  'commit']`) or a `txClient` identity assertion. **It took three attempts to get that true of
+  all eleven**: the first review found the property untested everywhere, the second closed four
+  routes and missed a fifth, the third found `createPromo` still passing 53/53 with its write
+  hoisted. Each round asked "which routes are still unpinned?" and each round the answer was
+  larger than the previous round's list.
+- **`??`, not `||`, for the retention override** — one character between "audit history is
+  never dropped" and "it is dropped whenever somebody tunes telemetry retention". It has its
+  own unit test and its own mutation.
+- **Record the status the transition actually fired from, read inside the transaction** — and
+  gate that read on the audit callback being supplied, so automated callers pay nothing per
+  reap and operator actions get the truth.
+- **`createPromo` audits the created ROW, not the DTO.** `code` is trimmed and uppercased on
+  write, so the DTO value is never what got persisted. `createDrone` does the same even though
+  its allowed fields pass through unchanged today — so the invariant the next create route
+  copies is the one that survives a create gaining its own normalization.
+- **Traded a structural guarantee for a convention, knowingly.** For six of the eight tasks
+  `AdminAuditService` held **no** `PrismaService` at all — writing outside the caller's
+  transaction was not merely wrong, it was unexpressible. Task 7's `list()` needs a client, so
+  the class now holds one and the guarantee is a documented rule enforced by a single test: a
+  `foreignTx` object with no relationship to the injected mock. That test is the *only* thing
+  in the suite that catches `recordWithinTx` switching to `this.prisma` — the older
+  "writes through the caller transaction" test passes `prisma` as its own `tx` and cannot tell
+  them apart, and neither can the `txClient` co-commit tests. If that one test is ever deleted,
+  the guarantee goes with it.
+- **This crosses a house rule, on purpose.** `deliveries.service.ts:86-92` states that no
+  single `$transaction` co-commits state rooted at different shard keys — it is why the
+  debit-first saga exists. An `AdminAuditLog` row is actor-rooted and time-partitioned;
+  co-committing it with a delivery-rooted mutation binds `admin_audit_logs` to the delivery
+  shard if `shardCount` ever flips. **The trade was made deliberately**: durability of the
+  record beats a sharding constraint the project has not yet taken on, and a best-effort audit
+  row is not worth having. Recording it here so it is a known cost and not a later discovery.
+- **The read surface is windowed by default, not capped.** 30 days keeps the planner pruned
+  for the ordinary case; a caller who genuinely wants all history passes `from` and accepts the
+  scan.
+
+### What the review caught
+
+Every task was reviewed, and the reviews are most of why the increment is worth writing up.
+
+- **The shared Prisma test mock made co-commitment unverifiable.** `createMockPrismaService`'s
+  interactive `$transaction` handed the callback **the same object** as the transaction client,
+  so `tx === prisma` and no identity assertion anywhere could distinguish "co-commits inside
+  the transaction" from "writes just after it". Proven, not theorised: hoisting the audit write
+  to a post-commit `recordWithinTx(this.prisma, …)` passed 28/28 on drone-command and 44/44 on
+  setRole. This had been filed as a *Minor* in two earlier task reviews before being fixed at
+  the root — the mock now builds a distinct `txClient` (a shallow copy taken before
+  `$transaction`/`readWithFallback` are attached, so every model mock is still the same
+  `jest.fn` and call tracking survives). Blast radius across all 88 suites: exactly one test,
+  whose fix strengthened it.
+- **The actor assembly was untested across eleven routes.** A swapped `sub`/role decorator
+  compiles and leaves 418/418 green while 500-ing every force-cancel in production. Collapsed
+  to one `@AuditActor()` decorator with its own spec before Tasks 5–6 added eight more
+  mountings of the same seam.
+- **`list()`'s response plumbing was unpinned** — four breaking mutations each passed 80/80,
+  including `count({})` ignoring the `where`, which puts an all-history total next to a
+  windowed page. A lying total on a forensic surface.
+- **Deleting a whole audit write left 51/51 green** on two of the create routes. Positive data
+  assertions that never assert absence do not pin a write's existence.
+
+### Deviations from the plan
+
+- **The plan's retention test could not run, and making it run was worse than replacing it.**
+  It used `jest.resetModules()` + a dynamic `import()`; under this repo's `module: nodenext`,
+  TypeScript leaves `import()` native and Jest's CommonJS runtime refuses it without
+  `--experimental-vm-modules`. The first fix changed ts-jest's module semantics for all 85
+  suites to serve one test. Reverted — `retentionFor` was extracted as a pure function instead,
+  and the behaviour got two direct unit tests with no module-system machinery anywhere.
+- **The plan fabricated the fired-from status.** It specified `firedFrom = airborneAllowed[0]`,
+  which is always `DRONE_ASSIGNED` for the default set — so nearly every admin-fail row would
+  have recorded a status the delivery was not in. A fabricated status in an audit log is worse
+  than an absent one. Replaced with a real read inside the transaction, gated on the callback.
+- **`@AuditActor()` is not in the plan**; neither is `assembleAuditActor()`. Both came out of
+  review and are the reason eleven repetitions of an untestable seam became one tested unit.
+- **`AdminAuditService` gained a `PrismaService`** in Task 7, which the plan's earlier tasks
+  had explicitly forbidden. See *Decisions made*.
+- One task's first dispatch was interrupted mid-TDD, leaving a coherent but undocumented
+  half-implementation. It was preserved as a stash and re-dispatched fresh rather than handed
+  to a new implementer as inherited context.
+
+### Left undone / follow-ups
+
+- **`before` on the two update paths is read outside the transaction.** `updateDrone` and
+  `updatePromo` both load their prior row before opening the transaction, so under READ
+  COMMITTED a concurrent edit between the read and the write makes the recorded `before` not
+  quite the immediately-prior state. Closing it means holding a row lock across the read on
+  every update.
+- **`firedFrom` is read-then-CAS, not the matched row.** Same reason: no row lock, READ
+  COMMITTED. It is the status the delivery was in a moment before the CAS matched it, which is
+  right in every non-racing case and approximately right otherwise.
+- **The 30-day window is a default, not a maximum.** `?from=1970-01-01` still scans every
+  partition. That is an explicit caller choice, but nothing bounds it.
+- **An inverted `from`/`to` returns an empty 200, not a 400.** House-consistent, and the
+  effective window is echoed in the payload, so the caller can see what they asked for — but a
+  reversed range reads as "no operator did anything" rather than as a mistake.
+- **No admin UI for any of this** — the data is behind `GET /admin/audit` and nothing renders
+  it. That is 12.5.
+- **No alerting on audit events.** Nothing notices a burst of force-cancels, a role escalation,
+  or an operator acting outside working hours.
+- **Retention is pinned off.** If `admin_audit_logs` ever needs bounding, that is a deliberate
+  decision with its own change — not a side effect of a telemetry knob.
+- `diffAllowed` compares values via `JSON.stringify`, so it is key-order sensitive if a future
+  allowlist entry is ever a nested object. Every allowed field is a scalar today.
+- `setTicketStatus` re-reads its return row after the transaction commits, so a concurrent
+  write could make it differ from what was just written. Primary-only read, and no test asserts
+  the return value — the right trade against holding a lock.
+
+### Next
+- **Phase 12 increment 5** — flight-ops console (12.5), which is also where the audit log
+  finally gets a reader, and/or airspace as data (12.4).
+- Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
+- Per-aircraft ingest credentials (11.2); the saturation queue; Phase 12 items 12.4–12.6.
+- **Phase 10** still blocked on Stripe test keys.
