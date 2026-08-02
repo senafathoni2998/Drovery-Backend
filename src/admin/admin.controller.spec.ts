@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ExecutionContext, HttpException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { DeliveryFailureReason, Role } from '@prisma/client';
 
+import { ROLES_KEY } from '../common/decorators/roles.decorator';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { assembleAuditActor } from './audit/audit-actor.decorator';
@@ -128,6 +130,20 @@ describe('AdminController', () => {
       const query = { page: 2, limit: 10, skip: 10 } as any;
       await controller.listAudit(query);
       expect(audit.list).toHaveBeenCalledWith(query);
+    });
+
+    it('is ADMIN-only — not AGENT: the log records agent actions', () => {
+      // Mirrors exactly what RolesGuard does: `getAllAndOverride(ROLES_KEY,
+      // [handler, class])`. listAudit carries no method-level @Roles of its own, so
+      // this resolves off AdminController's class-level @Roles(Role.ADMIN) — the
+      // same guard call a stray method-level @Roles(Role.AGENT) on just this handler
+      // would silently override, which is exactly the separation-of-duties regression
+      // this test exists to catch.
+      const required = new Reflector().getAllAndOverride(ROLES_KEY, [
+        AdminController.prototype.listAudit,
+        AdminController,
+      ]);
+      expect(required).toEqual([Role.ADMIN]);
     });
   });
 

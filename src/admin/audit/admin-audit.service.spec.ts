@@ -160,8 +160,38 @@ describe('AdminAuditService.list', () => {
       (where.createdAt.lte.getTime() - where.createdAt.gte.getTime()) /
       86_400_000;
     expect(Math.round(days)).toBe(30);
-    // And the caller is told, so a windowed result is not mistaken for all history.
+    // And the caller is told, so a windowed result is not mistaken for all history —
+    // both ends, not just `from`: returning a hardcoded/stale `to` in the response
+    // while the query itself stays correctly windowed would pass unnoticed otherwise.
     expect(result.from).toEqual(where.createdAt.gte);
+    expect(result.to).toEqual(where.createdAt.lte);
+  });
+
+  it('wires skip/take from the query, and passes findMany/count straight through', async () => {
+    // The `{id:'desc'}` tiebreaker above exists to protect pagination correctness —
+    // this test protects the pagination itself: skip/take must come from the query,
+    // not be hardcoded, and the page's rows/total must be exactly what the DB calls
+    // returned, not swapped or independently derived.
+    const items = [{ id: 'row-1' }, { id: 'row-2' }];
+    prisma.adminAuditLog.findMany.mockResolvedValue(items);
+    prisma.adminAuditLog.count.mockResolvedValue(42);
+
+    const result = await service.list({
+      page: 3,
+      limit: 10,
+      skip: 20,
+    } as any);
+
+    const findManyArgs = prisma.adminAuditLog.findMany.mock.calls[0][0];
+    const countArgs = prisma.adminAuditLog.count.mock.calls[0][0];
+    expect(findManyArgs.skip).toBe(20);
+    expect(findManyArgs.take).toBe(10);
+    expect(result.items).toBe(items);
+    expect(result.total).toBe(42);
+    // The total must be scoped to the SAME filters as the page it accompanies, or an
+    // operator sees a filtered/windowed page next to a total counting every row in
+    // every partition — a lying total on a forensic surface is worse than no total.
+    expect(countArgs.where).toEqual(findManyArgs.where);
   });
 
   it('filters by actor, target and action together', async () => {

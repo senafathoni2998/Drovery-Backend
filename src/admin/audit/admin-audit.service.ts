@@ -30,23 +30,21 @@ export interface AuditEntry {
 }
 
 /**
- * The operator audit log's write side.
+ * The operator audit log's write AND read surface.
  *
- * It holds NO PrismaService. Every method takes the caller's transaction client, so an
- * audit row cannot commit independently of the mutation it records — which is the whole
- * guarantee. A service with its own client would compile, pass tests, and silently
- * reintroduce the best-effort trail this replaces.
+ * It holds ONE PrismaService, and that client belongs to the READ side (`list`)
+ * ALONE. The write side (`recordWithinTx`) must NEVER use `this.prisma` — it must
+ * keep taking the CALLER's transaction client, so an audit row cannot commit
+ * independently of the mutation it records. That is the whole guarantee. A write
+ * that reached for `this.prisma` instead would still compile, and would still pass
+ * a test that (like an unwary one might) passes the same object as both the
+ * injected client and the transaction — only a test built to tell them apart
+ * catches it. Getting this backwards silently reintroduces the best-effort trail
+ * this service exists to replace.
  *
  * Failures propagate. An audit write that throws must roll the operator's action back:
  * a mutation that happened with no record of who did it is the exact state this exists
  * to make impossible.
- *
- * It now ALSO holds a PrismaService — added solely for the read side (`list`), which
- * has no transaction to piggyback on and genuinely needs its own client. That client
- * must stay confined to `list`: `recordWithinTx` must keep taking the caller's
- * transaction client and must never fall back to `this.prisma`, or a row could commit
- * outside the mutation's transaction — silently reintroducing the best-effort trail
- * this service exists to replace.
  */
 @Injectable()
 export class AdminAuditService {
