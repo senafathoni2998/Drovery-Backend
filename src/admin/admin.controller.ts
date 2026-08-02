@@ -64,22 +64,47 @@ export class AdminController {
     return this.admin.getDelivery(id);
   }
 
+  // These three ground aircraft and move money. The actor is assembled HERE, from the
+  // request: `role` is the DB-fresh one RolesGuard resolved (the JWT carries none), so
+  // both halves come from @CurrentUser with no extra read.
   @Post('deliveries/:id/force-cancel')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
-  forceCancel(@Param('id') id: string) {
-    return this.admin.forceCancel(id);
+  forceCancel(
+    @CurrentUser('sub') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Param('id') id: string,
+  ) {
+    return this.admin.forceCancel({ userId: actorId, role: actorRole }, id);
   }
 
   @Post('deliveries/:id/fail')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
-  fail(@Param('id') id: string, @Body() dto: FailDeliveryDto) {
-    return this.admin.fail(id, dto.reason);
+  fail(
+    @CurrentUser('sub') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Param('id') id: string,
+    @Body() dto: FailDeliveryDto,
+  ) {
+    return this.admin.fail(
+      { userId: actorId, role: actorRole },
+      id,
+      dto.reason,
+    );
   }
 
   @Post('deliveries/:id/refund')
   @ApiCreatedResponse({ type: AdminRefundResponseDto })
-  refund(@Param('id') id: string, @Body() dto: RefundDto) {
-    return this.admin.refund(id, dto.amount);
+  refund(
+    @CurrentUser('sub') actorId: string,
+    @CurrentUser('role') actorRole: Role,
+    @Param('id') id: string,
+    @Body() dto: RefundDto,
+  ) {
+    return this.admin.refund(
+      { userId: actorId, role: actorRole },
+      id,
+      dto.amount,
+    );
   }
 
   // ── Drone commands (backend → drone) ──

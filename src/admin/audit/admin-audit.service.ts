@@ -6,6 +6,13 @@ import {
   Role,
 } from '@prisma/client';
 
+/** Who is acting. Assembled at the controller boundary, where RolesGuard has already
+ *  written the DB-fresh role onto the request. */
+export interface AuditActor {
+  userId: string;
+  role: Role;
+}
+
 export interface AuditEntry {
   actorUserId: string;
   actorRole: Role;

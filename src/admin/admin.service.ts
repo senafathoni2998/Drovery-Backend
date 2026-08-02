@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  AdminAuditAction,
+  AdminAuditTargetType,
   DeliveryFailureReason,
   DeliveryStatus,
   Prisma,
@@ -31,6 +33,7 @@ import {
   IssueCommandDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import { AdminAuditService, AuditActor } from './audit/admin-audit.service';
 
 const USER_SELECT = { id: true, name: true, email: true } as const;
 
@@ -44,6 +47,7 @@ export class AdminService {
     private readonly walletService: WalletService,
     private readonly chatPublisher: SupportChatPublisher,
     private readonly droneCommands: DroneCommandService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   // ── Support inbox (AGENT + ADMIN) ──
@@ -201,16 +205,38 @@ export class AdminService {
     return delivery;
   }
 
-  forceCancel(deliveryId: string) {
-    return this.deliveries.adminForceCancel(deliveryId);
+  /** Force-cancel a stuck delivery in any non-terminal state. The audit row co-commits
+   * with the CAS that performs it — the delivery service owns that transaction and runs
+   * this callback inside it, handing back the status the cancel actually fired from. */
+  forceCancel(actor: AuditActor, deliveryId: string) {
+    return this.deliveries.adminForceCancel(deliveryId, (tx, firedFrom) =>
+      this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DELIVERY_FORCE_CANCEL,
+        targetType: AdminAuditTargetType.DELIVERY,
+        targetId: deliveryId,
+        before: { status: firedFrom },
+      }),
+    );
   }
 
   /** Fail an in-flight delivery as a first-class exception (default ADMIN_ABORT,
    * a drone-fault reason → refunds the customer). 404/409 like force-cancel. */
-  fail(deliveryId: string, reason?: DeliveryFailureReason) {
-    return this.deliveries.adminFail(
-      deliveryId,
-      reason ?? DeliveryFailureReason.ADMIN_ABORT,
+  fail(actor: AuditActor, deliveryId: string, reason?: DeliveryFailureReason) {
+    // Record the RESOLVED reason, not the caller's: the row has to say what was
+    // written to the delivery, and `undefined` says nothing about who chose the default.
+    const resolved = reason ?? DeliveryFailureReason.ADMIN_ABORT;
+    return this.deliveries.adminFail(deliveryId, resolved, (tx, firedFrom) =>
+      this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DELIVERY_FAIL,
+        targetType: AdminAuditTargetType.DELIVERY,
+        targetId: deliveryId,
+        before: { status: firedFrom },
+        args: { reason: resolved },
+      }),
     );
   }
 
@@ -234,7 +260,7 @@ export class AdminService {
    *
    * What it is NOT: a double-refund. The CAS still guarantees at most one credit per
    * delivery across both channels. The failure mode is under-refunding, not over-. */
-  async refund(deliveryId: string, amount?: number) {
+  async refund(actor: AuditActor, deliveryId: string, amount?: number) {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { userId: true, estimatedPrice: true },
@@ -271,6 +297,17 @@ export class AdminService {
           'CHECKOUT_REFUND',
           { deliveryId, idempotencyKey: `admin-refund:${deliveryId}` },
         );
+        // AFTER the gate and the credit, inside the same transaction: a refund that
+        // lost the gate above never reaches here, and an audit row for a refund that
+        // did not happen invents an event.
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.DELIVERY_REFUND,
+          targetType: AdminAuditTargetType.DELIVERY,
+          targetId: deliveryId,
+          args: { amount: refundAmount },
+        });
       });
     } catch (e) {
       if (

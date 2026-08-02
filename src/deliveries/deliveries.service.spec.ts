@@ -1571,6 +1571,103 @@ describe('DeliveriesService', () => {
       expect(applied).toBe(true);
       expect(prisma.drone.updateMany).toHaveBeenCalled(); // cleanup still ran
     });
+
+    it('runs the force-cancel audit callback inside the CAS transaction, before any cleanup', async () => {
+      // Same property as the failure path, and the same reason for asserting ORDER
+      // rather than "both were called": the audit write hoisted out after the
+      // transaction reads as tidier and destroys the guarantee. force-cancel adds a
+      // second thing to protect — cleanupAfterTermination refunds, releases the
+      // airframe and cancels sim jobs, all network I/O that must not be held open
+      // inside a transaction.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.adminForceCancel('delivery-1', audit);
+
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
+      // The EXACT status, not a member of the CAS's set: "you cancelled an IN_TRANSIT
+      // delivery" is the whole reason to record it, and the in-flight CAS spans four
+      // statuses that updateMany cannot tell apart.
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+    });
+
+    it('hands the force-cancel callback the pre-launch status when it beat the launch', async () => {
+      // The other CAS. A firedFrom wired to the in-flight branch alone would record
+      // nothing here, or record it as airborne — the disposition is the opposite one.
+      deliveryReallyIn(DeliveryStatus.PENDING);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.adminForceCancel('delivery-1', audit);
+
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.PENDING);
+    });
+
+    it('does not audit a force-cancel that both CASes refused', async () => {
+      deliveryReallyIn(DeliveryStatus.DELIVERED);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await expect(
+        service.adminForceCancel('delivery-1', audit),
+      ).rejects.toThrow(ConflictException);
+      expect(audit).not.toHaveBeenCalled();
+    });
+
+    it('rolls the force-cancel back when the audit write throws', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest
+        .fn()
+        .mockRejectedValue(new Error('audit write failed'));
+
+      await expect(
+        service.adminForceCancel('delivery-1', audit),
+      ).rejects.toThrow('audit write failed');
+
+      // The cleanup must not have run — the cancel it cleans up after never committed.
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not read the row when nobody is recording the force-cancel', async () => {
+      deliveryReallyIn(DeliveryStatus.PENDING);
+
+      await service.adminForceCancel('delivery-1');
+
+      // Deliberately NOT statusReadsOf: that helper cannot tell the gated read from
+      // the not-applied 404/409 read, which adminForceCancel issues with the identical
+      // projection. This case takes the applied path, where that read never happens,
+      // so a local count is exact — and stays exact if the helper's caveat is ever
+      // forgotten.
+      const gatedReads = prisma.delivery.findFirst.mock.calls.filter(
+        ([args]: [any]) =>
+          args?.where?.id === 'delivery-1' && args?.select?.status === true,
+      );
+      expect(gatedReads).toHaveLength(0);
+    });
+
+    it('adminFail threads the audit callback into the failure transaction', async () => {
+      // adminFail owns nothing itself — it delegates to failExceptional. The callback
+      // has to survive that hop or the /fail route records nothing.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.adminFail('delivery-1', 'ADMIN_ABORT' as any, audit);
+
+      expect(audit).toHaveBeenCalledTimes(1);
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+    });
   });
 
   describe('create — serviceability gate', () => {

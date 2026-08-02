@@ -906,43 +906,93 @@ export class DeliveriesService {
    * CAS (can't un-deliver / double-cancel), then best-effort cleanup (sim jobs,
    * promo slot, spent credits). Caller must enforce the ADMIN role.
    */
-  async adminForceCancel(deliveryId: string) {
-    // TWO conditional CASes, not one, because the disposition of the AIRCRAFT
-    // depends on which status we cancelled FROM and `updateMany` cannot report the
-    // row it matched. Their union is exactly the old `notIn: TERMINAL_STATUSES`,
-    // so what may be force-cancelled is unchanged — only what happens to the
-    // airframe afterwards is.
+  async adminForceCancel(
+    deliveryId: string,
+    /**
+     * Optional: write an audit row in the SAME transaction as the winning CAS.
+     *
+     * Same contract as `failExceptional`'s: it runs only when a CAS matched, receives
+     * the status the cancel fired FROM, and runs INSIDE the transaction but OUTSIDE
+     * cleanupAfterTermination (which does network I/O). Only the admin route passes
+     * one, so nothing else pays for the read it gates.
+     */
+    auditWithinTx?: (
+      tx: Prisma.TransactionClient,
+      firedFrom: DeliveryStatus | null,
+    ) => Promise<void>,
+  ) {
+    // The exact status the cancel is about to fire from. Gated on the callback: no
+    // other caller records it, and force-cancel is rare enough to afford the read
+    // when someone does. Same read-then-CAS caveat as failExceptional's — under READ
+    // COMMITTED a commit landing between the SELECT and the UPDATE would be recorded
+    // one status stale.
+    const readStatus = async (tx: Prisma.TransactionClient) =>
+      auditWithinTx
+        ? ((
+            await tx.delivery.findFirst({
+              where: { id: deliveryId },
+              select: { status: true },
+            })
+          )?.status ?? null)
+        : null;
+
+    // ONE interactive transaction over both CASes and the audit row.
     //
-    // The pre-launch set first: it is the common case and nothing is flying.
-    let { count } = await this.prisma.delivery.updateMany({
-      where: {
-        id: deliveryId,
-        // Never resurrect a SETTLED terminal (DELIVERED/CANCELED and the exception
-        // terminals DELIVERY_FAILED/RETURNED_TO_BASE) — that would corrupt the
-        // recorded outcome and trigger a second, policy-violating cleanup/refund.
-        status: { notIn: [...TERMINAL_STATUSES, ...FAILABLE_STATUSES] },
-      },
-      data: { status: DeliveryStatus.CANCELED },
-    });
-    let aircraft: AircraftDisposition = 'RETURN_TO_FLEET';
-
-    if (count === 0) {
-      // The in-flight set. Force-cancelling an airborne delivery stays legal —
-      // RETURNING included — but the aircraft is up there with the parcel and the
-      // claim is the only thing keeping the engine from selling it to the next
-      // booking. It is taken out of service instead: not because it is suspect,
-      // but because a mission ended mid-air and a human has to find out where it
-      // is. STILL_AIRBORNE would be the honest label and the wrong behavior — a
-      // CANCELED delivery never reaches completeReturnToBase, so the claim would
-      // be held forever.
-      ({ count } = await this.prisma.delivery.updateMany({
-        where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+    // This knowingly crosses the rule at the top of this file (§ the debit-first
+    // saga, ~:86): no single $transaction may co-commit state rooted at different
+    // shard keys, and an AdminAuditLog is actor-rooted while the delivery is
+    // delivery-rooted. Accepted deliberately — an audit row that can commit apart
+    // from the action it records is the exact defect this exists to remove, and the
+    // cost is that admin_audit_logs would be pinned to the delivery shard if
+    // shardCount ever goes above 1. Recorded here so it is found as a decision
+    // rather than rediscovered as an accident.
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      // TWO conditional CASes, not one, because the disposition of the AIRCRAFT
+      // depends on which status we cancelled FROM and `updateMany` cannot report the
+      // row it matched. Their union is exactly the old `notIn: TERMINAL_STATUSES`,
+      // so what may be force-cancelled is unchanged — only what happens to the
+      // airframe afterwards is.
+      //
+      // The pre-launch set first: it is the common case and nothing is flying.
+      let firedFrom = await readStatus(tx);
+      let { count } = await tx.delivery.updateMany({
+        where: {
+          id: deliveryId,
+          // Never resurrect a SETTLED terminal (DELIVERED/CANCELED and the exception
+          // terminals DELIVERY_FAILED/RETURNED_TO_BASE) — that would corrupt the
+          // recorded outcome and trigger a second, policy-violating cleanup/refund.
+          status: { notIn: [...TERMINAL_STATUSES, ...FAILABLE_STATUSES] },
+        },
         data: { status: DeliveryStatus.CANCELED },
-      }));
-      if (count > 0) aircraft = 'GROUND_FOR_INSPECTION';
-    }
+      });
+      let aircraft: AircraftDisposition = 'RETURN_TO_FLEET';
 
-    if (count === 0) {
+      if (count === 0) {
+        // The in-flight set. Force-cancelling an airborne delivery stays legal —
+        // RETURNING included — but the aircraft is up there with the parcel and the
+        // claim is the only thing keeping the engine from selling it to the next
+        // booking. It is taken out of service instead: not because it is suspect,
+        // but because a mission ended mid-air and a human has to find out where it
+        // is. STILL_AIRBORNE would be the honest label and the wrong behavior — a
+        // CANCELED delivery never reaches completeReturnToBase, so the claim would
+        // be held forever.
+        //
+        // Re-read before this one: the first CAS missing says only that the row was
+        // not pre-launch, so the status read before it is the wrong one to record.
+        firedFrom = await readStatus(tx);
+        ({ count } = await tx.delivery.updateMany({
+          where: { id: deliveryId, status: { in: FAILABLE_STATUSES } },
+          data: { status: DeliveryStatus.CANCELED },
+        }));
+        if (count > 0) aircraft = 'GROUND_FOR_INSPECTION';
+      }
+
+      if (count === 0) return null;
+      if (auditWithinTx) await auditWithinTx(tx, firedFrom);
+      return { aircraft };
+    });
+
+    if (outcome === null) {
       const existing = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },
         select: { status: true },
@@ -958,8 +1008,9 @@ export class DeliveriesService {
     }
 
     // Same cleanup as every other terminal path — including the card-charged leg,
-    // which this used to omit exactly like owner-cancel did.
-    await this.cleanupAfterTermination(deliveryId, true, aircraft);
+    // which this used to omit exactly like owner-cancel did. Strictly OUTSIDE the
+    // transaction above: it refunds, releases the airframe and cancels sim jobs.
+    await this.cleanupAfterTermination(deliveryId, true, outcome.aircraft);
 
     return this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -1171,8 +1222,22 @@ export class DeliveriesService {
    * ADMIN-only fail — owner-unscoped, mirrors adminForceCancel's 404/409 contract.
    * Caller must enforce the ADMIN role.
    */
-  async adminFail(deliveryId: string, reason: DeliveryFailureReason) {
-    const applied = await this.failExceptional(deliveryId, reason);
+  async adminFail(
+    deliveryId: string,
+    reason: DeliveryFailureReason,
+    /** Forwarded verbatim to `failExceptional` — see its contract. This method owns
+     *  no transaction of its own; it only decides 404 vs 409 when nothing applied. */
+    auditWithinTx?: (
+      tx: Prisma.TransactionClient,
+      firedFrom: DeliveryStatus | null,
+    ) => Promise<void>,
+  ) {
+    const applied = await this.failExceptional(
+      deliveryId,
+      reason,
+      undefined,
+      auditWithinTx,
+    );
     if (!applied) {
       const existing = await this.prisma.delivery.findFirst({
         where: { id: deliveryId },

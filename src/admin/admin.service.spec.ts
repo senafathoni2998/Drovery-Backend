@@ -9,6 +9,11 @@ import { SupportChatPublisher } from '../support/chat/support-chat.publisher';
 import { WalletService } from '../wallet/wallet.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 import { AdminService } from './admin.service';
+import { AdminAuditService } from './audit/admin-audit.service';
+
+/** Who is acting. The controller assembles it from @CurrentUser, by which point
+ *  RolesGuard has written the DB-fresh role onto the request. */
+const ACTOR = { userId: 'admin-1', role: 'ADMIN' as const };
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -20,6 +25,12 @@ describe('AdminService', () => {
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
+    // adminForceCancel / adminFail own the transaction the audit row co-commits with,
+    // and take a callback that AdminService builds and they run INSIDE it. The default
+    // mocks never invoke it (most specs here don't care); the audit specs below replace
+    // them with one that does, standing in for the transaction. That the real methods
+    // run the callback inside the CAS — and hand it the row's exact prior status — is
+    // deliveries.service.spec.ts's job, not this file's.
     deliveries = {
       adminForceCancel: jest.fn().mockResolvedValue({ id: 'd-1' }),
       adminFail: jest.fn().mockResolvedValue({ id: 'd-1' }),
@@ -33,6 +44,9 @@ describe('AdminService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
+        // The REAL audit service, not a mock: it holds no client of its own, so the
+        // only thing worth asserting is the row it writes through the tx it is handed.
+        AdminAuditService,
         { provide: PrismaService, useValue: prisma },
         { provide: DeliveriesService, useValue: deliveries },
         { provide: WalletService, useValue: wallet },
@@ -140,18 +154,29 @@ describe('AdminService', () => {
     });
 
     it('fail delegates to DeliveriesService.adminFail with the given reason', async () => {
-      await service.fail('d-1', 'WEATHER_ABORT' as any);
-      expect(deliveries.adminFail).toHaveBeenCalledWith('d-1', 'WEATHER_ABORT');
+      await service.fail(ACTOR, 'd-1', 'WEATHER_ABORT' as any);
+      expect(deliveries.adminFail).toHaveBeenCalledWith(
+        'd-1',
+        'WEATHER_ABORT',
+        expect.any(Function),
+      );
     });
 
     it('fail defaults the reason to ADMIN_ABORT when omitted', async () => {
-      await service.fail('d-1');
-      expect(deliveries.adminFail).toHaveBeenCalledWith('d-1', 'ADMIN_ABORT');
+      await service.fail(ACTOR, 'd-1');
+      expect(deliveries.adminFail).toHaveBeenCalledWith(
+        'd-1',
+        'ADMIN_ABORT',
+        expect.any(Function),
+      );
     });
 
     it('force-cancel delegates to DeliveriesService.adminForceCancel', async () => {
-      await service.forceCancel('d-1');
-      expect(deliveries.adminForceCancel).toHaveBeenCalledWith('d-1');
+      await service.forceCancel(ACTOR, 'd-1');
+      expect(deliveries.adminForceCancel).toHaveBeenCalledWith(
+        'd-1',
+        expect.any(Function),
+      );
     });
 
     it('issueDroneCommand delegates to DroneCommandService.issue with the admin id', async () => {
@@ -171,7 +196,7 @@ describe('AdminService', () => {
         estimatedPrice: 18,
       });
       prisma.payment.updateMany.mockResolvedValue({ count: 1 });
-      await service.refund('d-1');
+      await service.refund(ACTOR, 'd-1');
       expect(wallet.creditWithinTx).toHaveBeenCalledWith(
         expect.anything(),
         'u-1',
@@ -193,7 +218,9 @@ describe('AdminService', () => {
         estimatedPrice: 18,
       });
       prisma.payment.updateMany.mockResolvedValue({ count: 0 }); // already REFUNDED
-      await expect(service.refund('d-1')).rejects.toThrow(ConflictException);
+      await expect(service.refund(ACTOR, 'd-1')).rejects.toThrow(
+        ConflictException,
+      );
       expect(wallet.creditWithinTx).not.toHaveBeenCalled();
     });
 
@@ -202,7 +229,7 @@ describe('AdminService', () => {
         userId: 'u-1',
         estimatedPrice: 18,
       });
-      await expect(service.refund('d-1', 50)).rejects.toThrow(
+      await expect(service.refund(ACTOR, 'd-1', 50)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -219,7 +246,92 @@ describe('AdminService', () => {
           clientVersion: 'x',
         }),
       );
-      await expect(service.refund('d-1')).rejects.toThrow(ConflictException);
+      await expect(service.refund(ACTOR, 'd-1')).rejects.toThrow(
+        ConflictException,
+      );
+    });
+  });
+
+  describe('operator audit — delivery mutations', () => {
+    const actor = ACTOR;
+
+    /** Stand in for the transaction the delivery service owns: run the callback it was
+     *  handed, with the prisma mock as the transaction client. */
+    const runCallbackFiringFrom = (mock: jest.Mock, firedFrom: string) =>
+      mock.mockImplementation(async (...args: any[]) => {
+        const audit = args[args.length - 1];
+        await audit(prisma, firedFrom);
+        return { id: 'd-1' };
+      });
+
+    it('records who force-cancelled, and the status it fired from', async () => {
+      runCallbackFiringFrom(deliveries.adminForceCancel, 'IN_TRANSIT');
+
+      await service.forceCancel(actor, 'd-1');
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'DELIVERY_FORCE_CANCEL',
+          targetType: 'DELIVERY',
+          targetId: 'd-1',
+          before: { status: 'IN_TRANSIT' },
+        }),
+      });
+    });
+
+    it('records the reason an operator failed a delivery, and what it was flying as', async () => {
+      runCallbackFiringFrom(deliveries.adminFail, 'AWAITING_HANDOFF');
+
+      await service.fail(actor, 'd-1');
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'DELIVERY_FAIL',
+          targetType: 'DELIVERY',
+          targetId: 'd-1',
+          before: { status: 'AWAITING_HANDOFF' },
+          // The DEFAULTED reason, not the absent one the caller passed — the row has
+          // to say what was actually written to the delivery.
+          args: { reason: 'ADMIN_ABORT' },
+        }),
+      });
+    });
+
+    it('records the refund amount inside the refund transaction', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 20,
+      });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.refund(actor, 'd-1', 5);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'DELIVERY_REFUND',
+          targetId: 'd-1',
+          args: { amount: 5 },
+        }),
+      });
+    });
+
+    it('writes no audit row when the refund loses its single-winner gate', async () => {
+      // The gate exists so a card charge is refunded at most once. An audit row for a
+      // refund that did not happen is worse than none — it invents an event.
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 20,
+      });
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.refund(actor, 'd-1', 5)).rejects.toThrow();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
   });
 
