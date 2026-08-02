@@ -174,6 +174,15 @@ describe('FlightRecorderService', () => {
       expect(commands.issue.mock.calls[0][0]).toBeNull();
     });
 
+    it('passes NO audit callback — the platform recalling its own aircraft is not an operator action', async () => {
+      // DroneCommandService.issue's 4th argument writes an operator-audit row.
+      // Passing one here would attribute an automated recall to whichever human
+      // happens to read the resulting log, which is exactly wrong: adminId is
+      // already null, and issuedByUserId already records that this was automated.
+      await service.record(ctx(), flat());
+      expect(commands.issue.mock.calls[0]).toHaveLength(3);
+    });
+
     it('leaves a healthy aircraft flying', async () => {
       await service.record(ctx(), frame({ batteryPercent: 95 }));
       expect(commands.issue).not.toHaveBeenCalled();

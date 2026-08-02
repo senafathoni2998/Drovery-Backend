@@ -14,6 +14,10 @@ import { AdminAuditService } from './audit/admin-audit.service';
 /** Who is acting. The controller assembles it from @CurrentUser, by which point
  *  RolesGuard has written the DB-fresh role onto the request. */
 const ACTOR = { userId: 'admin-1', role: 'ADMIN' as const };
+/** A DISTINCT role from ACTOR — an agent is not an admin, and a closure that
+ *  hardcoded `actorRole: Role.ADMIN` instead of reading `actor.role` would pass
+ *  every test that only ever exercises ADMIN. */
+const AGENT = { userId: 'agent-1', role: 'AGENT' as const };
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -87,7 +91,7 @@ describe('AdminService', () => {
       prisma.supportChatMessage.create.mockResolvedValue(msg);
       prisma.supportTicket.update.mockResolvedValue({});
 
-      await service.replyAsAgent('agent-1', 't-1', 'hi');
+      await service.replyAsAgent(AGENT, 't-1', 'hi');
 
       expect(prisma.supportChatMessage.create).toHaveBeenCalledWith({
         data: {
@@ -105,9 +109,12 @@ describe('AdminService', () => {
 
     it('rejects replying to a CLOSED ticket', async () => {
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'CLOSED' });
-      await expect(service.replyAsAgent('a', 't-1', 'hi')).rejects.toThrow(
+      await expect(service.replyAsAgent(AGENT, 't-1', 'hi')).rejects.toThrow(
         ConflictException,
       );
+      // The guard that stops the mutation must run BEFORE the audit write — a row
+      // for a reply that never happened invents an event.
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
   });
 
@@ -179,10 +186,15 @@ describe('AdminService', () => {
       );
     });
 
-    it('issueDroneCommand delegates to DroneCommandService.issue with the admin id', async () => {
+    it('issueDroneCommand delegates to DroneCommandService.issue with the actor id and an audit callback', async () => {
       const dto = { type: 'RETURN_TO_BASE' as any };
-      await service.issueDroneCommand('admin-1', 'd-1', dto);
-      expect(droneCommands.issue).toHaveBeenCalledWith('admin-1', 'd-1', dto);
+      await service.issueDroneCommand(ACTOR, 'd-1', dto);
+      expect(droneCommands.issue).toHaveBeenCalledWith(
+        'admin-1',
+        'd-1',
+        dto,
+        expect.any(Function),
+      );
     });
 
     it('listDroneCommands delegates to DroneCommandService.listForDelivery', async () => {
@@ -697,7 +709,7 @@ describe('AdminService', () => {
         email: 'x',
         role: 'AGENT',
       });
-      await service.setRole('admin-1', 'u-2', 'AGENT' as any);
+      await service.setRole(ACTOR, 'u-2', 'AGENT' as any);
       expect(prisma.user.update).toHaveBeenCalled();
     });
 
@@ -705,9 +717,172 @@ describe('AdminService', () => {
       prisma.user.findUnique.mockResolvedValue({ role: 'ADMIN' });
       prisma.user.count.mockResolvedValue(1);
       await expect(
-        service.setRole('admin-1', 'u-2', 'USER' as any),
+        service.setRole(ACTOR, 'u-2', 'USER' as any),
       ).rejects.toThrow(ConflictException);
       expect(prisma.user.update).not.toHaveBeenCalled();
+      // The guard runs BEFORE any transaction opens — a row for a demotion that
+      // never happened invents an event.
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('operator audit — roles, support and commands', () => {
+    const actor = ACTOR;
+    const agent = AGENT;
+
+    it('records a role change with the prior role', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.user.findUnique.mockResolvedValue({ role: 'USER' });
+      prisma.user.update.mockResolvedValue({
+        id: 'u-2',
+        email: 'a@b.c',
+        role: 'ADMIN',
+      });
+
+      await service.setRole(actor, 'u-2', 'ADMIN' as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'USER_ROLE_SET',
+          targetType: 'USER',
+          targetId: 'u-2',
+          before: { role: 'USER' },
+          after: { role: 'ADMIN' },
+        }),
+      });
+    });
+
+    it('records the AGENT role of a support reply, not a blanket ADMIN', async () => {
+      // The log records agent actions too, and "which hat were they wearing" is
+      // part of the record — an agent is not an admin.
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.supportChatMessage.create.mockResolvedValue({
+        id: 'm-1',
+        ticketId: 't-1',
+        senderRole: 'AGENT',
+        content: 'hello',
+        createdAt: new Date(),
+      });
+
+      await service.replyAsAgent(agent, 't-1', 'hello');
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'agent-1',
+          actorRole: 'AGENT',
+          action: 'SUPPORT_TICKET_REPLY',
+          targetType: 'SUPPORT_TICKET',
+          targetId: 't-1',
+          args: { contentLength: 5 },
+        }),
+      });
+    });
+
+    it('never stores the text of a support reply', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.supportChatMessage.create.mockResolvedValue({
+        id: 'm-1',
+        ticketId: 't-1',
+        senderRole: 'AGENT',
+        content: 'x',
+        createdAt: new Date(),
+      });
+
+      await service.replyAsAgent(
+        agent,
+        't-1',
+        'my card number is 4111 1111 1111 1111',
+      );
+
+      const row = JSON.stringify(prisma.adminAuditLog.create.mock.calls[0][0]);
+      expect(row).not.toContain('4111');
+    });
+
+    it('records a support ticket status change with the prior status', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.supportTicket.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.setTicketStatus(actor, 't-1', 'RESOLVED' as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'SUPPORT_TICKET_STATUS_SET',
+          targetType: 'SUPPORT_TICKET',
+          targetId: 't-1',
+          before: { status: 'OPEN' },
+          after: { status: 'RESOLVED' },
+        }),
+      });
+    });
+
+    it('404s and writes no audit row when the ticket does not exist', async () => {
+      // Half one of the guard: the pre-read is what lets a missing ticket stay a
+      // clean 404 instead of a 0-row updateMany with no way to tell why.
+      prisma.supportTicket.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setTicketStatus(actor, 't-x', 'RESOLVED' as any),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(prisma.supportTicket.updateMany).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('writes no audit row when the status update race loses (ticket vanished after the pre-read)', async () => {
+      // Half two of the guard: the pre-read can pass and the updateMany still
+      // match nothing (a concurrent delete). That must 404 too, and BEFORE the
+      // audit call — a row for a status change that never landed invents an event.
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.supportTicket.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.setTicketStatus(actor, 't-1', 'RESOLVED' as any),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('records who issued a drone command, sourced from the created row', async () => {
+      // Positive assertion: DroneCommandService is mocked here, so this only pins
+      // that AdminService wires actor + the created row through pickAllowed into
+      // the callback it hands to `issue` — DroneCommandService.issue actually
+      // running that callback inside its own transaction is
+      // drone-command.service.spec.ts's job.
+      droneCommands.issue.mockImplementation(
+        async (
+          _adminId: string | null,
+          _deliveryId: string,
+          dto: any,
+          audit?: (tx: unknown, command: unknown) => Promise<void>,
+        ) => {
+          const command = {
+            id: 'c-1',
+            type: dto.type,
+            reason: 'WEATHER_ABORT',
+          };
+          if (audit) await audit(prisma, command);
+          return command;
+        },
+      );
+
+      await service.issueDroneCommand(actor, 'd-1', {
+        type: 'RETURN_TO_BASE',
+      } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'DRONE_COMMAND_ISSUE',
+          targetType: 'DELIVERY',
+          targetId: 'd-1',
+          args: { type: 'RETURN_TO_BASE', reason: 'WEATHER_ABORT' },
+        }),
+      });
     });
   });
 });

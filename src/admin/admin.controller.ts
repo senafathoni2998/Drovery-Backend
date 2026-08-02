@@ -10,7 +10,6 @@ import {
 import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 
-import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { AdminService } from './admin.service';
@@ -98,11 +97,11 @@ export class AdminController {
   @Post('deliveries/:id/commands')
   @ApiCreatedResponse({ type: DroneCommandResponseDto })
   issueCommand(
-    @CurrentUser('sub') adminId: string,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: IssueCommandDto,
   ) {
-    return this.admin.issueDroneCommand(adminId, id, dto);
+    return this.admin.issueDroneCommand(actor, id, dto);
   }
 
   @Get('deliveries/:id/commands')
@@ -175,10 +174,10 @@ export class AdminController {
   @Patch('users/:id/role')
   @ApiOkResponse({ type: AdminUserRoleDto })
   setRole(
-    @CurrentUser('sub') adminId: string,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: SetRoleDto,
   ) {
-    return this.admin.setRole(adminId, id, dto.role);
+    return this.admin.setRole(actor, id, dto.role);
   }
 }

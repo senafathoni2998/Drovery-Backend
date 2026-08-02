@@ -17,6 +17,8 @@ describe('AdminController', () => {
     updateDrone: jest.Mock;
     createPromo: jest.Mock;
     updatePromo: jest.Mock;
+    setRole: jest.Mock;
+    issueDroneCommand: jest.Mock;
   };
 
   const ACTOR = { userId: 'u-1', role: Role.ADMIN };
@@ -30,6 +32,8 @@ describe('AdminController', () => {
       updateDrone: jest.fn().mockResolvedValue({ id: 'dr-1' }),
       createPromo: jest.fn().mockResolvedValue({ id: 'p-1' }),
       updatePromo: jest.fn().mockResolvedValue({ id: 'p-1' }),
+      setRole: jest.fn().mockResolvedValue({ id: 'u-2', role: Role.ADMIN }),
+      issueDroneCommand: jest.fn().mockResolvedValue({ id: 'c-1' }),
     };
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AdminController],
@@ -91,6 +95,21 @@ describe('AdminController', () => {
       const dto = { discountValue: 25 } as any;
       await controller.updatePromo(ACTOR, 'p-1', dto);
       expect(admin.updatePromo).toHaveBeenCalledWith(ACTOR, 'p-1', dto);
+    });
+  });
+
+  // setRole and issueCommand used to take a bare @CurrentUser('sub') id and throw the
+  // role away; both are now the same actor-first shape as the mutations above.
+  describe('the audited role and command mutations forward the actor', () => {
+    it('setRole — actor, then id, then the extracted role', async () => {
+      await controller.setRole(ACTOR, 'u-2', { role: Role.ADMIN } as any);
+      expect(admin.setRole).toHaveBeenCalledWith(ACTOR, 'u-2', Role.ADMIN);
+    });
+
+    it('issueCommand — actor, then id, then the body', async () => {
+      const dto = { type: 'RETURN_TO_BASE' } as any;
+      await controller.issueCommand(ACTOR, 'd-1', dto);
+      expect(admin.issueDroneCommand).toHaveBeenCalledWith(ACTOR, 'd-1', dto);
     });
   });
 

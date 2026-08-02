@@ -10,7 +10,6 @@ import {
 import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 
-import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { SupportChatMessagePayloadDto } from '../support/dto/support-response.dto';
 import { AdminService } from './admin.service';
@@ -24,6 +23,7 @@ import {
   AdminSupportTicketDetailDto,
   AdminSupportTicketStatusDto,
 } from './dto/admin-response.dto';
+import { AuditActor } from './audit/audit-actor.decorator';
 
 // Support agent inbox — agents and admins.
 @Roles(Role.AGENT, Role.ADMIN)
@@ -46,16 +46,20 @@ export class AdminSupportController {
   @Post('tickets/:id/messages')
   @ApiCreatedResponse({ type: SupportChatMessagePayloadDto })
   reply(
-    @CurrentUser('sub') agentId: string,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: AgentReplyDto,
   ) {
-    return this.admin.replyAsAgent(agentId, id, dto.content);
+    return this.admin.replyAsAgent(actor, id, dto.content);
   }
 
   @Patch('tickets/:id/status')
   @ApiOkResponse({ type: AdminSupportTicketStatusDto })
-  setStatus(@Param('id') id: string, @Body() dto: TicketStatusDto) {
-    return this.admin.setTicketStatus(id, dto.status);
+  setStatus(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: TicketStatusDto,
+  ) {
+    return this.admin.setTicketStatus(actor, id, dto.status);
   }
 }

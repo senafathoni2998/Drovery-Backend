@@ -74,6 +74,23 @@ export class DroneCommandService {
     adminId: string | null,
     deliveryId: string,
     dto: IssueCommandDto,
+    /**
+     * Optional: write an audit row in the SAME transaction as the command's
+     * creation. Same contract as `DeliveriesService.failExceptional`'s: it runs
+     * only once every guard above has passed and the row is about to be
+     * inserted, and it receives the CREATED command — so a writer sources
+     * `type`/`reason` from what actually persisted, the same rule
+     * `createDrone`/`createPromo` follow for their own created rows.
+     *
+     * The automated caller (`flight-recorder.service.ts`, `adminId: null`)
+     * passes nothing and is unchanged: the platform recalling its own aircraft
+     * is not an operator action, and `issuedByUserId: null` already records
+     * that it was automated.
+     */
+    auditWithinTx?: (
+      tx: Prisma.TransactionClient,
+      command: DroneCommand,
+    ) => Promise<void>,
   ): Promise<DroneCommand> {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
@@ -96,6 +113,7 @@ export class DroneCommandService {
     if (!delivery.assignedDroneId) {
       throw new AppConflictException('error.command.no_drone');
     }
+    const assignedDroneId = delivery.assignedDroneId;
     const legal = COMMAND_TYPE_TO_LEGAL_STATUSES[dto.type];
     if (!legal.includes(delivery.status)) {
       // Fail fast; the ack-time CAS is still the authoritative guard.
@@ -117,16 +135,23 @@ export class DroneCommandService {
     }
 
     try {
-      const command = await this.prisma.droneCommand.create({
-        data: {
-          deliveryId,
-          deliveryCreatedAt: delivery.createdAt,
-          droneId: delivery.assignedDroneId,
-          type: dto.type,
-          reason,
-          issuedByUserId: adminId,
-          expiresAt: new Date(Date.now() + COMMAND_TTL_MS),
-        },
+      // ONE interactive transaction over the insert and the audit row — they
+      // co-commit or neither happens. Only the create needs to be inside it;
+      // the MQTT push and metrics/logging below stay OUTSIDE, same as before.
+      const command = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.droneCommand.create({
+          data: {
+            deliveryId,
+            deliveryCreatedAt: delivery.createdAt,
+            droneId: assignedDroneId,
+            type: dto.type,
+            reason,
+            issuedByUserId: adminId,
+            expiresAt: new Date(Date.now() + COMMAND_TTL_MS),
+          },
+        });
+        if (auditWithinTx) await auditWithinTx(tx, created);
+        return created;
       });
       this.metrics.droneCommandsTotal.inc({ type: dto.type, result: 'issued' });
       this.logger.log(

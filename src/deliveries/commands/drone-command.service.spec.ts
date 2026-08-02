@@ -198,6 +198,72 @@ describe('DroneCommandService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.droneCommand.create).not.toHaveBeenCalled();
     });
+
+    describe('the optional audit callback (operator audit log)', () => {
+      it('issues successfully with no callback at all — the automated path', async () => {
+        // The flight recorder calls issue(null, deliveryId, dto) with NO fourth
+        // argument. This must keep working exactly as before: nothing here may
+        // require a callback to exist.
+        prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
+        prisma.droneCommand.create.mockImplementation((args: any) =>
+          Promise.resolve({ id: 'c-1', ...args.data }),
+        );
+        const command = await service.issue('admin-1', 'd-1', {
+          type: DroneCommandType.ABORT,
+        });
+        expect((command as any).id).toBe('c-1');
+      });
+
+      it('runs the callback INSIDE the same transaction as the command creation, handing it the CREATED row', async () => {
+        prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
+        prisma.droneCommand.create.mockImplementation((args: any) =>
+          Promise.resolve({ id: 'c-1', ...args.data }),
+        );
+        const audit = jest.fn().mockResolvedValue(undefined);
+
+        const command = await service.issue(
+          'admin-1',
+          'd-1',
+          { type: DroneCommandType.ABORT },
+          audit,
+        );
+
+        // `prisma` doubles as the transaction client here (see createMockPrismaService):
+        // asserting the callback got THAT object, not some other value, is what pins
+        // "inside the same transaction" rather than merely "called afterwards".
+        expect(audit).toHaveBeenCalledWith(
+          prisma,
+          expect.objectContaining({
+            id: 'c-1',
+            type: DroneCommandType.ABORT,
+            issuedByUserId: 'admin-1',
+          }),
+        );
+        expect((command as any).id).toBe('c-1');
+      });
+
+      it('propagates when the audit callback throws, and never reaches the MQTT push', async () => {
+        // The callback runs inside the transaction: if it throws, the command
+        // insert rolls back with it, and nothing downstream (MQTT, metrics) may
+        // observe a command that was never actually persisted.
+        prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
+        prisma.droneCommand.create.mockImplementation((args: any) =>
+          Promise.resolve({ id: 'c-1', ...args.data }),
+        );
+        const audit = jest.fn().mockRejectedValue(new Error('audit failed'));
+
+        await expect(
+          service.issue(
+            'admin-1',
+            'd-1',
+            { type: DroneCommandType.ABORT },
+            audit,
+          ),
+        ).rejects.toThrow('audit failed');
+        expect(mqtt.publish).not.toHaveBeenCalled();
+        expect(metrics.droneCommandsTotal.inc).not.toHaveBeenCalled();
+      });
+    });
   });
 
   // ── fetchPending ──
