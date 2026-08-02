@@ -34,6 +34,7 @@ import {
   UpdatePromoDto,
 } from './dto/admin.dto';
 import { AdminAuditService, AuditActor } from './audit/admin-audit.service';
+import { pickAllowed } from './audit/admin-audit.constants';
 
 const USER_SELECT = { id: true, name: true, email: true } as const;
 
@@ -207,7 +208,12 @@ export class AdminService {
 
   /** Force-cancel a stuck delivery in any non-terminal state. The audit row co-commits
    * with the CAS that performs it — the delivery service owns that transaction and runs
-   * this callback inside it, handing back the status the cancel actually fired from. */
+   * this callback inside it, handing back the status the cancel actually fired from.
+   *
+   * Every captured payload here goes through `pickAllowed`, even where the literal is
+   * already exactly the allowlisted field. It is the difference between the allowlist
+   * being the one chokepoint every writer passes through and it being a rule some
+   * writers happen to satisfy — and the next writer copies whichever it finds. */
   forceCancel(actor: AuditActor, deliveryId: string) {
     return this.deliveries.adminForceCancel(deliveryId, (tx, firedFrom) =>
       this.audit.recordWithinTx(tx, {
@@ -216,7 +222,9 @@ export class AdminService {
         action: AdminAuditAction.DELIVERY_FORCE_CANCEL,
         targetType: AdminAuditTargetType.DELIVERY,
         targetId: deliveryId,
-        before: { status: firedFrom },
+        before: pickAllowed(AdminAuditAction.DELIVERY_FORCE_CANCEL, {
+          status: firedFrom,
+        }),
       }),
     );
   }
@@ -234,8 +242,10 @@ export class AdminService {
         action: AdminAuditAction.DELIVERY_FAIL,
         targetType: AdminAuditTargetType.DELIVERY,
         targetId: deliveryId,
-        before: { status: firedFrom },
-        args: { reason: resolved },
+        before: pickAllowed(AdminAuditAction.DELIVERY_FAIL, {
+          status: firedFrom,
+        }),
+        args: pickAllowed(AdminAuditAction.DELIVERY_FAIL, { reason: resolved }),
       }),
     );
   }
@@ -306,7 +316,9 @@ export class AdminService {
           action: AdminAuditAction.DELIVERY_REFUND,
           targetType: AdminAuditTargetType.DELIVERY,
           targetId: deliveryId,
-          args: { amount: refundAmount },
+          args: pickAllowed(AdminAuditAction.DELIVERY_REFUND, {
+            amount: refundAmount,
+          }),
         });
       });
     } catch (e) {

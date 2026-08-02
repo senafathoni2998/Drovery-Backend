@@ -27,6 +27,7 @@ import {
   UpdateDroneDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import { AuditActor } from './audit/audit-actor.decorator';
 import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
@@ -64,47 +65,33 @@ export class AdminController {
     return this.admin.getDelivery(id);
   }
 
-  // These three ground aircraft and move money. The actor is assembled HERE, from the
-  // request: `role` is the DB-fresh one RolesGuard resolved (the JWT carries none), so
-  // both halves come from @CurrentUser with no extra read.
+  // These three ground aircraft and move money, so they are recorded against the
+  // operator who called them. @AuditActor assembles that operator from the request in
+  // one tested place — see the decorator for why it is not two @CurrentUser reads.
   @Post('deliveries/:id/force-cancel')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
-  forceCancel(
-    @CurrentUser('sub') actorId: string,
-    @CurrentUser('role') actorRole: Role,
-    @Param('id') id: string,
-  ) {
-    return this.admin.forceCancel({ userId: actorId, role: actorRole }, id);
+  forceCancel(@AuditActor() actor: AuditActor, @Param('id') id: string) {
+    return this.admin.forceCancel(actor, id);
   }
 
   @Post('deliveries/:id/fail')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
   fail(
-    @CurrentUser('sub') actorId: string,
-    @CurrentUser('role') actorRole: Role,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: FailDeliveryDto,
   ) {
-    return this.admin.fail(
-      { userId: actorId, role: actorRole },
-      id,
-      dto.reason,
-    );
+    return this.admin.fail(actor, id, dto.reason);
   }
 
   @Post('deliveries/:id/refund')
   @ApiCreatedResponse({ type: AdminRefundResponseDto })
   refund(
-    @CurrentUser('sub') actorId: string,
-    @CurrentUser('role') actorRole: Role,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: RefundDto,
   ) {
-    return this.admin.refund(
-      { userId: actorId, role: actorRole },
-      id,
-      dto.amount,
-    );
+    return this.admin.refund(actor, id, dto.amount);
   }
 
   // ── Drone commands (backend → drone) ──

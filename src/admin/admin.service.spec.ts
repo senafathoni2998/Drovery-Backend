@@ -284,12 +284,17 @@ describe('AdminService', () => {
     it('records the reason an operator failed a delivery, and what it was flying as', async () => {
       runCallbackFiringFrom(deliveries.adminFail, 'AWAITING_HANDOFF');
 
-      await service.fail(actor, 'd-1');
+      // A DIFFERENT role from the force-cancel test above, deliberately: with ADMIN on
+      // both, a closure that hardcoded `actorRole: Role.ADMIN` instead of reading
+      // `actor.role` would pass everywhere. The delivery routes are ADMIN-only today,
+      // but Task 6 wires the AGENT-reachable support routes through the same closure
+      // shape, and a hardcoded role there attributes an agent's action to an admin.
+      await service.fail({ userId: 'agent-9', role: 'AGENT' }, 'd-1');
 
       expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          actorUserId: 'admin-1',
-          actorRole: 'ADMIN',
+          actorUserId: 'agent-9',
+          actorRole: 'AGENT',
           action: 'DELIVERY_FAIL',
           targetType: 'DELIVERY',
           targetId: 'd-1',

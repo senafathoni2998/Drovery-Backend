@@ -1661,10 +1661,29 @@ describe('DeliveriesService', () => {
       // adminFail owns nothing itself — it delegates to failExceptional. The callback
       // has to survive that hop or the /fail route records nothing.
       deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
-      const audit = jest.fn().mockResolvedValue(undefined);
+      // Assert the boundary HERE too, not just on failExceptional. Inheriting the
+      // guarantee from the delegate holds only while adminFail keeps delegating; the
+      // day it grows a transaction of its own — to read something first, to write a
+      // second row — that inherited coverage silently stops applying.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
 
       await service.adminFail('delivery-1', 'ADMIN_ABORT' as any, audit);
 
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
       expect(audit).toHaveBeenCalledTimes(1);
       expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
     });
