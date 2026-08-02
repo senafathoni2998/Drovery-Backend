@@ -26,6 +26,7 @@ describe('AdminService', () => {
   let wallet: { creditWithinTx: jest.Mock };
   let publisher: { publishMessage: jest.Mock };
   let droneCommands: { issue: jest.Mock; listForDelivery: jest.Mock };
+  let recordWithinTx: jest.SpyInstance;
 
   beforeEach(async () => {
     prisma = createMockPrismaService();
@@ -48,8 +49,16 @@ describe('AdminService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
-        // The REAL audit service, not a mock: it holds no client of its own, so the
-        // only thing worth asserting is the row it writes through the tx it is handed.
+        // The REAL audit service, not a mock. It DOES hold a client of its own — Task 7
+        // injected PrismaService for `list()` — so the client each call site HANDS it can
+        // no longer be assumed, only asserted. `recordWithinTx(this.prisma, …)` left
+        // lexically INSIDE its `$transaction` callback compiles, keeps every row-content
+        // assertion here green, and keeps every ordering marker below landing in exactly
+        // the right slot (`prisma.adminAuditLog.create` and
+        // `prisma.txClient.adminAuditLog.create` are the SAME jest.fn by design). In
+        // production it checks out a SECOND pooled connection that autocommits, so the
+        // audit row survives a rollback of the very mutation it claims to record. Only
+        // the tx IDENTITY separates the two — see `expectAuditedThrough`.
         AdminAuditService,
         { provide: PrismaService, useValue: prisma },
         { provide: DeliveriesService, useValue: deliveries },
@@ -59,9 +68,39 @@ describe('AdminService', () => {
       ],
     }).compile();
     service = module.get(AdminService);
+    // A SPY, not a mock: the real `recordWithinTx` still runs, so every
+    // `prisma.adminAuditLog.create` assertion below keeps working unchanged. All the
+    // spy adds is a record of WHICH client each call site handed it.
+    recordWithinTx = jest.spyOn(
+      module.get(AdminAuditService),
+      'recordWithinTx',
+    );
   });
 
   afterEach(() => jest.clearAllMocks());
+
+  /**
+   * Assert the audit row went through the CALLER's transaction client.
+   *
+   * IDENTITY, not structural equality: `prisma` and `prisma.txClient` share every
+   * model mock on purpose (call tracking has to survive the boundary), so the only
+   * thing that distinguishes "co-committed inside the caller's transaction" from
+   * "written on a second, independently-committing connection" is which OBJECT was
+   * passed. The ordering markers cannot see it — they fire on
+   * `adminAuditLog.create`, which is the same jest.fn either way.
+   *
+   * Reported as a label rather than `expect(client).toBe(tx)` because a failing
+   * `toBe` here serialises two entire Prisma mocks and buries the one bit that
+   * matters under hundreds of lines of `[Function mockConstructor]`.
+   */
+  const expectAuditedThrough = (tx: unknown, action: string) => {
+    expect(recordWithinTx).toHaveBeenCalledTimes(1);
+    const [client, entry] = recordWithinTx.mock.calls[0];
+    expect(client === tx ? 'the caller tx' : 'a DIFFERENT client').toBe(
+      'the caller tx',
+    );
+    expect(entry).toEqual(expect.objectContaining({ action }));
+  };
 
   describe('support inbox', () => {
     it('lists ALL tickets (cross-user, no userId filter)', async () => {
@@ -276,11 +315,16 @@ describe('AdminService', () => {
     const actor = ACTOR;
 
     /** Stand in for the transaction the delivery service owns: run the callback it was
-     *  handed, with the prisma mock as the transaction client. */
+     *  handed, with `prisma.txClient` as the transaction client.
+     *
+     *  `txClient`, NOT `prisma`: the real `adminForceCancel`/`adminFail` hand over a
+     *  genuine `Prisma.TransactionClient`, and handing over `prisma` here would
+     *  locally re-alias `tx` to the injected client — making a call site that reached
+     *  for `this.prisma` indistinguishable from one that used the tx it was given. */
     const runCallbackFiringFrom = (mock: jest.Mock, firedFrom: string) =>
       mock.mockImplementation(async (...args: any[]) => {
         const audit = args[args.length - 1];
-        await audit(prisma, firedFrom);
+        await audit(prisma.txClient, firedFrom);
         return { id: 'd-1' };
       });
 
@@ -299,6 +343,9 @@ describe('AdminService', () => {
           before: { status: 'IN_TRANSIT' },
         }),
       });
+      // …and through the transaction the delivery service handed over, not a client
+      // of the audit service's own.
+      expectAuditedThrough(prisma.txClient, 'DELIVERY_FORCE_CANCEL');
     });
 
     it('records the reason an operator failed a delivery, and what it was flying as', async () => {
@@ -324,6 +371,7 @@ describe('AdminService', () => {
           args: { reason: 'ADMIN_ABORT' },
         }),
       });
+      expectAuditedThrough(prisma.txClient, 'DELIVERY_FAIL');
     });
 
     it('records the refund amount inside the refund transaction', async () => {
@@ -369,7 +417,7 @@ describe('AdminService', () => {
       });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -389,6 +437,10 @@ describe('AdminService', () => {
       await service.refund(actor, 'd-1', 5);
 
       expect(order).toEqual(['begin', 'update', 'credit', 'audit', 'commit']);
+      // The order alone cannot see a call site swapped to `this.prisma`: it would
+      // still fire between 'credit' and 'commit', because both clients share the
+      // same `adminAuditLog.create` jest.fn. Identity can.
+      expectAuditedThrough(prisma.txClient, 'DELIVERY_REFUND');
     });
   });
 
@@ -586,7 +638,7 @@ describe('AdminService', () => {
       });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -610,6 +662,7 @@ describe('AdminService', () => {
       } as any);
 
       expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'DRONE_UPDATE');
     });
 
     it('records a promo edit as a diff, not the whole row', async () => {
@@ -649,7 +702,7 @@ describe('AdminService', () => {
       });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -665,6 +718,7 @@ describe('AdminService', () => {
       await service.updatePromo(actor, 'p-1', { discountValue: 25 } as any);
 
       expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'PROMO_UPDATE');
     });
 
     it('does not record a drone registration that failed on a duplicate serial', async () => {
@@ -731,7 +785,7 @@ describe('AdminService', () => {
       const order: string[] = [];
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -762,6 +816,7 @@ describe('AdminService', () => {
       } as any);
 
       expect(order).toEqual(['begin', 'create', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'DRONE_CREATE');
     });
 
     it('records a PROMO_CREATE row sourced from the created row, so the audited code is the normalized one', async () => {
@@ -814,7 +869,7 @@ describe('AdminService', () => {
       const order: string[] = [];
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -841,6 +896,7 @@ describe('AdminService', () => {
       } as any);
 
       expect(order).toEqual(['begin', 'create', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'PROMO_CREATE');
     });
 
     it('writes no audit row when updatePromo matches nothing', async () => {
@@ -957,7 +1013,7 @@ describe('AdminService', () => {
       prisma.user.findUnique.mockResolvedValue({ role: 'USER' });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -973,6 +1029,7 @@ describe('AdminService', () => {
       await service.setRole(actor, 'u-2', 'ADMIN' as any);
 
       expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'USER_ROLE_SET');
     });
 
     it('records the AGENT role of a support reply, not a blanket ADMIN', async () => {
@@ -1030,7 +1087,7 @@ describe('AdminService', () => {
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -1062,6 +1119,7 @@ describe('AdminService', () => {
         'audit',
         'commit',
       ]);
+      expectAuditedThrough(prisma.txClient, 'SUPPORT_TICKET_REPLY');
     });
 
     it('records a support ticket status change with the prior status', async () => {
@@ -1088,7 +1146,7 @@ describe('AdminService', () => {
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -1104,6 +1162,7 @@ describe('AdminService', () => {
       await service.setTicketStatus(actor, 't-1', 'RESOLVED' as any);
 
       expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+      expectAuditedThrough(prisma.txClient, 'SUPPORT_TICKET_STATUS_SET');
     });
 
     it('404s and writes no audit row when the ticket does not exist', async () => {
@@ -1149,7 +1208,9 @@ describe('AdminService', () => {
             type: dto.type,
             reason: 'WEATHER_ABORT',
           };
-          if (audit) await audit(prisma, command);
+          // `txClient`, not `prisma` — see runCallbackFiringFrom's note. The real
+          // DroneCommandService.issue hands over its own transaction client.
+          if (audit) await audit(prisma.txClient, command);
           return command;
         },
       );
@@ -1168,6 +1229,7 @@ describe('AdminService', () => {
           args: { type: 'RETURN_TO_BASE', reason: 'WEATHER_ABORT' },
         }),
       });
+      expectAuditedThrough(prisma.txClient, 'DRONE_COMMAND_ISSUE');
     });
   });
 });
