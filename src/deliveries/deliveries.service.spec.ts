@@ -1290,6 +1290,11 @@ describe('DeliveriesService', () => {
       status: DeliveryStatus,
       id: string = 'delivery-1',
     ) => {
+      // Reads have to agree with the CAS. failExceptional now reads the row's exact
+      // status inside the transaction (that is what an audit row records), so a helper
+      // that only answered updateMany would let a test assert a fired-from status the
+      // modelled delivery was never in.
+      prisma.delivery.findUnique.mockResolvedValue({ ...mockDelivery, status });
       prisma.delivery.updateMany.mockImplementation((args: any) => {
         const where = args?.where ?? {};
         // Faithful to Postgres: an absent filter constrains NOTHING. A CAS that
@@ -1311,6 +1316,18 @@ describe('DeliveriesService', () => {
         return Promise.resolve({ count: matches ? 1 : 0 });
       });
     };
+
+    /**
+     * The fired-from reads specifically — `select: { status: true }` on one delivery.
+     * A bare "findFirst was never called" assertion cannot express this: every failure
+     * path ends in announceException, which reads the delivery to localize the comms.
+     * That read is not the one being gated, so match on the projection instead.
+     */
+    const statusReadsOf = (id: string) =>
+      prisma.delivery.findFirst.mock.calls.filter(
+        ([args]: [any]) =>
+          args?.where?.id === id && args?.select?.status === true,
+      );
 
     /** Every CAS a terminal path issues must be scoped to ONE delivery. */
     const expectEveryCasScopedToOneDelivery = (id: string) => {
@@ -1435,23 +1452,26 @@ describe('DeliveriesService', () => {
       expect(prisma.$transaction).toHaveBeenCalled();
       expect(audit).toHaveBeenCalledTimes(1);
       // And it learns which status the transition fired FROM — the fact that decides
-      // whether an aircraft was airborne.
-      //
-      // Read that literally: firedFrom is the FIRST member of the set the CAS matched,
-      // NOT a read-back of the row's exact status. The row here really is IN_TRANSIT,
-      // yet the callback is handed DRONE_ASSIGNED, because an updateMany over a
-      // five-member set cannot report which member it matched. What it DOES establish
-      // is the airborne-ness the aircraft disposition turns on: the value is always a
-      // member of the set that matched. A caller needing the precise status must read
-      // it itself — which is why the parameter is `firedFrom` and not `previousStatus`.
-      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.DRONE_ASSIGNED);
-      expect(FAILABLE_STATUSES).toContain(audit.mock.calls[0][1]);
+      // whether an aircraft was airborne. The row's ACTUAL status: the allowed set here
+      // is the whole in-flight family, so a value derived from the set rather than read
+      // from the row would record DRONE_ASSIGNED for this IN_TRANSIT delivery.
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+    });
+
+    it('does not read the row when nobody is recording the failure', async () => {
+      // The watchdog reaps in bulk. An extra indexed read per reap, for a field no
+      // automated caller writes down, is a cost with no buyer.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      await service.failExceptional('delivery-1', 'MECHANICAL' as any);
+
+      expect(statusReadsOf('delivery-1')).toHaveLength(0);
     });
 
     it('hands the callback the exact status when the caller narrows to one', async () => {
-      // The corollary of the caveat above: firedFrom is precise exactly when the
-      // matching set is a singleton. The pre-flight abort passes [SCHEDULED], so a
-      // future operator-initiated caller narrowing the same way gets an exact answer.
+      // firedFrom is read, not derived, so it is exact whatever the allowed set — a
+      // singleton set is simply the case where a derived value would have been right
+      // by luck.
       deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
       const audit = jest.fn().mockResolvedValue(undefined);
 

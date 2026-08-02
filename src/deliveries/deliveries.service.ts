@@ -1008,11 +1008,8 @@ export class DeliveriesService {
      * It runs INSIDE the transaction and OUTSIDE cleanupAfterTermination, which does
      * network I/O (refunds, MQTT, queue writes) that must never be held in one.
      *
-     * `firedFrom` is the FIRST status of the matching set, not necessarily the row's
-     * exact status when that set has more than one member — an updateMany cannot
-     * report which row-status it matched. It is named `firedFrom` rather than
-     * `previousStatus` for exactly that reason. A caller that needs the precise value
-     * must read it itself (adminForceCancel does).
+     * `firedFrom` is the row's ACTUAL status, read inside the transaction immediately
+     * before the CAS — not a guess derived from the allowed set.
      */
     auditWithinTx?: (
       tx: Prisma.TransactionClient,
@@ -1035,8 +1032,25 @@ export class DeliveriesService {
     // The CAS and the audit row co-commit or neither happens; the cleanup that
     // follows is deliberately OUTSIDE, because it does network I/O.
     const outcome = await this.prisma.$transaction(async (tx) => {
+      // The exact status this transition is about to fire FROM.
+      //
+      // A CAS cannot report which status it matched, and the caller's allowed set is
+      // usually the whole in-flight family — so deriving it from the set would record
+      // DRONE_ASSIGNED for a delivery that was actually AWAITING_HANDOFF. Read it.
+      //
+      // Gated on `auditWithinTx` because only an operator action writes it down: the
+      // watchdog reaps in bulk and must not pay an indexed read per reap for a field
+      // nobody records. Read INSIDE the transaction, immediately before the CAS.
+      const firedFrom = auditWithinTx
+        ? ((
+            await tx.delivery.findFirst({
+              where: { id: deliveryId },
+              select: { status: true },
+            })
+          )?.status ?? null)
+        : null;
+
       let matched = 0;
-      let firedFrom: DeliveryStatus | null = null;
       let wasAirborne = false;
 
       if (groundedAllowed.length) {
@@ -1047,7 +1061,6 @@ export class DeliveriesService {
             failureReason: reason,
           },
         }));
-        if (matched > 0) firedFrom = groundedAllowed[0] ?? null;
       }
       if (matched === 0 && airborneAllowed.length) {
         ({ count: matched } = await tx.delivery.updateMany({
@@ -1057,10 +1070,7 @@ export class DeliveriesService {
             failureReason: reason,
           },
         }));
-        if (matched > 0) {
-          wasAirborne = true;
-          firedFrom = airborneAllowed[0] ?? null;
-        }
+        if (matched > 0) wasAirborne = true;
       }
       if (matched === 0) return null;
 
