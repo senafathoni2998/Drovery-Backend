@@ -84,4 +84,26 @@ describe('PartitionMaintenanceService', () => {
       7,
     );
   });
+
+  it('never drops audit history, even when global retention is enabled', async () => {
+    // The global knob exists for flight_frames volume. If tuning telemetry retention also
+    // dropped audit rows, the record of who grounded a fleet would age out — the exact
+    // failure this increment exists to prevent.
+    process.env.PARTITION_RETAIN_MONTHS = '6';
+    jest.resetModules();
+    const { PartitionMaintenanceService: Svc } =
+      await import('./partition-maintenance.service.js');
+    const svc = new Svc(prisma as never, metrics as never);
+
+    await svc.run();
+
+    const dropTargets = prisma.$queryRawUnsafe.mock.calls
+      .filter((c) => (c[0] as string).includes('partition_drop_old'))
+      .map((c) => c[1] as string);
+
+    expect(dropTargets).toContain('flight_frames'); // the global still applies elsewhere
+    expect(dropTargets).not.toContain('admin_audit_logs'); // ...but never here
+
+    delete process.env.PARTITION_RETAIN_MONTHS;
+  });
 });

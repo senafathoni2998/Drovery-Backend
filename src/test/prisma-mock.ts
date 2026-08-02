@@ -30,6 +30,7 @@ type MockPrismaService = {
     | 'flightFrame'
     | 'trackingIdRegistry'
     | 'webhookEvent'
+    | 'adminAuditLog'
     ? {
         findUnique: jest.Mock;
         findFirst: jest.Mock;
@@ -119,6 +120,7 @@ export function createMockPrismaService(): MockPrismaService {
     flightFrame: createModelMock(),
     trackingIdRegistry: createModelMock(),
     webhookEvent: createModelMock(),
+    adminAuditLog: createModelMock(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
     // Raw escape hatches used by a few money/reaper paths; default to a benign result.

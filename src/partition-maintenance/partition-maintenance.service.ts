@@ -29,7 +29,7 @@ export class PartitionMaintenanceService {
   ) {}
 
   async run(): Promise<void> {
-    for (const table of PARTITIONED_TABLES) {
+    for (const { table, retainMonths } of PARTITIONED_TABLES) {
       try {
         const drained = await this.callFn('partition_drain_default', table);
         const created = await this.callFn(
@@ -37,13 +37,12 @@ export class PartitionMaintenanceService {
           table,
           PARTITION_MONTHS_AHEAD,
         );
+        // Per-table override wins over the global default, INCLUDING an explicit 0
+        // (never drop) — so `?? ` and not `||`.
+        const retain = retainMonths ?? PARTITION_RETAIN_MONTHS;
         const dropped =
-          PARTITION_RETAIN_MONTHS > 0
-            ? await this.callFn(
-                'partition_drop_old',
-                table,
-                PARTITION_RETAIN_MONTHS,
-              )
+          retain > 0
+            ? await this.callFn('partition_drop_old', table, retain)
             : 0;
 
         if (created + drained > 0)
