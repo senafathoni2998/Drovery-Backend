@@ -116,6 +116,14 @@ describe('AdminService', () => {
       // for a reply that never happened invents an event.
       expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
+
+    it('404s when the ticket does not exist', async () => {
+      prisma.supportTicket.findUnique.mockResolvedValue(null);
+      await expect(
+        service.replyAsAgent(AGENT, 't-x', 'hi'),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(prisma.supportChatMessage.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('deliveries', () => {
@@ -724,19 +732,32 @@ describe('AdminService', () => {
       // never happened invents an event.
       expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
+
+    it('404s when the target user does not exist', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(
+        service.setRole(ACTOR, 'nope', 'ADMIN' as any),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('operator audit — roles, support and commands', () => {
     const actor = ACTOR;
     const agent = AGENT;
 
-    it('records a role change with the prior role', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+    it('records a role change with the prior role, and `after` sourced from the UPDATED ROW', async () => {
+      // The mock's update resolves a DIFFERENT role ('AGENT') than the one requested
+      // ('ADMIN') — contrived on purpose. An implementation that sourced `after` off
+      // the `role` PARAMETER instead of the row Prisma actually wrote would record
+      // 'ADMIN' here and this assertion would not catch it; only a mismatch between
+      // the request and the mocked write does.
       prisma.user.findUnique.mockResolvedValue({ role: 'USER' });
       prisma.user.update.mockResolvedValue({
         id: 'u-2',
         email: 'a@b.c',
-        role: 'ADMIN',
+        role: 'AGENT',
       });
 
       await service.setRole(actor, 'u-2', 'ADMIN' as any);
@@ -747,15 +768,44 @@ describe('AdminService', () => {
           targetType: 'USER',
           targetId: 'u-2',
           before: { role: 'USER' },
-          after: { role: 'ADMIN' },
+          after: { role: 'AGENT' },
         }),
       });
+    });
+
+    it('runs the audit write inside the SAME transaction as user.update, not after it', async () => {
+      // "user.update happened AND adminAuditLog.create happened" cannot tell a
+      // co-committed write apart from one hoisted out and run right after
+      // `$transaction` resolves — a role change that persists with no operator row,
+      // while every assertion above stays green (recordWithinTx calls the SAME
+      // `adminAuditLog.create` mock either way, since `tx` and `prisma` share model
+      // mocks by design — see createMockPrismaService). Only the ORDER can tell them
+      // apart.
+      const order: string[] = [];
+      prisma.user.findUnique.mockResolvedValue({ role: 'USER' });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.user.update.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ id: 'u-2', email: 'a@b.c', role: 'ADMIN' });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.setRole(actor, 'u-2', 'ADMIN' as any);
+
+      expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
     });
 
     it('records the AGENT role of a support reply, not a blanket ADMIN', async () => {
       // The log records agent actions too, and "which hat were they wearing" is
       // part of the record — an agent is not an admin.
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.supportChatMessage.create.mockResolvedValue({
         id: 'm-1',
@@ -780,7 +830,6 @@ describe('AdminService', () => {
     });
 
     it('never stores the text of a support reply', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.supportChatMessage.create.mockResolvedValue({
         id: 'm-1',
@@ -800,8 +849,50 @@ describe('AdminService', () => {
       expect(row).not.toContain('4111');
     });
 
+    it('runs the audit write inside the SAME transaction as the two support writes, not after it', async () => {
+      // Same defect class as setRole's equivalent test above: "message created AND
+      // ticket updated AND audit created" is satisfied just as well by an audit
+      // write hoisted to run right after `$transaction` resolves. Only the ORDER
+      // tells a co-committed write apart from a bolted-on one.
+      const order: string[] = [];
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.supportChatMessage.create.mockImplementation(() => {
+        order.push('message');
+        return Promise.resolve({
+          id: 'm-1',
+          ticketId: 't-1',
+          senderRole: 'AGENT',
+          content: 'hi',
+          createdAt: new Date(),
+        });
+      });
+      prisma.supportTicket.update.mockImplementation(() => {
+        order.push('ticket-update');
+        return Promise.resolve({});
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.replyAsAgent(agent, 't-1', 'hi');
+
+      expect(order).toEqual([
+        'begin',
+        'message',
+        'ticket-update',
+        'audit',
+        'commit',
+      ]);
+    });
+
     it('records a support ticket status change with the prior status', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.supportTicket.updateMany.mockResolvedValue({ count: 1 });
 
@@ -820,6 +911,29 @@ describe('AdminService', () => {
       });
     });
 
+    it('runs the audit write inside the SAME transaction as the status updateMany, not after it', async () => {
+      const order: string[] = [];
+      prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.supportTicket.updateMany.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ count: 1 });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.setTicketStatus(actor, 't-1', 'RESOLVED' as any);
+
+      expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+    });
+
     it('404s and writes no audit row when the ticket does not exist', async () => {
       // Half one of the guard: the pre-read is what lets a missing ticket stay a
       // clean 404 instead of a 0-row updateMany with no way to tell why.
@@ -836,7 +950,6 @@ describe('AdminService', () => {
       // Half two of the guard: the pre-read can pass and the updateMany still
       // match nothing (a concurrent delete). That must 404 too, and BEFORE the
       // audit call — a row for a status change that never landed invents an event.
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.supportTicket.findUnique.mockResolvedValue({ status: 'OPEN' });
       prisma.supportTicket.updateMany.mockResolvedValue({ count: 0 });
 

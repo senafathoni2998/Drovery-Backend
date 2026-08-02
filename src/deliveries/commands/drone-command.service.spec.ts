@@ -72,39 +72,67 @@ describe('DroneCommandService', () => {
       prisma.delivery.findUnique.mockResolvedValue(
         liveDelivery({ trackingSource: TrackingSource.SIMULATED }),
       );
+      const audit = jest.fn();
       await expect(
-        service.issue('admin-1', 'd-1', {
-          type: DroneCommandType.RETURN_TO_BASE,
-        }),
+        service.issue(
+          'admin-1',
+          'd-1',
+          { type: DroneCommandType.RETURN_TO_BASE },
+          audit,
+        ),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.droneCommand.create).not.toHaveBeenCalled();
+      // A rejected issue must never invoke the audit callback — a row for a command
+      // that was refused invents an event. Only a positive test on the create call
+      // above cannot see this: a callback silently fired ahead of a later guard would
+      // still leave `droneCommand.create` uncalled and this whole suite green.
+      expect(audit).not.toHaveBeenCalled();
     });
 
     it('rejects a missing delivery (404)', async () => {
       prisma.delivery.findUnique.mockResolvedValue(null);
+      const audit = jest.fn();
       await expect(
-        service.issue('admin-1', 'd-x', { type: DroneCommandType.ABORT }),
+        service.issue(
+          'admin-1',
+          'd-x',
+          { type: DroneCommandType.ABORT },
+          audit,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
+      expect(audit).not.toHaveBeenCalled();
     });
 
     it('rejects a delivery with no assigned drone (409)', async () => {
       prisma.delivery.findUnique.mockResolvedValue(
         liveDelivery({ assignedDroneId: null }),
       );
+      const audit = jest.fn();
       await expect(
-        service.issue('admin-1', 'd-1', { type: DroneCommandType.ABORT }),
+        service.issue(
+          'admin-1',
+          'd-1',
+          { type: DroneCommandType.ABORT },
+          audit,
+        ),
       ).rejects.toBeInstanceOf(ConflictException);
+      expect(audit).not.toHaveBeenCalled();
     });
 
     it('rejects RETURN_TO_BASE before pickup (DRONE_ASSIGNED not RETURNABLE) → 409', async () => {
       prisma.delivery.findUnique.mockResolvedValue(
         liveDelivery({ status: DeliveryStatus.DRONE_ASSIGNED }),
       );
+      const audit = jest.fn();
       await expect(
-        service.issue('admin-1', 'd-1', {
-          type: DroneCommandType.RETURN_TO_BASE,
-        }),
+        service.issue(
+          'admin-1',
+          'd-1',
+          { type: DroneCommandType.RETURN_TO_BASE },
+          audit,
+        ),
       ).rejects.toBeInstanceOf(ConflictException);
+      expect(audit).not.toHaveBeenCalled();
     });
 
     it('allows ABORT pre-pickup (DRONE_ASSIGNED is FAILABLE) with default reason ADMIN_ABORT', async () => {
@@ -193,10 +221,19 @@ describe('DroneCommandService', () => {
     it('rejects once the per-delivery command cap is reached (409, no insert)', async () => {
       prisma.delivery.findUnique.mockResolvedValue(liveDelivery());
       prisma.droneCommand.count.mockResolvedValue(50); // at MAX_COMMANDS_PER_DELIVERY
+      const audit = jest.fn();
       await expect(
-        service.issue('admin-1', 'd-1', { type: DroneCommandType.ABORT }),
+        service.issue(
+          'admin-1',
+          'd-1',
+          { type: DroneCommandType.ABORT },
+          audit,
+        ),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.droneCommand.create).not.toHaveBeenCalled();
+      // This guard runs LAST, right before the insert — the closest a callback could
+      // get to firing on a command that was never created.
+      expect(audit).not.toHaveBeenCalled();
     });
 
     describe('the optional audit callback (operator audit log)', () => {
@@ -228,11 +265,15 @@ describe('DroneCommandService', () => {
           audit,
         );
 
-        // `prisma` doubles as the transaction client here (see createMockPrismaService):
-        // asserting the callback got THAT object, not some other value, is what pins
-        // "inside the same transaction" rather than merely "called afterwards".
+        // `prisma.txClient` is a DIFFERENT object from `prisma` (see
+        // createMockPrismaService) that shares the same underlying model mocks —
+        // asserting the callback got THAT object, not `prisma` itself, is what
+        // actually pins "inside the same transaction" rather than merely "called
+        // afterwards with a client that happens to work". A callback hoisted to run
+        // AFTER `$transaction` resolves would be called with `this.prisma` (i.e.
+        // plain `prisma` here), which this assertion would then reject.
         expect(audit).toHaveBeenCalledWith(
-          prisma,
+          prisma.txClient,
           expect.objectContaining({
             id: 'c-1',
             type: DroneCommandType.ABORT,

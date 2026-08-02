@@ -160,7 +160,10 @@ export class AdminService {
   /** Set a ticket's status. Pre-reads the ticket so a missing one stays a clean
    *  404 and so the audit row has a `before` value; the `updateMany` count===0
    *  guard — a race where the ticket vanished between the read and the write —
-   *  is checked BEFORE the audit call, inside the same transaction as the write. */
+   *  is checked BEFORE the audit call, inside the same transaction as the write.
+   *  The row this returns is read back OUTSIDE that transaction: it needs no CAS
+   *  guarantee of its own, and reading it inside would extend how long the
+   *  `support_tickets` row lock is held for no benefit. */
   async setTicketStatus(
     actor: AuditActor,
     ticketId: string,
@@ -175,7 +178,7 @@ export class AdminService {
         id: ticketId,
       });
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.supportTicket.updateMany({
         where: { id: ticketId },
         data: { status },
@@ -199,10 +202,9 @@ export class AdminService {
           status,
         }),
       });
-      return tx.supportTicket.findUnique({ where: { id: ticketId } });
     });
     this.logger.log(`ticket ${ticketId} status → ${status}`);
-    return updated;
+    return this.prisma.supportTicket.findUnique({ where: { id: ticketId } });
   }
 
   // ── Delivery oversight (ADMIN) ──
