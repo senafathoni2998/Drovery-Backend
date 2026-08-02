@@ -1351,6 +1351,27 @@ describe('DeliveriesService', () => {
       }
     };
 
+    /**
+     * Assert the audit callback ran with the TRANSACTION's own client, not the
+     * top-level `prisma` it happens to share every model mock with.
+     *
+     * IDENTITY, not structural equality — same reasoning, and the same reporting
+     * shape, as `admin.service.spec.ts`'s `expectAuditedThrough`: `prisma` and
+     * `prisma.txClient` share every model mock on purpose (call tracking has to
+     * survive the boundary), so the only thing that distinguishes "co-committed
+     * inside the caller's transaction" from "written on a second, independently-
+     * committing connection" is which OBJECT the call site handed the callback.
+     * Reported as a label rather than `expect(client).toBe(prisma.txClient)`
+     * because a failing `toBe` here serialises two entire Prisma mocks and buries
+     * the one bit that matters under hundreds of lines of `[Function mockConstructor]`.
+     */
+    const expectHandedTxClient = (callback: jest.Mock) => {
+      const client = callback.mock.calls[0][0];
+      expect(
+        client === prisma.txClient ? 'the tx client' : 'a DIFFERENT client',
+      ).toBe('the tx client');
+    };
+
     it('scopes every force-cancel CAS to the one delivery and the right statuses', async () => {
       deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
 
@@ -1464,7 +1485,12 @@ describe('DeliveriesService', () => {
       const order: string[] = [];
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -1496,6 +1522,9 @@ describe('DeliveriesService', () => {
       // is the whole in-flight family, so a value derived from the set rather than read
       // from the row would record DRONE_ASSIGNED for this IN_TRANSIT delivery.
       expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // And it is handed the TRANSACTION's client — the exact defect that let a
+      // call site's audit row survive a rollback of the mutation it records.
+      expectHandedTxClient(audit);
     });
 
     it('does not read the row when nobody is recording the failure', async () => {
@@ -1583,7 +1612,12 @@ describe('DeliveriesService', () => {
       const order: string[] = [];
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -1603,6 +1637,9 @@ describe('DeliveriesService', () => {
       // delivery" is the whole reason to record it, and the in-flight CAS spans four
       // statuses that updateMany cannot tell apart.
       expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // And it is handed the TRANSACTION's client — the exact defect that let a
+      // call site's audit row survive a rollback of the mutation it records.
+      expectHandedTxClient(audit);
     });
 
     it('hands the force-cancel callback the pre-launch status when it beat the launch', async () => {
@@ -1668,7 +1705,12 @@ describe('DeliveriesService', () => {
       const order: string[] = [];
       prisma.$transaction.mockImplementation(async (fn: any) => {
         order.push('begin');
-        const r = await fn(prisma);
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
         order.push('commit');
         return r;
       });
@@ -1686,6 +1728,10 @@ describe('DeliveriesService', () => {
       expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
       expect(audit).toHaveBeenCalledTimes(1);
       expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // adminFail owns no transaction of its own — assert the boundary HERE too,
+      // not just on failExceptional. Inheriting the guarantee from the delegate
+      // holds only while adminFail keeps delegating.
+      expectHandedTxClient(audit);
     });
   });
 

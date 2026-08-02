@@ -1652,24 +1652,36 @@ deleting the entry (two tests red per field, every time).
 | Support | replyAsAgent, setTicketStatus |
 
 **Automated actors get no row, deliberately.** `failExceptional` has **nine call sites across
-five files** and `DroneCommandService.issue` has two; exactly one of those eleven passes the
-optional `auditWithinTx` callback, and it is `adminFail`. The other eight `failExceptional`
-sites — the two handoff-cap self-heals (`deliveries.service.ts:1426`, `:1459`), the watchdog's
+five files** and `DroneCommandService.issue` has two, for eleven total. **Two** of those eleven
+pass the optional `auditWithinTx` callback: `adminFail` (one of the nine `failExceptional`
+sites) and `issue`'s OTHER caller, the admin `issueDroneCommand` route (`admin.service.ts:526`).
+The remaining nine pass nothing and write nothing: the eight non-`adminFail` `failExceptional`
+sites — the two handoff-cap self-heals (`deliveries.service.ts:1434`, `:1467`), the watchdog's
 stall sweep and its stranded-command sweep (`delivery-watchdog.ts:99`, `:207`), drone-reported
 `FAILED` (`telemetry.service.ts:250`), an accepted `ABORT` (`drone-command.service.ts:357`) and
-the two pre-flight aborts (`simulation.processor.ts:279`, `:345`) — pass nothing and write
-nothing, as does `issue`'s other caller, the flight recorder's automatic `RETURN_TO_BASE`. An
-audit log that fills with the system auditing itself is a log nobody reads.
+the two pre-flight aborts (`simulation.processor.ts:279`, `:345`) — plus `issue`'s remaining
+caller, the flight recorder's automatic `RETURN_TO_BASE` (`flight-recorder.service.ts:199`).
+2 + 9 = 11. An audit log that fills with the system auditing itself is a log nobody reads.
+(This entry previously said "exactly one... and it is `adminFail`", omitting `issue`'s admin
+caller entirely and summing to 10 — the third undercount in this section's history, and the
+third time it ran low.)
 
 The safety property here is not the count; it is that the callback is *supplied* from exactly
-one file. `grep -rn auditWithinTx src/` returns the parameter declarations in
-`deliveries.service.ts` and `drone-command.service.ts` and three call sites, all in
-`admin.service.ts`. That was true then and is true now. **The count was not.** This enumeration
-has been wrong twice and both times LOW: the plan said three, a Task 3 review corrected it to
-five, the real number is nine. Both errors pointed the same direction — "fewer things reach
-this than you think" — which is the direction that makes widening the callback look safer than
-it is. The conclusion held; the arithmetic behind it did not, so re-derive it rather than cite
-it if the callback is ever offered to a second caller.
+one file. `grep -rn auditWithinTx src/` does not show that: it returns 12 hits — the parameter
+declarations, the internal gate checks, and the forwarded reference, all in
+`deliveries.service.ts` and `drone-command.service.ts` — and **zero** in `admin.service.ts`,
+because its three call sites pass anonymous arrows and never bind the parameter to that name. A
+search for the identifier cannot see the thing it exists to verify. What does: grepping the call
+sites of the three methods that *accept* the callback instead —
+`grep -rn "\.adminForceCancel(\|\.adminFail(\|\.issue(" src/ --include=*.ts | grep -v spec` —
+returns four, and only the three in `admin.service.ts` (`:272`, `:292`, `:526`) supply a
+trailing callback; `flight-recorder.service.ts:199` does not. That conclusion was true then and
+is true now. **The count was not.** This enumeration has been wrong twice and both times LOW:
+the plan said three, a Task 3 review corrected it to five, the real number is nine. Both errors
+pointed the same direction — "fewer things reach this than you think" — which is the direction
+that makes widening the callback look safer than it is. The conclusion held; the arithmetic
+behind it did not, so re-derive it rather than cite it if the callback is ever offered to a
+second caller.
 
 **The actor is assembled once.** `@AuditActor()` (backed by a plain exported
 `assembleAuditActor(ctx)`) is mounted on all eleven mutating routes. It **replaced three**
@@ -1699,7 +1711,7 @@ live catalog: admin_audit_logs → RANGE ("createdAt"), 5 children
               (admin_audit_logs_default + y2026m08/09/10/11 — current month + 3 ahead)
 ```
 
-**Mutation testing — 19 mutations, 19 caught**, re-run as one consolidated sweep across the
+**Mutation testing — 20 mutations, 20 caught**, re-run as one consolidated sweep across the
 whole feature rather than per-task, with every mutation gated on `tsc -p tsconfig.json
 --noEmit` staying at its one-error baseline first (a mutation the typechecker rejects proves
 nothing about the tests). `retentionFor` with `||`; `recordWithinTx` through `this.prisma`
@@ -1708,12 +1720,30 @@ source object; `replyAsAgent` storing the reply text instead of its length; the 
 hoisted out of its transaction on `updateDrone` and on `setRole`; `setTicketStatus` auditing
 before its `count === 0` guard; `refund` auditing before the single-winner gate; `list`'s
 `count` ignoring the `where`; `list` dropping the `id` tiebreaker; `list` dropping the default
-window. The last seven were added pre-merge: `recordWithinTx(this.prisma, …)` substituted at
+window. The next seven were added pre-merge: `recordWithinTx(this.prisma, …)` substituted at
 all eleven `admin.service.ts` call sites **while staying lexically inside the transaction
 callback** (11 tests red, one per route), the same substitution on `updateDrone` alone (exactly
 1 test red — precise, not a blanket failure), and each of the five newly-allowlisted fields
 deleted in turn (2 tests red per field). Before the identity assertions existed, the eleven-site
 substitution compiled clean and passed 978/978.
+
+**One more was found and closed in a final pass before merge, one hop downstream of that same
+defect.** `admin.service.ts`'s eleven call sites were pinned, but the guarantee they lean on —
+that `adminForceCancel` and `failExceptional` hand their callback the transaction's own client —
+was itself untested for two of the three delegated routes. Substituting
+`auditWithinTx(this.prisma, …)` for `auditWithinTx(tx, …)` at both hand-over sites in
+`deliveries.service.ts` (`adminForceCancel`, `:999`; `failExceptional`, `:1143` — the latter
+also exercised through `adminFail`'s delegation) compiled clean and passed **982/982**, for the
+identical reason as the eleven-site defect above: the three ordering-marker tests in
+`deliveries.service.spec.ts` aliased `tx` back to `prisma` in the fixture itself, the same
+pattern the mock fix above corrected for `admin.service.spec.ts`. `issue`'s equivalent hop in
+`drone-command.service.ts` was already pinned. Closed by handing those three fixtures
+`prisma.txClient` instead and adding one `expectAuditedThrough`-style identity assertion per
+test (3 tests red). A temporal-hoist mutation at the same two sites — deferring the audit call
+into a thunk that closes over `tx` and runs after `$transaction` resolves, so client identity is
+preserved — was re-checked against the fixed fixtures and is still caught, by the pre-existing
+ordering assertions rather than the new identity ones: the two failure modes remain each other's
+blind spot, and closing one did not cost the other any coverage.
 
 One methodological note worth keeping: the first pass reported the `this.prisma` mutation as a
 **survivor**, and it was not. `jest -t` takes a *regex*, and the test's name contains `list()`
@@ -1743,8 +1773,28 @@ script now escapes the filter and parses jest's summary for a non-zero executed 
     actually look like in code. The ordering markers are structurally blind to it: they fire on
     `adminAuditLog.create`, and `prisma.adminAuditLog.create` and
     `prisma.txClient.adminAuditLog.create` are the same `jest.fn` by design, so the marker lands
-    in the identical slot either way. Pinned on all eleven routes by an explicit
-    `expectAuditedThrough(prisma.txClient, …)` identity assertion.
+    in the identical slot either way. How many HOPS this needs pinned depends on how many
+    transaction boundaries sit between the DB and the callback that writes to it. The eight
+    routes that own their `$transaction` directly in `admin.service.ts` have one:
+    `recordWithinTx` receiving the same `tx` the route's own callback was handed, pinned by an
+    explicit `expectAuditedThrough(prisma.txClient, …)` identity assertion in
+    `admin.service.spec.ts`.
+    The three DELEGATED routes (force-cancel, fail, issueDroneCommand) have a second hop
+    upstream of that spec file entirely — it mocks `DeliveriesService` and `DroneCommandService`
+    outright, so nothing it asserts can see what happens inside them: the delegate's OWN
+    `$transaction` — `adminForceCancel` and `failExceptional` in `deliveries.service.ts`,
+    `issue` in `drone-command.service.ts` — handing the `auditWithinTx` callback its
+    transaction's client rather than `this.prisma`. `issue`'s hop was pinned from the start, by
+    an identity assertion in `drone-command.service.spec.ts`. `adminForceCancel`'s and
+    `failExceptional`'s were not: their ordering-marker tests in `deliveries.service.spec.ts`
+    aliased `tx` back to `prisma` in the fixture itself — the identical defect this section's
+    mock fix corrected for `admin.service.spec.ts` — so substituting `this.prisma` at either site
+    compiled clean and passed 982/982. Closed in a pre-merge pass that handed those two fixtures
+    `prisma.txClient` instead and added the identity assertion each was missing. **All eleven
+    routes are now pinned at every hop they have** — one hop for the eight direct routes, two
+    for the three delegated ones — and nowhere else: a call site that substituted `this.prisma`
+    three hops deep, or a future route with a third transaction boundary, would still need its
+    own assertion: this guarantee does not generalize past the hops it was written for.
 
   **The second half was added pre-merge, after a whole-branch review found it missing
   everywhere.** Substituting `this.prisma` at all eleven call sites compiled clean and left

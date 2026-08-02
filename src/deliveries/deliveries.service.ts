@@ -97,7 +97,7 @@ const MAX_TRACKING_ID_TRIES = 5;
 // `DroneCommandService.issue`. The reasoning and the cost it accepts are written once, in
 // the block comment above `adminForceCancel`'s `$transaction`. This pointer exists only
 // so the rule above is not read as unbroken. (Deliberately no line numbers: adding these
-// six lines moved every one of them.)
+// eight lines moved every one of them.)
 const DELIVERY_DEBIT_FIRST = process.env.DELIVERY_DEBIT_FIRST === 'true';
 
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
