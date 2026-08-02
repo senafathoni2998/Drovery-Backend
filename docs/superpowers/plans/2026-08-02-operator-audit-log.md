@@ -181,26 +181,38 @@ The retention override is the point of this step: `PARTITION_RETAIN_MONTHS` is a
 
 Add to `src/partition-maintenance/partition-maintenance.service.spec.ts`:
 
+The test must assert **behaviour of the maintenance loop**, not the value of a constant. A
+test that reads `PARTITIONED_TABLES.find(...).retainMonths === 0` would pass whether or not
+the loop honours the override, and would not catch the `??` → `||` mutation — which lives in
+the service, not the constant.
+
 ```typescript
 it('never drops audit history, even when global retention is enabled', async () => {
-  // The global knob exists for flight_frames volume. admin_audit_logs opts out by
-  // name, so enabling retention for telemetry cannot silently erase who did what.
+  // The global knob exists for flight_frames volume. If tuning telemetry retention also
+  // dropped audit rows, the record of who grounded a fleet would age out — the exact
+  // failure this increment exists to prevent.
   process.env.PARTITION_RETAIN_MONTHS = '6';
   jest.resetModules();
-
-  const { PARTITIONED_TABLES } = await import(
-    './partition.constants'
+  const { PartitionMaintenanceService: Svc } = await import(
+    './partition-maintenance.service'
   );
-  const audit = PARTITIONED_TABLES.find(
-    (t) => t.table === 'admin_audit_logs',
-  );
+  const svc = new Svc(prisma as never, metrics as never);
 
-  expect(audit).toBeDefined();
-  expect(audit!.retainMonths).toBe(0);
+  await svc.run();
+
+  const dropTargets = prisma.$queryRawUnsafe.mock.calls
+    .filter((c) => (c[0] as string).includes('partition_drop_old'))
+    .map((c) => c[1] as string);
+
+  expect(dropTargets).toContain('flight_frames'); // the global still applies elsewhere
+  expect(dropTargets).not.toContain('admin_audit_logs'); // ...but never here
 
   delete process.env.PARTITION_RETAIN_MONTHS;
 });
 ```
+
+Note the first assertion: without it, deleting the retention branch entirely would also make
+the test pass, and the test would be asserting nothing.
 
 - [ ] **Step 5: Run it and watch it fail**
 
@@ -208,7 +220,12 @@ it('never drops audit history, even when global retention is enabled', async () 
 npx jest src/partition-maintenance/partition-maintenance.service.spec.ts -t "never drops audit history"
 ```
 
-Expected: FAIL — `PARTITIONED_TABLES.find is not a function` or `audit` is `undefined`, because `PARTITIONED_TABLES` is still `readonly string[]`.
+Expected: FAIL — `admin_audit_logs` is not yet in `PARTITIONED_TABLES`, so `dropTargets` does
+not contain `flight_frames`… actually it will: the first assertion passes and the second
+passes vacuously. **Confirm the failure is real before implementing** — if the test passes
+immediately, add the table to `PARTITIONED_TABLES` without the override first, watch the
+second assertion fail, and only then add `retainMonths: 0`. Never implement against a test
+you have not seen fail.
 
 - [ ] **Step 6: Change `PARTITIONED_TABLES` to carry a per-table retention override**
 
