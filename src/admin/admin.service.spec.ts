@@ -327,7 +327,6 @@ describe('AdminService', () => {
     });
 
     it('records the refund amount inside the refund transaction', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.delivery.findUnique.mockResolvedValue({
         userId: 'u-1',
         estimatedPrice: 20,
@@ -348,7 +347,6 @@ describe('AdminService', () => {
     it('writes no audit row when the refund loses its single-winner gate', async () => {
       // The gate exists so a card charge is refunded at most once. An audit row for a
       // refund that did not happen is worse than none — it invents an event.
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.delivery.findUnique.mockResolvedValue({
         userId: 'u-1',
         estimatedPrice: 20,
@@ -357,6 +355,40 @@ describe('AdminService', () => {
 
       await expect(service.refund(actor, 'd-1', 5)).rejects.toThrow();
       expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('runs the audit write inside the SAME transaction as the refund credit, not after it', async () => {
+      // Same defect class as setRole's equivalent test: "payment flipped AND wallet
+      // credited AND audit created" is satisfied just as well by an audit write
+      // hoisted to run right after `$transaction` resolves. Only the ORDER tells a
+      // co-committed write apart from a bolted-on one.
+      const order: string[] = [];
+      prisma.delivery.findUnique.mockResolvedValue({
+        userId: 'u-1',
+        estimatedPrice: 20,
+      });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.payment.updateMany.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ count: 1 });
+      });
+      wallet.creditWithinTx.mockImplementation(() => {
+        order.push('credit');
+        return Promise.resolve(undefined);
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.refund(actor, 'd-1', 5);
+
+      expect(order).toEqual(['begin', 'update', 'credit', 'audit', 'commit']);
     });
   });
 
@@ -510,7 +542,6 @@ describe('AdminService', () => {
     it('records the prior airworthiness when an aircraft is grounded', async () => {
       // The question an incident review asks is "was it airworthy before you touched
       // it" — and only a before-value answers that.
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.drone.findUnique.mockResolvedValue({
         id: 'drone-7',
         serial: 'DRV-001',
@@ -540,8 +571,48 @@ describe('AdminService', () => {
       });
     });
 
+    it('runs the audit write inside the SAME transaction as drone.update, not after it', async () => {
+      // "drone.update happened AND adminAuditLog.create happened" cannot tell a
+      // co-committed write apart from one hoisted out to run right after
+      // `$transaction` resolves — recordWithinTx calls the SAME `adminAuditLog.create`
+      // mock either way, since `tx` and `prisma` share model mocks by design (see
+      // createMockPrismaService). Only the ORDER can tell them apart.
+      const order: string[] = [];
+      prisma.drone.findUnique.mockResolvedValue({
+        id: 'drone-7',
+        serial: 'DRV-001',
+        airworthy: true,
+        status: 'AVAILABLE',
+      });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.update.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({
+          id: 'drone-7',
+          serial: 'DRV-001',
+          airworthy: false,
+          status: 'MAINTENANCE',
+        });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.updateDrone(actor, 'drone-7', {
+        airworthy: false,
+        status: 'MAINTENANCE',
+      } as any);
+
+      expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+    });
+
     it('records a promo edit as a diff, not the whole row', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       prisma.promoCode.findUnique
         .mockResolvedValueOnce({
           id: 'p-1',
@@ -568,8 +639,35 @@ describe('AdminService', () => {
       });
     });
 
+    it('runs the audit write inside the SAME transaction as promoCode.updateMany, not after it', async () => {
+      const order: string[] = [];
+      prisma.promoCode.findUnique.mockResolvedValue({
+        id: 'p-1',
+        discountType: 'PERCENT',
+        discountValue: 10,
+        active: true,
+      });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.promoCode.updateMany.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ count: 1 });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.updatePromo(actor, 'p-1', { discountValue: 25 } as any);
+
+      expect(order).toEqual(['begin', 'update', 'audit', 'commit']);
+    });
+
     it('does not record a drone registration that failed on a duplicate serial', async () => {
-      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
       // A REAL PrismaClientKnownRequestError, not a look-alike — createDrone's catch
       // guards on `instanceof`, and a plain Error with matching fields would rethrow
       // raw and let this test pass for the wrong reason (it would prove nothing about
@@ -627,6 +725,43 @@ describe('AdminService', () => {
           },
         }),
       });
+    });
+
+    it('runs the audit write inside the SAME transaction as drone.create, not after it', async () => {
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.create.mockImplementation(() => {
+        order.push('create');
+        return Promise.resolve({
+          id: 'dr-9',
+          serial: 'X9',
+          model: 'Drovery X9',
+          maxPayloadKg: 3,
+          rangeKm: 20,
+          homeBaseLat: 1,
+          homeBaseLng: 2,
+        });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.createDrone(actor, {
+        serial: 'X9',
+        model: 'Drovery X9',
+        maxPayloadKg: 3,
+        rangeKm: 20,
+        homeBaseLat: 1,
+        homeBaseLng: 2,
+      } as any);
+
+      expect(order).toEqual(['begin', 'create', 'audit', 'commit']);
     });
 
     it('records a PROMO_CREATE row sourced from the created row, so the audited code is the normalized one', async () => {

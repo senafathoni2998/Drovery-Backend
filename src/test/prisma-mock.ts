@@ -74,8 +74,17 @@ export function createMockPrismaService(): MockPrismaService & {
    *
    * Exposed so a spec can assert `expect(callback).toHaveBeenCalledWith(prisma.txClient,
    * ...)` and have it actually discriminate.
+   *
+   * Typed as `MockPrismaService` MINUS `$transaction`/`readWithFallback`/`txClient`
+   * itself — the shallow copy below is taken before any of those three are assigned,
+   * so it genuinely lacks them (matching a real `Prisma.TransactionClient`, which has
+   * none either). Claiming the full `MockPrismaService` shape here would let
+   * `prisma.txClient.$transaction(...)` typecheck while being `undefined` at runtime.
    */
-  txClient: MockPrismaService;
+  txClient: Omit<
+    MockPrismaService,
+    '$transaction' | 'readWithFallback' | 'txClient'
+  >;
 } {
   const createModelMock = () => {
     // The partitioned tables (deliveries + the co-partitioned children) are read by-id via
@@ -166,5 +175,10 @@ export function createMockPrismaService(): MockPrismaService & {
   // `prisma.readWithFallback(c => ...)`; their specs can assert it was invoked.
   mock.readWithFallback = jest.fn((fn: (c: unknown) => unknown) => fn(mock));
   mock.txClient = txClient;
-  return mock as unknown as MockPrismaService & { txClient: MockPrismaService };
+  return mock as unknown as MockPrismaService & {
+    txClient: Omit<
+      MockPrismaService,
+      '$transaction' | 'readWithFallback' | 'txClient'
+    >;
+  };
 }
