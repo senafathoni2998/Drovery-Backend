@@ -344,7 +344,7 @@ describe('AdminService', () => {
     it('registers an aircraft', async () => {
       prisma.drone.create.mockResolvedValue({ id: 'dr-1', serial: 'X1' });
 
-      const out = await service.createDrone({
+      const out = await service.createDrone(ACTOR, {
         serial: 'X1',
         model: 'Drovery X1',
         maxPayloadKg: 2,
@@ -367,7 +367,7 @@ describe('AdminService', () => {
       prisma.drone.create.mockRejectedValue(dup);
 
       await expect(
-        service.createDrone({
+        service.createDrone(ACTOR, {
           serial: 'X1',
           model: 'm',
           maxPayloadKg: 1,
@@ -396,7 +396,7 @@ describe('AdminService', () => {
         status: 'GROUNDED',
       });
 
-      await service.updateDrone('dr-1', { airworthy: false } as any);
+      await service.updateDrone(ACTOR, 'dr-1', { airworthy: false } as any);
 
       expect(prisma.drone.update).toHaveBeenCalledWith({
         where: { id: 'dr-1' },
@@ -425,7 +425,7 @@ describe('AdminService', () => {
   describe('promo CRUD', () => {
     it('creates a promo (uppercased code)', async () => {
       prisma.promoCode.create.mockResolvedValue({ id: 'p-1' });
-      await service.createPromo({
+      await service.createPromo(ACTOR, {
         code: 'save10',
         discountType: 'PERCENT',
         discountValue: 10,
@@ -435,7 +435,7 @@ describe('AdminService', () => {
 
     it('rejects a PERCENT discount over 100', async () => {
       await expect(
-        service.createPromo({
+        service.createPromo(ACTOR, {
           code: 'X',
           discountType: 'PERCENT',
           discountValue: 150,
@@ -451,7 +451,7 @@ describe('AdminService', () => {
         }),
       );
       await expect(
-        service.createPromo({
+        service.createPromo(ACTOR, {
           code: 'DUP',
           discountType: 'FIXED',
           discountValue: 5,
@@ -465,7 +465,7 @@ describe('AdminService', () => {
         discountType: 'PERCENT',
       });
       await expect(
-        service.updatePromo('p-1', { discountValue: 150 } as any),
+        service.updatePromo(ACTOR, 'p-1', { discountValue: 150 } as any),
       ).rejects.toThrow(BadRequestException);
       expect(prisma.promoCode.updateMany).not.toHaveBeenCalled();
     });
@@ -476,10 +476,90 @@ describe('AdminService', () => {
         discountType: 'PERCENT',
       });
       prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
-      await service.updatePromo('p-1', { discountValue: 50 } as any);
+      await service.updatePromo(ACTOR, 'p-1', { discountValue: 50 } as any);
       expect(
         prisma.promoCode.updateMany.mock.calls[0][0].data.discountValue,
       ).toBe(50);
+    });
+  });
+
+  describe('operator audit — fleet and promos', () => {
+    const actor = { userId: 'admin-1', role: 'ADMIN' as const };
+
+    it('records the prior airworthiness when an aircraft is grounded', async () => {
+      // The question an incident review asks is "was it airworthy before you touched
+      // it" — and only a before-value answers that.
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.drone.findUnique.mockResolvedValue({
+        id: 'drone-7',
+        serial: 'DRV-001',
+        airworthy: true,
+        status: 'AVAILABLE',
+      });
+      prisma.drone.update.mockResolvedValue({
+        id: 'drone-7',
+        serial: 'DRV-001',
+        airworthy: false,
+        status: 'MAINTENANCE',
+      });
+
+      await service.updateDrone(actor, 'drone-7', {
+        airworthy: false,
+        status: 'MAINTENANCE',
+      } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'DRONE_UPDATE',
+          targetType: 'DRONE',
+          targetId: 'drone-7',
+          before: { airworthy: true, status: 'AVAILABLE' },
+          after: { airworthy: false, status: 'MAINTENANCE' },
+        }),
+      });
+    });
+
+    it('records a promo edit as a diff, not the whole row', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.promoCode.findUnique
+        .mockResolvedValueOnce({
+          id: 'p-1',
+          discountType: 'PERCENT',
+          discountValue: 10,
+          active: true,
+        })
+        .mockResolvedValue({
+          id: 'p-1',
+          discountType: 'PERCENT',
+          discountValue: 25,
+          active: true,
+        });
+      prisma.promoCode.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.updatePromo(actor, 'p-1', { discountValue: 25 } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'PROMO_UPDATE',
+          before: { discountValue: 10 },
+          after: { discountValue: 25 },
+        }),
+      });
+    });
+
+    it('does not record a drone registration that failed on a duplicate serial', async () => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      prisma.drone.create.mockRejectedValue(
+        Object.assign(new Error('dup'), {
+          code: 'P2002',
+          name: 'PrismaClientKnownRequestError',
+        }),
+      );
+
+      await expect(
+        service.createDrone(actor, { serial: 'DRV-001' } as any),
+      ).rejects.toThrow();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
   });
 

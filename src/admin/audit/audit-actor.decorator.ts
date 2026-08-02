@@ -1,7 +1,6 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
-import { AppForbiddenException } from '../../common/exceptions/app-exception';
 import { AuditActor as Actor } from './admin-audit.service';
 
 /** The decorator and the shape it produces under one name, so a controller writes
@@ -27,15 +26,23 @@ export type AuditActor = Actor;
  * `role` is the DB-fresh one RolesGuard resolved and wrote onto `req.user` — the token
  * deliberately carries no role, so a demote takes effect on the next request.
  */
+export function assembleAuditActor(ctx: ExecutionContext): Actor {
+  const user = ctx.switchToHttp().getRequest<{ user?: JwtPayload }>().user;
+  // Fail closed — but as a programmer error, not a denied request. Reaching here
+  // without a role means the route is missing @Roles (RolesGuard is a no-op on any
+  // route lacking it), which is a wiring bug, not ordinary unauthorized traffic. A 403
+  // here would make that bug indistinguishable — in logs and to the client — from a
+  // legitimately forbidden call. Throwing a plain Error surfaces it as the 500 it is,
+  // in error monitoring, instead of blending into routine denials.
+  if (!user?.sub || !user.role) {
+    throw new Error(
+      '@AuditActor used on a route with no @Roles — RolesGuard never ran, so there is ' +
+        'no actor to assemble. Add @Roles to the route.',
+    );
+  }
+  return { userId: user.sub, role: user.role };
+}
+
 export const AuditActor = createParamDecorator(
-  (_data: unknown, ctx: ExecutionContext): Actor => {
-    const user = ctx.switchToHttp().getRequest<{ user?: JwtPayload }>().user;
-    // Fail closed. Reaching here without a role means the route is missing @Roles,
-    // and an audit row naming `undefined` as the actor is worse than a refused
-    // request — it is a record that looks like evidence and is not.
-    if (!user?.sub || !user.role) {
-      throw new AppForbiddenException('error.authz.forbidden');
-    }
-    return { userId: user.sub, role: user.role };
-  },
+  (_data: unknown, ctx: ExecutionContext): Actor => assembleAuditActor(ctx),
 );

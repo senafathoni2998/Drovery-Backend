@@ -118,8 +118,8 @@ export class AdminController {
   }
 
   @Post('drones')
-  createDrone(@Body() dto: CreateDroneDto) {
-    return this.admin.createDrone(dto);
+  createDrone(@AuditActor() actor: AuditActor, @Body() dto: CreateDroneDto) {
+    return this.admin.createDrone(actor, dto);
   }
 
   @Get('drones/:id')
@@ -128,8 +128,12 @@ export class AdminController {
   }
 
   @Patch('drones/:id')
-  updateDrone(@Param('id') id: string, @Body() dto: UpdateDroneDto) {
-    return this.admin.updateDrone(id, dto);
+  updateDrone(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdateDroneDto,
+  ) {
+    return this.admin.updateDrone(actor, id, dto);
   }
 
   // ── Promo codes ──
@@ -141,8 +145,8 @@ export class AdminController {
 
   @Post('promos')
   @ApiCreatedResponse({ type: PromoResponseDto })
-  createPromo(@Body() dto: CreatePromoDto) {
-    return this.admin.createPromo(dto);
+  createPromo(@AuditActor() actor: AuditActor, @Body() dto: CreatePromoDto) {
+    return this.admin.createPromo(actor, dto);
   }
 
   @Get('promos/:id')
@@ -153,8 +157,12 @@ export class AdminController {
 
   @Patch('promos/:id')
   @ApiOkResponse({ type: PromoResponseDto })
-  updatePromo(@Param('id') id: string, @Body() dto: UpdatePromoDto) {
-    return this.admin.updatePromo(id, dto);
+  updatePromo(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdatePromoDto,
+  ) {
+    return this.admin.updatePromo(actor, id, dto);
   }
 
   // ── Users / roles ──

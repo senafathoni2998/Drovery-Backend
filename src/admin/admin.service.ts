@@ -34,7 +34,7 @@ import {
   UpdatePromoDto,
 } from './dto/admin.dto';
 import { AdminAuditService, AuditActor } from './audit/admin-audit.service';
-import { pickAllowed } from './audit/admin-audit.constants';
+import { diffAllowed, pickAllowed } from './audit/admin-audit.constants';
 
 const USER_SELECT = { id: true, name: true, email: true } as const;
 
@@ -378,10 +378,24 @@ export class AdminService {
     return drone;
   }
 
-  /** Register an aircraft. `serial` is the physical marking and must be unique. */
-  async createDrone(dto: CreateDroneDto) {
+  /** Register an aircraft. `serial` is the physical marking and must be unique. The
+   *  P2002 translation stays OUTSIDE the transaction: a duplicate serial must still
+   *  surface as the domain conflict, and rolling the transaction back on that error
+   *  means no audit row is ever written for a registration that never happened. */
+  async createDrone(actor: AuditActor, dto: CreateDroneDto) {
     try {
-      return await this.prisma.drone.create({ data: { ...dto } });
+      return await this.prisma.$transaction(async (tx) => {
+        const drone = await tx.drone.create({ data: { ...dto } });
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.DRONE_CREATE,
+          targetType: AdminAuditTargetType.DRONE,
+          targetId: drone.id,
+          args: pickAllowed(AdminAuditAction.DRONE_CREATE, dto as never),
+        });
+        return drone;
+      });
     } catch (e) {
       if (
         e instanceof Prisma.PrismaClientKnownRequestError &&
@@ -403,19 +417,36 @@ export class AdminService {
    * drone in the air is recalled with a RETURN_TO_BASE command, which is a different
    * operation with different safety semantics.
    */
-  async updateDrone(id: string, dto: UpdateDroneDto) {
-    await this.getDrone(id);
-    const drone = await this.prisma.drone.update({
-      where: { id },
-      data: {
-        ...dto,
-        ...(dto.maintenanceDueAt
-          ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
-          : {}),
-      },
+  async updateDrone(actor: AuditActor, id: string, dto: UpdateDroneDto) {
+    const before = await this.getDrone(id); // 404 if missing; now also the audit's before
+    const drone = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.drone.update({
+        where: { id },
+        data: {
+          ...dto,
+          ...(dto.maintenanceDueAt
+            ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
+            : {}),
+        },
+      });
+      const diff = diffAllowed(
+        AdminAuditAction.DRONE_UPDATE,
+        before as never,
+        updated as never,
+      );
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DRONE_UPDATE,
+        targetType: AdminAuditTargetType.DRONE,
+        targetId: id,
+        before: diff.before,
+        after: diff.after,
+      });
+      return updated;
     });
     this.logger.log(
-      `drone ${drone.serial} updated (status=${drone.status} airworthy=${drone.airworthy})`,
+      `drone ${drone.serial} updated by ${actor.userId} (status=${drone.status} airworthy=${drone.airworthy})`,
     );
     return drone;
   }
@@ -435,21 +466,32 @@ export class AdminService {
 
   // ── Promo CRUD (ADMIN) ──
 
-  async createPromo(dto: CreatePromoDto) {
+  async createPromo(actor: AuditActor, dto: CreatePromoDto) {
     this.assertDiscountValue(dto.discountType, dto.discountValue);
     try {
-      return await this.prisma.promoCode.create({
-        data: {
-          code: dto.code.trim().toUpperCase(),
-          description: dto.description ?? null,
-          discountType: dto.discountType,
-          discountValue: dto.discountValue,
-          minOrderTotal: dto.minOrderTotal ?? 0,
-          maxDiscount: dto.maxDiscount ?? null,
-          startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
-          endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
-          maxRedemptions: dto.maxRedemptions ?? null,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        const promo = await tx.promoCode.create({
+          data: {
+            code: dto.code.trim().toUpperCase(),
+            description: dto.description ?? null,
+            discountType: dto.discountType,
+            discountValue: dto.discountValue,
+            minOrderTotal: dto.minOrderTotal ?? 0,
+            maxDiscount: dto.maxDiscount ?? null,
+            startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
+            endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
+            maxRedemptions: dto.maxRedemptions ?? null,
+          },
+        });
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.PROMO_CREATE,
+          targetType: AdminAuditTargetType.PROMO,
+          targetId: promo.id,
+          args: pickAllowed(AdminAuditAction.PROMO_CREATE, promo as never),
+        });
+        return promo;
       });
     } catch (e) {
       if (
@@ -483,39 +525,60 @@ export class AdminService {
     return promo;
   }
 
-  async updatePromo(id: string, dto: UpdatePromoDto) {
-    const existing = await this.getPromo(id); // 404 if missing
+  async updatePromo(actor: AuditActor, id: string, dto: UpdatePromoDto) {
+    const before = await this.getPromo(id); // 404 if missing; now also the audit's before
     // Update can change discountValue but NOT discountType — so validate the new value
     // against the EXISTING type (createPromo enforces this; update must too, or a PERCENT
     // promo could be PATCHed to >100%).
     if (dto.discountValue !== undefined) {
-      this.assertDiscountValue(existing.discountType, dto.discountValue);
+      this.assertDiscountValue(before.discountType, dto.discountValue);
     }
-    const { count } = await this.prisma.promoCode.updateMany({
-      where: { id },
-      data: {
-        ...(dto.description !== undefined
-          ? { description: dto.description }
-          : {}),
-        ...(dto.discountValue !== undefined
-          ? { discountValue: dto.discountValue }
-          : {}),
-        ...(dto.minOrderTotal !== undefined
-          ? { minOrderTotal: dto.minOrderTotal }
-          : {}),
-        ...(dto.maxDiscount !== undefined
-          ? { maxDiscount: dto.maxDiscount }
-          : {}),
-        ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
-        ...(dto.maxRedemptions !== undefined
-          ? { maxRedemptions: dto.maxRedemptions }
-          : {}),
-        ...(dto.active !== undefined ? { active: dto.active } : {}),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.promoCode.updateMany({
+        where: { id },
+        data: {
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
+          ...(dto.discountValue !== undefined
+            ? { discountValue: dto.discountValue }
+            : {}),
+          ...(dto.minOrderTotal !== undefined
+            ? { minOrderTotal: dto.minOrderTotal }
+            : {}),
+          ...(dto.maxDiscount !== undefined
+            ? { maxDiscount: dto.maxDiscount }
+            : {}),
+          ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
+          ...(dto.maxRedemptions !== undefined
+            ? { maxRedemptions: dto.maxRedemptions }
+            : {}),
+          ...(dto.active !== undefined ? { active: dto.active } : {}),
+        },
+      });
+      // BEFORE the audit call: an audit row for an update that matched nothing
+      // invents an event.
+      if (count === 0)
+        throw new AppNotFoundException('error.admin.promo.not_found', { id });
+      // Re-read INSIDE the transaction so the `after` diff sees the committed values,
+      // not a stale pre-update snapshot.
+      const after = await tx.promoCode.findUnique({ where: { id } });
+      const diff = diffAllowed(
+        AdminAuditAction.PROMO_UPDATE,
+        before as never,
+        after as never,
+      );
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.PROMO_UPDATE,
+        targetType: AdminAuditTargetType.PROMO,
+        targetId: id,
+        before: diff.before,
+        after: diff.after,
+      });
+      return after;
     });
-    if (count === 0)
-      throw new AppNotFoundException('error.admin.promo.not_found', { id });
-    return this.prisma.promoCode.findUnique({ where: { id } });
   }
 
   private assertDiscountValue(type: string, value: number) {
