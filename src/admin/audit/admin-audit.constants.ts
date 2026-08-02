@@ -1,6 +1,16 @@
 import { AdminAuditAction } from '@prisma/client';
 
 /**
+ * Default lookback for GET /admin/audit when the caller gives no `from`/`to`.
+ *
+ * `admin_audit_logs` is partitioned by `createdAt`. An unbounded
+ * `ORDER BY createdAt DESC LIMIT n` has to prove no newer row exists in ANY
+ * partition, so it touches every one of them. Windowing the query keeps the
+ * planner pruned to the partitions that can possibly match.
+ */
+export const AUDIT_DEFAULT_WINDOW_DAYS = 30;
+
+/**
  * Which fields each action may capture into `before` / `after` / `args`.
  *
  * An ALLOWLIST, not a denylist, and the difference is load-bearing: a denylist means a

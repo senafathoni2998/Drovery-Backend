@@ -6,6 +6,7 @@ import { DeliveryFailureReason, Role } from '@prisma/client';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { assembleAuditActor } from './audit/audit-actor.decorator';
+import { AdminAuditService } from './audit/admin-audit.service';
 
 describe('AdminController', () => {
   let controller: AdminController;
@@ -20,6 +21,7 @@ describe('AdminController', () => {
     setRole: jest.Mock;
     issueDroneCommand: jest.Mock;
   };
+  let audit: { list: jest.Mock };
 
   const ACTOR = { userId: 'u-1', role: Role.ADMIN };
 
@@ -35,9 +37,17 @@ describe('AdminController', () => {
       setRole: jest.fn().mockResolvedValue({ id: 'u-2', role: Role.ADMIN }),
       issueDroneCommand: jest.fn().mockResolvedValue({ id: 'c-1' }),
     };
+    audit = {
+      list: jest
+        .fn()
+        .mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
+    };
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AdminController],
-      providers: [{ provide: AdminService, useValue: admin }],
+      providers: [
+        { provide: AdminService, useValue: admin },
+        { provide: AdminAuditService, useValue: audit },
+      ],
     }).compile();
     controller = module.get(AdminController);
   });
@@ -110,6 +120,14 @@ describe('AdminController', () => {
       const dto = { type: 'RETURN_TO_BASE' } as any;
       await controller.issueCommand(ACTOR, 'd-1', dto);
       expect(admin.issueDroneCommand).toHaveBeenCalledWith(ACTOR, 'd-1', dto);
+    });
+  });
+
+  describe('listAudit', () => {
+    it('forwards the query to AdminAuditService.list untouched', async () => {
+      const query = { page: 2, limit: 10, skip: 10 } as any;
+      await controller.listAudit(query);
+      expect(audit.list).toHaveBeenCalledWith(query);
     });
   });
 

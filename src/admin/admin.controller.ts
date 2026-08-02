@@ -27,6 +27,9 @@ import {
   UpdatePromoDto,
 } from './dto/admin.dto';
 import { AuditActor } from './audit/audit-actor.decorator';
+import { AdminAuditService } from './audit/admin-audit.service';
+import { AuditQueryDto } from './audit/dto/audit-query.dto';
+import { AdminPaginatedAuditDto } from './audit/dto/audit-response.dto';
 import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
@@ -43,7 +46,10 @@ import {
 @Roles(Role.ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   @Get('overview')
   @ApiOkResponse({ type: AdminOverviewDto })
@@ -179,5 +185,15 @@ export class AdminController {
     @Body() dto: SetRoleDto,
   ) {
     return this.admin.setRole(actor, id, dto.role);
+  }
+
+  // ── Operator audit log ──
+  // ADMIN only, deliberately not AGENT: this log records agent actions, so agents
+  // reading it is a separation-of-duties problem. No :id-style wildcard exists on
+  // this controller for 'audit' to collide with — it is its own literal path segment.
+  @Get('audit')
+  @ApiOkResponse({ type: AdminPaginatedAuditDto })
+  listAudit(@Query() query: AuditQueryDto) {
+    return this.audit.list(query);
   }
 }
