@@ -35,12 +35,41 @@ export const PARTITION_RETAIN_MONTHS =
 // doing them first means fewer child rows remain for `deliveries`' O(rows) DELETE-cascade
 // of the same month. (Dropping a child leaf is metadata-only and never fires the
 // child→deliveries FK — that FK points the other way.)
-export const PARTITIONED_TABLES: readonly string[] = [
-  'notifications',
-  'workflow_step_completions',
-  'drone_commands',
+export interface PartitionedTable {
+  table: string;
+  /**
+   * Per-table retention override, in months. Falls back to the global
+   * PARTITION_RETAIN_MONTHS when omitted. 0 means NEVER drop.
+   *
+   * This exists because the global knob is one setting for every table, and the only
+   * table whose write rate would ever motivate enabling it is `flight_frames`. Without
+   * an override, tuning telemetry retention silently deletes audit history too.
+   */
+  retainMonths?: number;
+}
+
+export const PARTITIONED_TABLES: readonly PartitionedTable[] = [
+  { table: 'notifications' },
+  { table: 'workflow_step_completions' },
+  { table: 'drone_commands' },
   // The flight recorder — by far the highest-volume child (one row per telemetry
   // tick), so its aged months are the ones retention most needs to bare-DROP.
-  'flight_frames',
-  'deliveries',
+  { table: 'flight_frames' },
+  // Operator actions. Partitioned for the convention and for read pruning, NOT so the
+  // history can age out: retention is pinned OFF regardless of the global setting.
+  { table: 'admin_audit_logs', retainMonths: 0 },
+  { table: 'deliveries' },
 ];
+
+/**
+ * How many months of history a table keeps. A per-table `retainMonths` wins over the
+ * global default INCLUDING an explicit 0 (never drop) — so `??`, never `||`. That single
+ * character is the whole difference between "audit history is never dropped" and "it is
+ * dropped whenever somebody tunes telemetry retention".
+ */
+export function retentionFor(
+  entry: PartitionedTable,
+  globalRetainMonths: number = PARTITION_RETAIN_MONTHS,
+): number {
+  return entry.retainMonths ?? globalRetainMonths;
+}

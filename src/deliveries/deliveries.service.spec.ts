@@ -1290,6 +1290,11 @@ describe('DeliveriesService', () => {
       status: DeliveryStatus,
       id: string = 'delivery-1',
     ) => {
+      // Reads have to agree with the CAS. failExceptional now reads the row's exact
+      // status inside the transaction (that is what an audit row records), so a helper
+      // that only answered updateMany would let a test assert a fired-from status the
+      // modelled delivery was never in.
+      prisma.delivery.findUnique.mockResolvedValue({ ...mockDelivery, status });
       prisma.delivery.updateMany.mockImplementation((args: any) => {
         const where = args?.where ?? {};
         // Faithful to Postgres: an absent filter constrains NOTHING. A CAS that
@@ -1312,6 +1317,30 @@ describe('DeliveriesService', () => {
       });
     };
 
+    /**
+     * The fired-from reads specifically — `select: { status: true }` on one delivery.
+     * A bare "findFirst was never called" assertion cannot express this: every failure
+     * path ends in announceException, which reads the delivery to localize the comms.
+     * That read is not the one being gated, so match on the projection instead.
+     *
+     * TWO WAYS THIS GOES VACUOUSLY GREEN — check both before trusting it:
+     *
+     * 1. It watches `findFirst` only. prisma-mock defines `findFirst` as DELEGATING to
+     *    `findUnique`, so `findUnique.mock.calls` carries identical args and watching
+     *    either one sees a `findFirst` read — but an implementation that read via
+     *    `delivery.findUnique` DIRECTLY would leave `findFirst.mock.calls` empty and
+     *    this helper would report zero reads for a read that happened.
+     * 2. The `{ where: { id }, select: { status: true } }` shape is NOT unique to the
+     *    gated read. adminForceCancel and adminFail both issue the identical projection
+     *    on their not-applied paths. This helper therefore identifies the gated read
+     *    only in tests that do not drive those two methods.
+     */
+    const statusReadsOf = (id: string) =>
+      prisma.delivery.findFirst.mock.calls.filter(
+        ([args]: [any]) =>
+          args?.where?.id === id && args?.select?.status === true,
+      );
+
     /** Every CAS a terminal path issues must be scoped to ONE delivery. */
     const expectEveryCasScopedToOneDelivery = (id: string) => {
       expect(prisma.delivery.updateMany.mock.calls.length).toBeGreaterThan(0);
@@ -1320,6 +1349,27 @@ describe('DeliveriesService', () => {
         // in the fleet — and a count-based assertion cannot see it.
         expect(args.where.id).toBe(id);
       }
+    };
+
+    /**
+     * Assert the audit callback ran with the TRANSACTION's own client, not the
+     * top-level `prisma` it happens to share every model mock with.
+     *
+     * IDENTITY, not structural equality — same reasoning, and the same reporting
+     * shape, as `admin.service.spec.ts`'s `expectAuditedThrough`: `prisma` and
+     * `prisma.txClient` share every model mock on purpose (call tracking has to
+     * survive the boundary), so the only thing that distinguishes "co-committed
+     * inside the caller's transaction" from "written on a second, independently-
+     * committing connection" is which OBJECT the call site handed the callback.
+     * Reported as a label rather than `expect(client).toBe(prisma.txClient)`
+     * because a failing `toBe` here serialises two entire Prisma mocks and buries
+     * the one bit that matters under hundreds of lines of `[Function mockConstructor]`.
+     */
+    const expectHandedTxClient = (callback: jest.Mock) => {
+      const client = callback.mock.calls[0][0];
+      expect(
+        client === prisma.txClient ? 'the tx client' : 'a DIFFERENT client',
+      ).toBe('the tx client');
     };
 
     it('scopes every force-cancel CAS to the one delivery and the right statuses', async () => {
@@ -1418,6 +1468,270 @@ describe('DeliveriesService', () => {
       expect(prisma.drone.updateMany.mock.calls[0][0].data).toMatchObject({
         status: 'AVAILABLE',
       });
+    });
+
+    it('runs the audit callback inside the CAS transaction, before any cleanup', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      // Record the transaction boundary, not just the fact of a transaction.
+      //
+      // "$transaction was called AND audit was called" is satisfied just as well by a
+      // transaction containing only the two CASes with the audit write hoisted out
+      // after it — which reads as tidier, and would silently destroy the one property
+      // this increment exists to create: the CAS commits, the audit write then fails,
+      // and a delivery has been failed by an operator with no record of who. The mock
+      // aliases `tx` to `prisma`, so no assertion on the callback's arguments can see
+      // that either. Only the ordering can.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      // .mockImplementation rather than jest.fn(impl): the latter would infer the
+      // call tuple from a zero-arg implementation, and the firedFrom assertion below
+      // reads calls[0][1].
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        undefined,
+        audit,
+      );
+
+      // Co-committed with the transition, not bolted on after it — and the cleanup,
+      // which does network I/O, is strictly outside the committed transaction.
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
+      expect(audit).toHaveBeenCalledTimes(1);
+      // And it learns which status the transition fired FROM — the fact that decides
+      // whether an aircraft was airborne. The row's ACTUAL status: the allowed set here
+      // is the whole in-flight family, so a value derived from the set rather than read
+      // from the row would record DRONE_ASSIGNED for this IN_TRANSIT delivery.
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // And it is handed the TRANSACTION's client — the exact defect that let a
+      // call site's audit row survive a rollback of the mutation it records.
+      expectHandedTxClient(audit);
+    });
+
+    it('does not read the row when nobody is recording the failure', async () => {
+      // The watchdog reaps in bulk. An extra indexed read per reap, for a field no
+      // automated caller writes down, is a cost with no buyer.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      await service.failExceptional('delivery-1', 'MECHANICAL' as any);
+
+      expect(statusReadsOf('delivery-1')).toHaveLength(0);
+    });
+
+    it('hands the callback the exact status when the caller narrows to one', async () => {
+      // firedFrom is read, not derived, so it is exact whatever the allowed set — a
+      // singleton set is simply the case where a derived value would have been right
+      // by luck.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        [DeliveryStatus.IN_TRANSIT],
+        audit,
+      );
+
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+    });
+
+    it('does not audit a transition that did not happen', async () => {
+      deliveryReallyIn(DeliveryStatus.DELIVERED); // outside FAILABLE_STATUSES
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        undefined,
+        audit,
+      );
+
+      expect(applied).toBe(false);
+      expect(audit).not.toHaveBeenCalled();
+    });
+
+    it('rolls the failure back when the audit write throws', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest
+        .fn()
+        .mockRejectedValue(new Error('audit write failed'));
+
+      await expect(
+        service.failExceptional(
+          'delivery-1',
+          'MECHANICAL' as any,
+          undefined,
+          audit,
+        ),
+      ).rejects.toThrow('audit write failed');
+
+      // The cleanup must not have run — the transition it cleans up after never committed.
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('is byte-identical for callers that pass no callback', async () => {
+      // The watchdog and the pre-flight abort are not operator actions and get no row.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+      );
+
+      expect(applied).toBe(true);
+      expect(prisma.drone.updateMany).toHaveBeenCalled(); // cleanup still ran
+    });
+
+    it('runs the force-cancel audit callback inside the CAS transaction, before any cleanup', async () => {
+      // Same property as the failure path, and the same reason for asserting ORDER
+      // rather than "both were called": the audit write hoisted out after the
+      // transaction reads as tidier and destroys the guarantee. force-cancel adds a
+      // second thing to protect — cleanupAfterTermination refunds, releases the
+      // airframe and cancels sim jobs, all network I/O that must not be held open
+      // inside a transaction.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.adminForceCancel('delivery-1', audit);
+
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
+      // The EXACT status, not a member of the CAS's set: "you cancelled an IN_TRANSIT
+      // delivery" is the whole reason to record it, and the in-flight CAS spans four
+      // statuses that updateMany cannot tell apart.
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // And it is handed the TRANSACTION's client — the exact defect that let a
+      // call site's audit row survive a rollback of the mutation it records.
+      expectHandedTxClient(audit);
+    });
+
+    it('hands the force-cancel callback the pre-launch status when it beat the launch', async () => {
+      // The other CAS. A firedFrom wired to the in-flight branch alone would record
+      // nothing here, or record it as airborne — the disposition is the opposite one.
+      deliveryReallyIn(DeliveryStatus.PENDING);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.adminForceCancel('delivery-1', audit);
+
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.PENDING);
+    });
+
+    it('does not audit a force-cancel that both CASes refused', async () => {
+      deliveryReallyIn(DeliveryStatus.DELIVERED);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await expect(
+        service.adminForceCancel('delivery-1', audit),
+      ).rejects.toThrow(ConflictException);
+      expect(audit).not.toHaveBeenCalled();
+    });
+
+    it('rolls the force-cancel back when the audit write throws', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest
+        .fn()
+        .mockRejectedValue(new Error('audit write failed'));
+
+      await expect(
+        service.adminForceCancel('delivery-1', audit),
+      ).rejects.toThrow('audit write failed');
+
+      // The cleanup must not have run — the cancel it cleans up after never committed.
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not read the row when nobody is recording the force-cancel', async () => {
+      deliveryReallyIn(DeliveryStatus.PENDING);
+
+      await service.adminForceCancel('delivery-1');
+
+      // Deliberately NOT statusReadsOf: that helper cannot tell the gated read from
+      // the not-applied 404/409 read, which adminForceCancel issues with the identical
+      // projection. This case takes the applied path, where that read never happens,
+      // so a local count is exact — and stays exact if the helper's caveat is ever
+      // forgotten.
+      const gatedReads = prisma.delivery.findFirst.mock.calls.filter(
+        ([args]: [any]) =>
+          args?.where?.id === 'delivery-1' && args?.select?.status === true,
+      );
+      expect(gatedReads).toHaveLength(0);
+    });
+
+    it('adminFail threads the audit callback into the failure transaction', async () => {
+      // adminFail owns nothing itself — it delegates to failExceptional. The callback
+      // has to survive that hop or the /fail route records nothing.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      // Assert the boundary HERE too, not just on failExceptional. Inheriting the
+      // guarantee from the delegate holds only while adminFail keeps delegating; the
+      // day it grows a transaction of its own — to read something first, to write a
+      // second row — that inherited coverage silently stops applying.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        // `prisma.txClient`, NOT `prisma` — see `expectHandedTxClient`. Handing the
+        // callback the top-level mock here would make this fixture pass a call site
+        // that substitutes `this.prisma` for `tx`, which checks out a SECOND pooled
+        // connection in real Prisma and lets the audit row survive a rollback of the
+        // mutation it records.
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.adminFail('delivery-1', 'ADMIN_ABORT' as any, audit);
+
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
+      expect(audit).toHaveBeenCalledTimes(1);
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+      // adminFail owns no transaction of its own — assert the boundary HERE too,
+      // not just on failExceptional. Inheriting the guarantee from the delegate
+      // holds only while adminFail keeps delegating.
+      expectHandedTxClient(audit);
     });
   });
 

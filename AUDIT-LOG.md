@@ -1585,3 +1585,352 @@ call site as a fixed class.
   `forceCancel(deliveryId)` and `fail(deliveryId, reason)` still do not receive an admin id.
 - Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
 - **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 4) — Operator audit log — DONE
+
+**Date:** 2026-08-02
+**Branch:** `fix/audit-phase-12-operator-audit-log` (backend)
+**Covers plan items:** 12.7 (operator audit log), in full
+
+### Why this exists
+
+Force-cancel, fail-with-reason, goodwill refund, role changes and promo edits left a pino
+line that rotates away. Two of the routes did not even receive an admin id — the actor was
+dropped at the controller boundary, so the strongest available answer to "who cancelled this
+delivery" was a log line with no subject. Anything with a retention policy shorter than the
+dispute it would settle is not a record.
+
+### What changed
+
+**`admin_audit_logs`** — new table, `PARTITION BY RANGE("createdAt")` **from birth** (no
+copy-swap; it had no rows to move), composite PK `(id, "createdAt")` like every other
+partitioned table here. Retention is pinned **OFF** for it specifically, and that is a
+per-table override rather than a comment: `PARTITIONED_TABLES` entries now carry an optional
+`retainMonths`, resolved by `retentionFor(entry)` as `entry.retainMonths ?? PARTITION_RETAIN_MONTHS`.
+The `??` is the whole point — with `||`, an explicit `0` falls through to the global, and the
+first person to bound `flight_frames` (one row per telemetry tick, the only table whose volume
+motivates retention at all) would silently start deleting audit history alongside it.
+
+**The row co-commits with the mutation it records.** `AdminAuditService.recordWithinTx(tx,
+entry)` takes the **caller's** transaction client and never reaches for its own. Write failures
+propagate, rolling the operator's action back: a mutation that happened with no record of who
+did it is the exact state this exists to prevent. This is the guarantee the whole increment is
+built around, and it is the one that is easiest to lose silently — see the mock defect below.
+
+**An allowlist, not a denylist.** `AUDIT_FIELD_ALLOWLIST` declares, per action, which fields
+may reach `before`/`after`/`args`; `pickAllowed` / `diffAllowed` are the sole chokepoint, and
+every payload goes through them even where the literal is already exactly the allowed shape.
+A denylist means a field added to a DTO later starts appearing in the log until somebody
+remembers to exclude it. Nothing here captures a handoff code, a token, an ingest key or a
+full address. `SUPPORT_TICKET_REPLY` captures the message **length**, never its text — the
+content already lives in `support_chat_messages` with its own `senderUserId`.
+
+Failing closed has a cost, and the pre-merge review found the branch paying it in five places:
+`DRONE_UPDATE` omitted `batteryPercent`, `DRONE_CREATE` omitted `firmwareVersion`, and
+`PROMO_CREATE` omitted `minOrderTotal`, `maxDiscount` and `startsAt` — every one of them a
+bounded scalar the route already accepts, and three of them already allowlisted on the *other*
+action for the same resource. `batteryPercent` was the bad one. It is what
+`flight-feasibility.ts` derates usable range by, so hand-raising it is the single edit most
+likely to make an aircraft look dispatchable on a mission it cannot finish — and because
+`pickAllowed` returns `undefined` when nothing survives, a battery-only edit wrote `before` AND
+`after` as NULL. Not a gap: a row affirmatively stating that an operator touched the aircraft
+and changed nothing. An allowlist that fails closed still has to be *complete*, and nothing in
+the design made an omission visible — which is why each of the five now has both a unit test on
+`pickAllowed`/`diffAllowed` and a route-level assertion, and each was mutation-checked by
+deleting the entry (two tests red per field, every time).
+
+**All eleven mutating admin routes are wired:**
+
+| Target | Routes |
+|---|---|
+| Delivery | force-cancel, fail, goodwill refund |
+| Fleet | createDrone, updateDrone, issueDroneCommand |
+| Promo | createPromo, updatePromo |
+| User | setRole |
+| Support | replyAsAgent, setTicketStatus |
+
+**Automated actors get no row, deliberately.** `failExceptional` has **nine call sites across
+five files** and `DroneCommandService.issue` has two, for eleven total. **Two** of those eleven
+pass the optional `auditWithinTx` callback: `adminFail` (one of the nine `failExceptional`
+sites) and `issue`'s OTHER caller, the admin `issueDroneCommand` route (`admin.service.ts:526`).
+The remaining nine pass nothing and write nothing: the eight non-`adminFail` `failExceptional`
+sites — the two handoff-cap self-heals (`deliveries.service.ts:1434`, `:1467`), the watchdog's
+stall sweep and its stranded-command sweep (`delivery-watchdog.ts:99`, `:207`), drone-reported
+`FAILED` (`telemetry.service.ts:250`), an accepted `ABORT` (`drone-command.service.ts:357`) and
+the two pre-flight aborts (`simulation.processor.ts:279`, `:345`) — plus `issue`'s remaining
+caller, the flight recorder's automatic `RETURN_TO_BASE` (`flight-recorder.service.ts:199`).
+2 + 9 = 11. An audit log that fills with the system auditing itself is a log nobody reads.
+(This entry previously said "exactly one... and it is `adminFail`", omitting `issue`'s admin
+caller entirely and summing to 10 — the third undercount in this section's history, and the
+third time it ran low.)
+
+The safety property here is not the count; it is that the callback is *supplied* from exactly
+one file. `grep -rn auditWithinTx src/` does not show that: it returns 12 hits — the parameter
+declarations, the internal gate checks, and the forwarded reference, all in
+`deliveries.service.ts` and `drone-command.service.ts` — and **zero** in `admin.service.ts`,
+because its three call sites pass anonymous arrows and never bind the parameter to that name. A
+search for the identifier cannot see the thing it exists to verify. What does: grepping the call
+sites of the three methods that *accept* the callback instead —
+`grep -rn "\.adminForceCancel(\|\.adminFail(\|\.issue(" src/ --include=*.ts | grep -v spec` —
+returns four, and only the three in `admin.service.ts` (`:272`, `:292`, `:526`) supply a
+trailing callback; `flight-recorder.service.ts:199` does not. That conclusion was true then and
+is true now. **The count was not.** This enumeration has been wrong twice and both times LOW:
+the plan said three, a Task 3 review corrected it to five, the real number is nine. Both errors
+pointed the same direction — "fewer things reach this than you think" — which is the direction
+that makes widening the callback look safer than it is. The conclusion held; the arithmetic
+behind it did not, so re-derive it rather than cite it if the callback is ever offered to a
+second caller.
+
+**The actor is assembled once.** `@AuditActor()` (backed by a plain exported
+`assembleAuditActor(ctx)`) is mounted on all eleven mutating routes. It **replaced three**
+hand-rolled `@CurrentUser('sub')` reads — two in `admin.controller.ts`, one in
+`admin-support.controller.ts`, and not one of the three read a role at all — and **prevented
+eight** more from being written, which is the larger number and the one worth claiming. (The
+decorator's own doc comment gets this right; this entry said "replaces eleven", which credits
+the decorator with deleting eight lines that never existed.) It fails closed with a plain
+`Error` — a 500, not a 403, so a wiring mistake surfaces in error monitoring instead of hiding
+among ordinary denied traffic.
+
+**`GET /admin/audit`** — ADMIN-only, filterable by actor, target type, target id, action and
+range, ordered `[{createdAt:'desc'},{id:'desc'}]`. It defaults to a **30-day window** and
+echoes the effective window in the payload: `admin_audit_logs` is partitioned by `createdAt`,
+and an unbounded `ORDER BY createdAt DESC LIMIT n` has to prove no newer row exists in *any*
+partition, so it touches every one.
+
+### Verification
+```
+tsc (tsconfig.build.json): clean
+tsc (tsconfig.json):       1 pre-existing error (deliveries.controller.spec.ts:120), unchanged
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 88 passed, 88 total            (+3)
+Tests:       982 passed, 982 total          (+78)
+prisma:drift-check: No difference detected
+live catalog: admin_audit_logs → RANGE ("createdAt"), 5 children
+              (admin_audit_logs_default + y2026m08/09/10/11 — current month + 3 ahead)
+```
+
+**Mutation testing — 20 mutations, 20 caught**, re-run as one consolidated sweep across the
+whole feature rather than per-task, with every mutation gated on `tsc -p tsconfig.json
+--noEmit` staying at its one-error baseline first (a mutation the typechecker rejects proves
+nothing about the tests). `retentionFor` with `||`; `recordWithinTx` through `this.prisma`
+instead of `tx`; `recordWithinTx` swallowing the write error; `pickAllowed` returning the whole
+source object; `replyAsAgent` storing the reply text instead of its length; the audit write
+hoisted out of its transaction on `updateDrone` and on `setRole`; `setTicketStatus` auditing
+before its `count === 0` guard; `refund` auditing before the single-winner gate; `list`'s
+`count` ignoring the `where`; `list` dropping the `id` tiebreaker; `list` dropping the default
+window. The next seven were added pre-merge: `recordWithinTx(this.prisma, …)` substituted at
+all eleven `admin.service.ts` call sites **while staying lexically inside the transaction
+callback** (11 tests red, one per route), the same substitution on `updateDrone` alone (exactly
+1 test red — precise, not a blanket failure), and each of the five newly-allowlisted fields
+deleted in turn (2 tests red per field). Before the identity assertions existed, the eleven-site
+substitution compiled clean and passed 978/978.
+
+**One more was found and closed in a final pass before merge, one hop downstream of that same
+defect.** `admin.service.ts`'s eleven call sites were pinned, but the guarantee they lean on —
+that `adminForceCancel` and `failExceptional` hand their callback the transaction's own client —
+was itself untested for two of the three delegated routes. Substituting
+`auditWithinTx(this.prisma, …)` for `auditWithinTx(tx, …)` at both hand-over sites in
+`deliveries.service.ts` (`adminForceCancel`, `:999`; `failExceptional`, `:1143` — the latter
+also exercised through `adminFail`'s delegation) compiled clean and passed **982/982**, for the
+identical reason as the eleven-site defect above: the three ordering-marker tests in
+`deliveries.service.spec.ts` aliased `tx` back to `prisma` in the fixture itself, the same
+pattern the mock fix above corrected for `admin.service.spec.ts`. `issue`'s equivalent hop in
+`drone-command.service.ts` was already pinned. Closed by handing those three fixtures
+`prisma.txClient` instead and adding one `expectAuditedThrough`-style identity assertion per
+test (3 tests red). A temporal-hoist mutation at the same two sites — deferring the audit call
+into a thunk that closes over `tx` and runs after `$transaction` resolves, so client identity is
+preserved — was re-checked against the fixed fixtures and is still caught, by the pre-existing
+ordering assertions rather than the new identity ones: the two failure modes remain each other's
+blind spot, and closing one did not cost the other any coverage.
+
+One methodological note worth keeping: the first pass reported the `this.prisma` mutation as a
+**survivor**, and it was not. `jest -t` takes a *regex*, and the test's name contains `list()`
+— the unescaped parentheses matched an empty group, so no test ran, jest exited 0, and the
+harness read that as "the mutation passed". A mutation run that cannot distinguish "the test
+passed" from "no test ran" reports a clean bill of health for a suite that never executed. The
+script now escapes the filter and parses jest's summary for a non-zero executed count.
+
+### Decisions made
+
+- **Co-commit the audit row, and let its failure roll the mutation back.** A best-effort
+  after-the-fact write is the trail this replaces. The alternative — audit, then mutate — logs
+  actions that did not happen, which on a forensic surface is worse than a gap.
+- **The property is co-commitment, not the row.** "The mutation happened AND a row was
+  written" is satisfied by a write hoisted out of the transaction, which is precisely the
+  regression that matters. There are **two** distinct ways to lose it, and they need different
+  tests — an earlier version of this entry said "every one of the eleven routes has a test that
+  goes red if its audit write is hoisted", which was true of one of the two and false of the
+  other:
+  - *Temporal hoisting* — the write deferred until after `$transaction` resolves. Pinned on the
+    eight routes that own their transaction by an ordering assertion (`['begin', 'update',
+    'audit', 'commit']`), and on the three delegated routes (force-cancel, fail,
+    issueDroneCommand) inside `deliveries.service.spec.ts` and `drone-command.service.spec.ts`,
+    which own the transactions those routes borrow.
+  - *Client substitution* — `recordWithinTx(this.prisma, …)` left lexically **inside** the
+    callback, which is what the pooled second connection and the surviving-a-rollback failure
+    actually look like in code. The ordering markers are structurally blind to it: they fire on
+    `adminAuditLog.create`, and `prisma.adminAuditLog.create` and
+    `prisma.txClient.adminAuditLog.create` are the same `jest.fn` by design, so the marker lands
+    in the identical slot either way. How many HOPS this needs pinned depends on how many
+    transaction boundaries sit between the DB and the callback that writes to it. The eight
+    routes that own their `$transaction` directly in `admin.service.ts` have one:
+    `recordWithinTx` receiving the same `tx` the route's own callback was handed, pinned by an
+    explicit `expectAuditedThrough(prisma.txClient, …)` identity assertion in
+    `admin.service.spec.ts`.
+    The three DELEGATED routes (force-cancel, fail, issueDroneCommand) have a second hop
+    upstream of that spec file entirely — it mocks `DeliveriesService` and `DroneCommandService`
+    outright, so nothing it asserts can see what happens inside them: the delegate's OWN
+    `$transaction` — `adminForceCancel` and `failExceptional` in `deliveries.service.ts`,
+    `issue` in `drone-command.service.ts` — handing the `auditWithinTx` callback its
+    transaction's client rather than `this.prisma`. `issue`'s hop was pinned from the start, by
+    an identity assertion in `drone-command.service.spec.ts`. `adminForceCancel`'s and
+    `failExceptional`'s were not: their ordering-marker tests in `deliveries.service.spec.ts`
+    aliased `tx` back to `prisma` in the fixture itself — the identical defect this section's
+    mock fix corrected for `admin.service.spec.ts` — so substituting `this.prisma` at either site
+    compiled clean and passed 982/982. Closed in a pre-merge pass that handed those two fixtures
+    `prisma.txClient` instead and added the identity assertion each was missing. **All eleven
+    routes are now pinned at every hop they have** — one hop for the eight direct routes, two
+    for the three delegated ones — and nowhere else: a call site that substituted `this.prisma`
+    three hops deep, or a future route with a third transaction boundary, would still need its
+    own assertion: this guarantee does not generalize past the hops it was written for.
+
+  **The second half was added pre-merge, after a whole-branch review found it missing
+  everywhere.** Substituting `this.prisma` at all eleven call sites compiled clean and left
+  **978/978 green** — the precise inverse of the defect the feature exists to prevent, invisible
+  to the entire suite. The root cause was a stale comment: the spec's provider block still said
+  the audit service "holds no client of its own", which stopped being true when Task 7 injected
+  `PrismaService` for `list()`, and that sentence was the stated reason for asserting row
+  content and never client identity. The fix was coupled to a second change — the eight ordering
+  tests overrode `$transaction` with `fn(prisma)` and the two delegated stand-ins handed over
+  `prisma` too, all of which locally re-aliased `tx` back to the injected client and would have
+  failed the new assertion against *correct* code. A ledger entry had accepted those overrides
+  as harmless, and they were, right up until an assertion needed them honest. **It took four
+  attempts to get co-commitment true of all eleven**: the first review found the property
+  untested everywhere, the second closed four routes and missed a fifth, the third found
+  `createPromo` still passing 53/53 with its write hoisted, the fourth found that none of the
+  eleven tested substitution at all. Each round asked "which routes are still unpinned?" and
+  each round the answer was larger than the previous round's list.
+- **`??`, not `||`, for the retention override** — one character between "audit history is
+  never dropped" and "it is dropped whenever somebody tunes telemetry retention". It has its
+  own unit test and its own mutation.
+- **Record the status the transition actually fired from, read inside the transaction** — and
+  gate that read on the audit callback being supplied, so automated callers pay nothing per
+  reap and operator actions get the truth.
+- **`createPromo` audits the created ROW, not the DTO.** `code` is trimmed and uppercased on
+  write, so the DTO value is never what got persisted. `createDrone` does the same even though
+  its allowed fields pass through unchanged today — so the invariant the next create route
+  copies is the one that survives a create gaining its own normalization.
+- **Traded a structural guarantee for a convention, knowingly.** For six of the eight tasks
+  `AdminAuditService` held **no** `PrismaService` at all — writing outside the caller's
+  transaction was not merely wrong, it was unexpressible. Task 7's `list()` needs a client, so
+  the class now holds one and the guarantee is a documented rule enforced by a single test: a
+  `foreignTx` object with no relationship to the injected mock. That test is the only thing in
+  the suite that catches **`recordWithinTx` itself** switching to `this.prisma` — the older
+  "writes through the caller transaction" test passes `prisma` as its own `tx` and cannot tell
+  them apart. If it is ever deleted, that half of the guarantee goes with it. Its sibling
+  failure — a **call site** passing `this.prisma` instead of its `tx` — is a different mutation
+  that `foreignTx` cannot see, and it is now pinned separately by the eleven
+  `expectAuditedThrough` assertions in `admin.service.spec.ts`. Two mutations, two tests,
+  neither one catching the other's.
+- **This crosses a house rule, on purpose.** The block comment at the top of
+  `deliveries.service.ts` (the debit-first saga) states that no
+  single `$transaction` co-commits state rooted at different shard keys — it is why the
+  debit-first saga exists. The exception was documented at the crossing site but the rule
+  itself had no forward pointer, so a reader arriving at the rule would take it as unbroken;
+  it now names the exception and defers to the crossing site for the reasoning. An
+  `AdminAuditLog` row is actor-rooted and time-partitioned;
+  co-committing it with a delivery-rooted mutation binds `admin_audit_logs` to the delivery
+  shard if `shardCount` ever flips. **The trade was made deliberately**: durability of the
+  record beats a sharding constraint the project has not yet taken on, and a best-effort audit
+  row is not worth having. Recording it here so it is a known cost and not a later discovery.
+- **The read surface is windowed by default, not capped.** 30 days keeps the planner pruned
+  for the ordinary case; a caller who genuinely wants all history passes `from` and accepts the
+  scan.
+
+### What the review caught
+
+Every task was reviewed, and the reviews are most of why the increment is worth writing up.
+
+- **The shared Prisma test mock made co-commitment unverifiable.** `createMockPrismaService`'s
+  interactive `$transaction` handed the callback **the same object** as the transaction client,
+  so `tx === prisma` and no identity assertion anywhere could distinguish "co-commits inside
+  the transaction" from "writes just after it". Proven, not theorised: hoisting the audit write
+  to a post-commit `recordWithinTx(this.prisma, …)` passed 28/28 on drone-command and 44/44 on
+  setRole. This had been filed as a *Minor* in two earlier task reviews before being fixed at
+  the root — the mock now builds a distinct `txClient` (a shallow copy taken before
+  `$transaction`/`readWithFallback` are attached, so every model mock is still the same
+  `jest.fn` and call tracking survives). Blast radius across all 88 suites: exactly one test,
+  whose fix strengthened it.
+- **The actor assembly was untested across eleven routes.** A swapped `sub`/role decorator
+  compiles and leaves 418/418 green while 500-ing every force-cancel in production. Collapsed
+  to one `@AuditActor()` decorator with its own spec before Tasks 5–6 added eight more
+  mountings of the same seam.
+- **`list()`'s response plumbing was unpinned** — four breaking mutations each passed 80/80,
+  including `count({})` ignoring the `where`, which puts an all-history total next to a
+  windowed page. A lying total on a forensic surface.
+- **Deleting a whole audit write left 51/51 green** on two of the create routes. Positive data
+  assertions that never assert absence do not pin a write's existence.
+- **A stale comment kept the central guarantee untested for eight tasks.** The whole-branch
+  review found that swapping every `recordWithinTx(tx, …)` for `recordWithinTx(this.prisma, …)`
+  — in place, still inside the transaction callback — left 978/978 green. The reason was one
+  sentence in the spec's provider block: "it holds no client of its own, so the only thing worth
+  asserting is the row it writes through the tx it is handed." That was true when written and
+  stopped being true at Task 7, and nothing re-read it. A comment that justifies *not* writing a
+  class of assertion has to be re-checked whenever the thing it describes changes, because it
+  will keep authorising the omission long after its premise is gone.
+
+### Deviations from the plan
+
+- **The plan's retention test could not run, and making it run was worse than replacing it.**
+  It used `jest.resetModules()` + a dynamic `import()`; under this repo's `module: nodenext`,
+  TypeScript leaves `import()` native and Jest's CommonJS runtime refuses it without
+  `--experimental-vm-modules`. The first fix changed ts-jest's module semantics for all 85
+  suites to serve one test. Reverted — `retentionFor` was extracted as a pure function instead,
+  and the behaviour got two direct unit tests with no module-system machinery anywhere.
+- **The plan fabricated the fired-from status.** It specified `firedFrom = airborneAllowed[0]`,
+  which is always `DRONE_ASSIGNED` for the default set — so nearly every admin-fail row would
+  have recorded a status the delivery was not in. A fabricated status in an audit log is worse
+  than an absent one. Replaced with a real read inside the transaction, gated on the callback.
+- **`@AuditActor()` is not in the plan**; neither is `assembleAuditActor()`. Both came out of
+  review and are the reason eleven repetitions of an untestable seam became one tested unit.
+- **`AdminAuditService` gained a `PrismaService`** in Task 7, which the plan's earlier tasks
+  had explicitly forbidden. See *Decisions made*.
+- One task's first dispatch was interrupted mid-TDD, leaving a coherent but undocumented
+  half-implementation. It was preserved as a stash and re-dispatched fresh rather than handed
+  to a new implementer as inherited context.
+
+### Left undone / follow-ups
+
+- **`before` on the two update paths is read outside the transaction.** `updateDrone` and
+  `updatePromo` both load their prior row before opening the transaction, so under READ
+  COMMITTED a concurrent edit between the read and the write makes the recorded `before` not
+  quite the immediately-prior state. Closing it means holding a row lock across the read on
+  every update.
+- **`firedFrom` is read-then-CAS, not the matched row.** Same reason: no row lock, READ
+  COMMITTED. It is the status the delivery was in a moment before the CAS matched it, which is
+  right in every non-racing case and approximately right otherwise.
+- **The 30-day window is a default, not a maximum.** `?from=1970-01-01` still scans every
+  partition. That is an explicit caller choice, but nothing bounds it.
+- **An inverted `from`/`to` returns an empty 200, not a 400.** House-consistent, and the
+  effective window is echoed in the payload, so the caller can see what they asked for — but a
+  reversed range reads as "no operator did anything" rather than as a mistake.
+- **No admin UI for any of this** — the data is behind `GET /admin/audit` and nothing renders
+  it. That is 12.5.
+- **No alerting on audit events.** Nothing notices a burst of force-cancels, a role escalation,
+  or an operator acting outside working hours.
+- **Retention is pinned off.** If `admin_audit_logs` ever needs bounding, that is a deliberate
+  decision with its own change — not a side effect of a telemetry knob.
+- `diffAllowed` compares values via `JSON.stringify`, so it is key-order sensitive if a future
+  allowlist entry is ever a nested object. Every allowed field is a scalar today.
+- `setTicketStatus` re-reads its return row after the transaction commits, so a concurrent
+  write could make it differ from what was just written. Primary-only read, and no test asserts
+  the return value — the right trade against holding a lock.
+
+### Next
+- **Phase 12 increment 5** — flight-ops console (12.5), which is also where the audit log
+  finally gets a reader, and/or airspace as data (12.4).
+- Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
+- Per-aircraft ingest credentials (11.2); the saturation queue; Phase 12 items 12.4–12.6.
+- **Phase 10** still blocked on Stripe test keys.

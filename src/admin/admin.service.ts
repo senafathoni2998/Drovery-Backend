@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  AdminAuditAction,
+  AdminAuditTargetType,
   DeliveryFailureReason,
   DeliveryStatus,
   Prisma,
@@ -31,6 +33,8 @@ import {
   IssueCommandDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import { AdminAuditService, AuditActor } from './audit/admin-audit.service';
+import { diffAllowed, pickAllowed } from './audit/admin-audit.constants';
 
 const USER_SELECT = { id: true, name: true, email: true } as const;
 
@@ -44,6 +48,7 @@ export class AdminService {
     private readonly walletService: WalletService,
     private readonly chatPublisher: SupportChatPublisher,
     private readonly droneCommands: DroneCommandService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   // ── Support inbox (AGENT + ADMIN) ──
@@ -97,8 +102,14 @@ export class AdminService {
   }
 
   /** Reply as an agent: persist an AGENT message (attributed to the agent),
-   * bump recency, auto-advance OPEN→IN_PROGRESS, and fan out to the user live. */
-  async replyAsAgent(agentId: string, ticketId: string, content: string) {
+   * bump recency, auto-advance OPEN→IN_PROGRESS, fan out to the user live, and
+   * record the audit row inside the SAME transaction as the two writes.
+   *
+   * `args` captures the message LENGTH, never its text — the content already
+   * lives in `support_chat_messages` with its own `senderUserId`, and copying
+   * customer prose into the audit row would widen what an audit read exposes
+   * for no forensic gain. */
+  async replyAsAgent(actor: AuditActor, ticketId: string, content: string) {
     const ticket = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
       select: { status: true },
@@ -111,39 +122,87 @@ export class AdminService {
       throw new AppConflictException('error.admin.ticket.closed');
     }
 
-    const [message] = await this.prisma.$transaction([
-      this.prisma.supportChatMessage.create({
+    const message = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.supportChatMessage.create({
         data: {
           ticketId,
           senderRole: 'AGENT',
-          senderUserId: agentId, // attribution (audit); client renders by senderRole
+          senderUserId: actor.userId, // attribution (audit); client renders by senderRole
           content,
         },
-      }),
-      this.prisma.supportTicket.update({
+      });
+      await tx.supportTicket.update({
         where: { id: ticketId },
         data: {
           lastMessageAt: new Date(),
           status: ticket.status === 'OPEN' ? 'IN_PROGRESS' : ticket.status,
         },
-      }),
-    ]);
+      });
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.SUPPORT_TICKET_REPLY,
+        targetType: AdminAuditTargetType.SUPPORT_TICKET,
+        targetId: ticketId,
+        args: pickAllowed(AdminAuditAction.SUPPORT_TICKET_REPLY, {
+          contentLength: content.length,
+        }),
+      });
+      return created;
+    });
 
     const payload = toSupportChatPayload(message);
     await this.chatPublisher.publishMessage(payload); // realtime to the user
-    this.logger.log(`agent ${agentId} replied to ticket ${ticketId}`);
+    this.logger.log(`agent ${actor.userId} replied to ticket ${ticketId}`);
     return payload;
   }
 
-  async setTicketStatus(ticketId: string, status: SupportTicketStatus) {
-    const { count } = await this.prisma.supportTicket.updateMany({
+  /** Set a ticket's status. Pre-reads the ticket so a missing one stays a clean
+   *  404 and so the audit row has a `before` value; the `updateMany` count===0
+   *  guard — a race where the ticket vanished between the read and the write —
+   *  is checked BEFORE the audit call, inside the same transaction as the write.
+   *  The row this returns is read back OUTSIDE that transaction: it needs no CAS
+   *  guarantee of its own, and reading it inside would extend how long the
+   *  `support_tickets` row lock is held for no benefit. */
+  async setTicketStatus(
+    actor: AuditActor,
+    ticketId: string,
+    status: SupportTicketStatus,
+  ) {
+    const before = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      data: { status },
+      select: { status: true },
     });
-    if (count === 0)
+    if (!before)
       throw new AppNotFoundException('error.admin.ticket.not_found', {
         id: ticketId,
       });
+
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.supportTicket.updateMany({
+        where: { id: ticketId },
+        data: { status },
+      });
+      // BEFORE the audit call: an audit row for a status change that never
+      // landed (the ticket vanished after the pre-read) invents an event.
+      if (count === 0)
+        throw new AppNotFoundException('error.admin.ticket.not_found', {
+          id: ticketId,
+        });
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.SUPPORT_TICKET_STATUS_SET,
+        targetType: AdminAuditTargetType.SUPPORT_TICKET,
+        targetId: ticketId,
+        before: pickAllowed(AdminAuditAction.SUPPORT_TICKET_STATUS_SET, {
+          status: before.status,
+        }),
+        after: pickAllowed(AdminAuditAction.SUPPORT_TICKET_STATUS_SET, {
+          status,
+        }),
+      });
+    });
     this.logger.log(`ticket ${ticketId} status → ${status}`);
     return this.prisma.supportTicket.findUnique({ where: { id: ticketId } });
   }
@@ -201,16 +260,47 @@ export class AdminService {
     return delivery;
   }
 
-  forceCancel(deliveryId: string) {
-    return this.deliveries.adminForceCancel(deliveryId);
+  /** Force-cancel a stuck delivery in any non-terminal state. The audit row co-commits
+   * with the CAS that performs it — the delivery service owns that transaction and runs
+   * this callback inside it, handing back the status the cancel actually fired from.
+   *
+   * Every captured payload here goes through `pickAllowed`, even where the literal is
+   * already exactly the allowlisted field. It is the difference between the allowlist
+   * being the one chokepoint every writer passes through and it being a rule some
+   * writers happen to satisfy — and the next writer copies whichever it finds. */
+  forceCancel(actor: AuditActor, deliveryId: string) {
+    return this.deliveries.adminForceCancel(deliveryId, (tx, firedFrom) =>
+      this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DELIVERY_FORCE_CANCEL,
+        targetType: AdminAuditTargetType.DELIVERY,
+        targetId: deliveryId,
+        before: pickAllowed(AdminAuditAction.DELIVERY_FORCE_CANCEL, {
+          status: firedFrom,
+        }),
+      }),
+    );
   }
 
   /** Fail an in-flight delivery as a first-class exception (default ADMIN_ABORT,
    * a drone-fault reason → refunds the customer). 404/409 like force-cancel. */
-  fail(deliveryId: string, reason?: DeliveryFailureReason) {
-    return this.deliveries.adminFail(
-      deliveryId,
-      reason ?? DeliveryFailureReason.ADMIN_ABORT,
+  fail(actor: AuditActor, deliveryId: string, reason?: DeliveryFailureReason) {
+    // Record the RESOLVED reason, not the caller's: the row has to say what was
+    // written to the delivery, and `undefined` says nothing about who chose the default.
+    const resolved = reason ?? DeliveryFailureReason.ADMIN_ABORT;
+    return this.deliveries.adminFail(deliveryId, resolved, (tx, firedFrom) =>
+      this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DELIVERY_FAIL,
+        targetType: AdminAuditTargetType.DELIVERY,
+        targetId: deliveryId,
+        before: pickAllowed(AdminAuditAction.DELIVERY_FAIL, {
+          status: firedFrom,
+        }),
+        args: pickAllowed(AdminAuditAction.DELIVERY_FAIL, { reason: resolved }),
+      }),
     );
   }
 
@@ -234,7 +324,7 @@ export class AdminService {
    *
    * What it is NOT: a double-refund. The CAS still guarantees at most one credit per
    * delivery across both channels. The failure mode is under-refunding, not over-. */
-  async refund(deliveryId: string, amount?: number) {
+  async refund(actor: AuditActor, deliveryId: string, amount?: number) {
     const delivery = await this.prisma.delivery.findFirst({
       where: { id: deliveryId },
       select: { userId: true, estimatedPrice: true },
@@ -271,6 +361,19 @@ export class AdminService {
           'CHECKOUT_REFUND',
           { deliveryId, idempotencyKey: `admin-refund:${deliveryId}` },
         );
+        // AFTER the gate and the credit, inside the same transaction: a refund that
+        // lost the gate above never reaches here, and an audit row for a refund that
+        // did not happen invents an event.
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.DELIVERY_REFUND,
+          targetType: AdminAuditTargetType.DELIVERY,
+          targetId: deliveryId,
+          args: pickAllowed(AdminAuditAction.DELIVERY_REFUND, {
+            amount: refundAmount,
+          }),
+        });
       });
     } catch (e) {
       if (
@@ -329,10 +432,29 @@ export class AdminService {
     return drone;
   }
 
-  /** Register an aircraft. `serial` is the physical marking and must be unique. */
-  async createDrone(dto: CreateDroneDto) {
+  /** Register an aircraft. `serial` is the physical marking and must be unique. The
+   *  P2002 translation stays OUTSIDE the transaction: a duplicate serial must still
+   *  surface as the domain conflict, and rolling the transaction back on that error
+   *  means no audit row is ever written for a registration that never happened. */
+  async createDrone(actor: AuditActor, dto: CreateDroneDto) {
     try {
-      return await this.prisma.drone.create({ data: { ...dto } });
+      return await this.prisma.$transaction(async (tx) => {
+        const drone = await tx.drone.create({ data: { ...dto } });
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.DRONE_CREATE,
+          targetType: AdminAuditTargetType.DRONE,
+          targetId: drone.id,
+          // Sourced from the CREATED ROW, not the DTO — see createPromo below, which
+          // must do this because `code` is normalized on write. Doing the same here
+          // even though today's allowed fields pass through unchanged means Task 6
+          // and any later create route copy the invariant that survives a create
+          // gaining its own normalization, not the one that happens to work today.
+          args: pickAllowed(AdminAuditAction.DRONE_CREATE, drone as never),
+        });
+        return drone;
+      });
     } catch (e) {
       if (
         e instanceof Prisma.PrismaClientKnownRequestError &&
@@ -354,19 +476,36 @@ export class AdminService {
    * drone in the air is recalled with a RETURN_TO_BASE command, which is a different
    * operation with different safety semantics.
    */
-  async updateDrone(id: string, dto: UpdateDroneDto) {
-    await this.getDrone(id);
-    const drone = await this.prisma.drone.update({
-      where: { id },
-      data: {
-        ...dto,
-        ...(dto.maintenanceDueAt
-          ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
-          : {}),
-      },
+  async updateDrone(actor: AuditActor, id: string, dto: UpdateDroneDto) {
+    const before = await this.getDrone(id); // 404 if missing; now also the audit's before
+    const drone = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.drone.update({
+        where: { id },
+        data: {
+          ...dto,
+          ...(dto.maintenanceDueAt
+            ? { maintenanceDueAt: new Date(dto.maintenanceDueAt) }
+            : {}),
+        },
+      });
+      const diff = diffAllowed(
+        AdminAuditAction.DRONE_UPDATE,
+        before as never,
+        updated as never,
+      );
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.DRONE_UPDATE,
+        targetType: AdminAuditTargetType.DRONE,
+        targetId: id,
+        before: diff.before,
+        after: diff.after,
+      });
+      return updated;
     });
     this.logger.log(
-      `drone ${drone.serial} updated (status=${drone.status} airworthy=${drone.airworthy})`,
+      `drone ${drone.serial} updated by ${actor.userId} (status=${drone.status} airworthy=${drone.airworthy})`,
     );
     return drone;
   }
@@ -374,9 +513,33 @@ export class AdminService {
   // ── Drone commands (backend → drone) ──
 
   /** Issue a backend→drone command (RETURN_TO_BASE / ABORT) on a LIVE delivery.
-   * The delivery transitions only when the drone acks. 404/422/409 from the service. */
-  issueDroneCommand(adminId: string, deliveryId: string, dto: IssueCommandDto) {
-    return this.droneCommands.issue(adminId, deliveryId, dto);
+   * The delivery transitions only when the drone acks. 404/422/409 from the service.
+   * The audit row co-commits with the command's creation — see
+   * DroneCommandService.issue, which runs this callback inside that transaction and
+   * hands back the row it just created (sourced from the CREATED row, not the dto,
+   * for the same reason createDrone/createPromo do). */
+  issueDroneCommand(
+    actor: AuditActor,
+    deliveryId: string,
+    dto: IssueCommandDto,
+  ) {
+    return this.droneCommands.issue(
+      actor.userId,
+      deliveryId,
+      dto,
+      (tx, command) =>
+        this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.DRONE_COMMAND_ISSUE,
+          targetType: AdminAuditTargetType.DELIVERY,
+          targetId: deliveryId,
+          args: pickAllowed(
+            AdminAuditAction.DRONE_COMMAND_ISSUE,
+            command as never,
+          ),
+        }),
+    );
   }
 
   /** Command audit history for a delivery (newest first). 404 if the delivery is missing. */
@@ -386,21 +549,32 @@ export class AdminService {
 
   // ── Promo CRUD (ADMIN) ──
 
-  async createPromo(dto: CreatePromoDto) {
+  async createPromo(actor: AuditActor, dto: CreatePromoDto) {
     this.assertDiscountValue(dto.discountType, dto.discountValue);
     try {
-      return await this.prisma.promoCode.create({
-        data: {
-          code: dto.code.trim().toUpperCase(),
-          description: dto.description ?? null,
-          discountType: dto.discountType,
-          discountValue: dto.discountValue,
-          minOrderTotal: dto.minOrderTotal ?? 0,
-          maxDiscount: dto.maxDiscount ?? null,
-          startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
-          endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
-          maxRedemptions: dto.maxRedemptions ?? null,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        const promo = await tx.promoCode.create({
+          data: {
+            code: dto.code.trim().toUpperCase(),
+            description: dto.description ?? null,
+            discountType: dto.discountType,
+            discountValue: dto.discountValue,
+            minOrderTotal: dto.minOrderTotal ?? 0,
+            maxDiscount: dto.maxDiscount ?? null,
+            startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
+            endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
+            maxRedemptions: dto.maxRedemptions ?? null,
+          },
+        });
+        await this.audit.recordWithinTx(tx, {
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          action: AdminAuditAction.PROMO_CREATE,
+          targetType: AdminAuditTargetType.PROMO,
+          targetId: promo.id,
+          args: pickAllowed(AdminAuditAction.PROMO_CREATE, promo as never),
+        });
+        return promo;
       });
     } catch (e) {
       if (
@@ -434,39 +608,60 @@ export class AdminService {
     return promo;
   }
 
-  async updatePromo(id: string, dto: UpdatePromoDto) {
-    const existing = await this.getPromo(id); // 404 if missing
+  async updatePromo(actor: AuditActor, id: string, dto: UpdatePromoDto) {
+    const before = await this.getPromo(id); // 404 if missing; now also the audit's before
     // Update can change discountValue but NOT discountType — so validate the new value
     // against the EXISTING type (createPromo enforces this; update must too, or a PERCENT
     // promo could be PATCHed to >100%).
     if (dto.discountValue !== undefined) {
-      this.assertDiscountValue(existing.discountType, dto.discountValue);
+      this.assertDiscountValue(before.discountType, dto.discountValue);
     }
-    const { count } = await this.prisma.promoCode.updateMany({
-      where: { id },
-      data: {
-        ...(dto.description !== undefined
-          ? { description: dto.description }
-          : {}),
-        ...(dto.discountValue !== undefined
-          ? { discountValue: dto.discountValue }
-          : {}),
-        ...(dto.minOrderTotal !== undefined
-          ? { minOrderTotal: dto.minOrderTotal }
-          : {}),
-        ...(dto.maxDiscount !== undefined
-          ? { maxDiscount: dto.maxDiscount }
-          : {}),
-        ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
-        ...(dto.maxRedemptions !== undefined
-          ? { maxRedemptions: dto.maxRedemptions }
-          : {}),
-        ...(dto.active !== undefined ? { active: dto.active } : {}),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.promoCode.updateMany({
+        where: { id },
+        data: {
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
+          ...(dto.discountValue !== undefined
+            ? { discountValue: dto.discountValue }
+            : {}),
+          ...(dto.minOrderTotal !== undefined
+            ? { minOrderTotal: dto.minOrderTotal }
+            : {}),
+          ...(dto.maxDiscount !== undefined
+            ? { maxDiscount: dto.maxDiscount }
+            : {}),
+          ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
+          ...(dto.maxRedemptions !== undefined
+            ? { maxRedemptions: dto.maxRedemptions }
+            : {}),
+          ...(dto.active !== undefined ? { active: dto.active } : {}),
+        },
+      });
+      // BEFORE the audit call: an audit row for an update that matched nothing
+      // invents an event.
+      if (count === 0)
+        throw new AppNotFoundException('error.admin.promo.not_found', { id });
+      // Re-read INSIDE the transaction so the `after` diff sees the committed values,
+      // not a stale pre-update snapshot.
+      const after = await tx.promoCode.findUnique({ where: { id } });
+      const diff = diffAllowed(
+        AdminAuditAction.PROMO_UPDATE,
+        before as never,
+        after as never,
+      );
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.PROMO_UPDATE,
+        targetType: AdminAuditTargetType.PROMO,
+        targetId: id,
+        before: diff.before,
+        after: diff.after,
+      });
+      return after;
     });
-    if (count === 0)
-      throw new AppNotFoundException('error.admin.promo.not_found', { id });
-    return this.prisma.promoCode.findUnique({ where: { id } });
   }
 
   private assertDiscountValue(type: string, value: number) {
@@ -553,7 +748,10 @@ export class AdminService {
     return { items, total, page: query.page ?? 1, limit: query.limit ?? 20 };
   }
 
-  async setRole(actingAdminId: string, targetId: string, role: Role) {
+  /** Change a user's role. The target read and the last-admin guard stay OUTSIDE
+   *  any transaction — they only ever 404/409, never mutate — and only `user.update`
+   *  plus the audit write are wrapped, so the two co-commit. */
+  async setRole(actor: AuditActor, targetId: string, role: Role) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
       select: { role: true },
@@ -571,12 +769,28 @@ export class AdminService {
       }
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id: targetId },
-      data: { role },
-      select: { id: true, email: true, role: true },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: targetId },
+        data: { role },
+        select: { id: true, email: true, role: true },
+      });
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.USER_ROLE_SET,
+        targetType: AdminAuditTargetType.USER,
+        targetId,
+        before: pickAllowed(AdminAuditAction.USER_ROLE_SET, {
+          role: target.role,
+        }),
+        after: pickAllowed(AdminAuditAction.USER_ROLE_SET, {
+          role: user.role,
+        }),
+      });
+      return user;
     });
-    this.logger.log(`admin ${actingAdminId} set user ${targetId} role=${role}`);
+    this.logger.log(`admin ${actor.userId} set user ${targetId} role=${role}`);
     return updated;
   }
 }

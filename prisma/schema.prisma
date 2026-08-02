@@ -969,3 +969,66 @@ model FlightFrame {
   @@index([droneId, recordedAt])
   @@map("flight_frames")
 }
+
+// ==================== ADMIN AUDIT LOG ====================
+
+enum AdminAuditAction {
+  DELIVERY_FORCE_CANCEL
+  DELIVERY_FAIL
+  DELIVERY_REFUND
+  DRONE_COMMAND_ISSUE
+  DRONE_CREATE
+  DRONE_UPDATE
+  PROMO_CREATE
+  PROMO_UPDATE
+  USER_ROLE_SET
+  SUPPORT_TICKET_REPLY
+  SUPPORT_TICKET_STATUS_SET
+}
+
+enum AdminAuditTargetType {
+  DELIVERY
+  DRONE
+  PROMO
+  USER
+  SUPPORT_TICKET
+}
+
+/// Operator actions, append-only. Partitioned from birth by RANGE("createdAt").
+///
+/// `actorUserId` carries NO foreign key, unlike DroneCommand.issuedByUserId. That
+/// column uses onDelete: SetNull so deleting an admin cannot cascade the audit row
+/// away — but for an audit log SetNull is the wrong trade: it preserves the row while
+/// destroying its single most important field. GDPR delete is on the backlog; when it
+/// lands it must not be able to erase attribution. A plain column cannot be nulled by
+/// a cascade.
+model AdminAuditLog {
+  id        String   @default(uuid())
+  createdAt DateTime @default(now())
+
+  /// The operator. Non-null: every audited route is authenticated and role-gated.
+  /// The platform's own automated RETURN_TO_BASE does not pass through an admin
+  /// route and gets no row here — DroneCommand.issuedByUserId already records it.
+  actorUserId String
+  /// Snapshot. RolesGuard re-reads the role from the DB per request and it can change
+  /// afterwards; "who was an ADMIN when they did this" is not answerable from `users`.
+  actorRole Role
+
+  action     AdminAuditAction
+  targetType AdminAuditTargetType
+  targetId   String
+
+  /// Changed fields only, prior values (update-shaped actions) or the status a
+  /// delivery transition fired FROM.
+  before Json?
+  /// Changed fields only, new values.
+  after Json?
+  /// Submitted arguments, for actions with no prior state.
+  args Json?
+
+  @@id([id, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([action, createdAt])
+  @@map("admin_audit_logs")
+}

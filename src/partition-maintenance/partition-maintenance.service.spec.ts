@@ -1,4 +1,5 @@
 import { PartitionMaintenanceService } from './partition-maintenance.service';
+import { PARTITIONED_TABLES, retentionFor } from './partition.constants';
 
 // DB-free: the plpgsql routines are exercised by scripts/verify-partitions.sql + the
 // guarded integration spec; here we assert the service's orchestration (order, per-table
@@ -83,5 +84,27 @@ describe('PartitionMaintenanceService', () => {
       { table: 'notifications' },
       7,
     );
+  });
+
+  it('pins admin_audit_logs out of retention in the table list itself', () => {
+    const audit = PARTITIONED_TABLES.find(
+      (t) => t.table === 'admin_audit_logs',
+    );
+    expect(audit?.retainMonths).toBe(0);
+  });
+});
+
+describe('retentionFor', () => {
+  it('lets a per-table 0 override a positive global — audit history is never dropped', () => {
+    // `||` here instead of `??` would silently fall through to the global, which is the
+    // entire failure mode this override exists to prevent.
+    expect(
+      retentionFor({ table: 'admin_audit_logs', retainMonths: 0 }, 6),
+    ).toBe(0);
+  });
+
+  it('falls back to the global when a table states no preference', () => {
+    // Without this, "never drop anything" would also pass the test above.
+    expect(retentionFor({ table: 'flight_frames' }, 6)).toBe(6);
   });
 });

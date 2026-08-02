@@ -1,8 +1,8 @@
 # Partitioning runbook
 
 PostgreSQL native **time-range partitioning** for high-volume, append-heavy tables.
-Today: **`notifications`** (the reference implementation). This doc is the operational
-contract — read it before touching a partitioned table or the migration workflow.
+Six tables today; **`notifications`** is the reference implementation. This doc is the
+operational contract — read it before touching a partitioned table or the migration workflow.
 
 ## What's partitioned
 
@@ -12,10 +12,20 @@ contract — read it before touching a partitioned table or the migration workfl
 | `deliveries` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `deliveries_yYYYYmMM` + `deliveries_default` |
 | `workflow_step_completions` | `RANGE("deliveryCreatedAt")` | composite PK `(id, "deliveryCreatedAt")` | monthly `workflow_step_completions_yYYYYmMM` + `_default` |
 | `drone_commands` | `RANGE("deliveryCreatedAt")` | composite PK `(id, "deliveryCreatedAt")` | monthly `drone_commands_yYYYYmMM` + `_default` |
+| `flight_frames` | `RANGE("deliveryCreatedAt")` | composite PK `(id, "deliveryCreatedAt")` | monthly `flight_frames_yYYYYmMM` + `_default` |
+| `admin_audit_logs` | `RANGE("createdAt")` | composite PK `(id, "createdAt")` | monthly `admin_audit_logs_yYYYYmMM` + `_default` |
 
 Migrations: `20260616120000_partition_notifications`, `20260619140000_partition_deliveries`,
 `20260620160000_partition_routines_self_discover`, `20260620170000_partition_workflow_step_completions`,
-`20260620180000_partition_drone_commands`.
+`20260620180000_partition_drone_commands`, `20260801053057_add_flight_frames`,
+`20260802010548_add_admin_audit_logs`.
+
+The last two were **partitioned from birth** — no copy-swap, because neither table had rows
+yet. `flight_frames` is the append-only flight recorder (one row per telemetry tick, by far
+the highest-volume table here) and co-partitions by `deliveryCreatedAt` like the other two
+delivery children, so an aged month is a bare O(1) `DROP`. `admin_audit_logs` is the operator
+audit log; it is partitioned for read pruning and for the convention, **not** so the history
+can age out — see the retention override below.
 
 **`deliveries` (delivery-graph Phase 1) is SHIPPED.** Because the parent PK is composite,
 all 6 children (`delivery_tracking`, `payments`, `proof_of_delivery`, `delivery_ratings`,
@@ -104,7 +114,15 @@ The permanent `DEFAULT` partition is the safety net: an insert can **never** fai
 | `PARTITION_MAINTENANCE_ENABLED` | `true` | kill-switch; `false` pauses + tears down the scheduler on next boot |
 | `PARTITION_SCAN_INTERVAL_MS` | `21600000` (6h) | sweep cadence |
 | `PARTITION_MONTHS_AHEAD` | `3` | future children kept ready (~90-day runway) |
-| `PARTITION_RETAIN_MONTHS` | `0` | drop children older than N months; `0` = keep all |
+| `PARTITION_RETAIN_MONTHS` | `0` | **global default** — drop children older than N months; `0` = keep all |
+
+**Per-table retention override.** Each `PARTITIONED_TABLES` entry may carry its own
+`retainMonths`, resolved by `retentionFor(entry)` as `entry.retainMonths ?? PARTITION_RETAIN_MONTHS`
+— **`??`, never `||`**, so an explicit `0` wins instead of falling through to the global.
+`admin_audit_logs` pins `0`. The only table whose volume would ever motivate turning retention
+on is `flight_frames`; without the override, tuning telemetry retention would silently start
+dropping operator audit history with it. If the audit table ever does need bounding, that is a
+deliberate decision with its own change — not a side effect of a telemetry knob.
 
 ### Metrics (Prometheus)
 
@@ -129,7 +147,9 @@ npx jest src/partition-maintenance
 1. Pick an append-heavy, time-series table; check its inbound FKs (a leaf is easiest).
 2. Change its model PK to `@@id([id, "createdAt"])`; fix any by-id `findUnique/update/delete`.
 3. Hand-write a copy-swap migration mirroring `20260616120000_partition_notifications`.
-4. Add the `@@map` name to `PARTITIONED_TABLES` (the `partition_*` routines are generic).
+4. Add `{ table: '<@@map name>' }` to `PARTITIONED_TABLES` (the `partition_*` routines are
+   generic). Decide its retention deliberately: omit `retainMonths` to follow the global,
+   or pin a value — `0` means never drop.
 5. `prisma generate` → `npm run build` (compiler flags broken call-sites) → `migrate deploy`
    → `npm run prisma:drift-check` → `verify-partitions.sql`.
 

@@ -10,7 +10,6 @@ import {
 import { ApiCreatedResponse, ApiOkResponse } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 
-import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { AdminService } from './admin.service';
@@ -27,6 +26,10 @@ import {
   UpdateDroneDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import { AuditActor } from './audit/audit-actor.decorator';
+import { AdminAuditService } from './audit/admin-audit.service';
+import { AuditQueryDto } from './audit/dto/audit-query.dto';
+import { AdminPaginatedAuditDto } from './audit/dto/audit-response.dto';
 import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
@@ -43,7 +46,10 @@ import {
 @Roles(Role.ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   @Get('overview')
   @ApiOkResponse({ type: AdminOverviewDto })
@@ -64,33 +70,44 @@ export class AdminController {
     return this.admin.getDelivery(id);
   }
 
+  // These three ground aircraft and move money, so they are recorded against the
+  // operator who called them. @AuditActor assembles that operator from the request in
+  // one tested place — see the decorator for why it is not two @CurrentUser reads.
   @Post('deliveries/:id/force-cancel')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
-  forceCancel(@Param('id') id: string) {
-    return this.admin.forceCancel(id);
+  forceCancel(@AuditActor() actor: AuditActor, @Param('id') id: string) {
+    return this.admin.forceCancel(actor, id);
   }
 
   @Post('deliveries/:id/fail')
   @ApiCreatedResponse({ type: AdminDeliveryResponseDto })
-  fail(@Param('id') id: string, @Body() dto: FailDeliveryDto) {
-    return this.admin.fail(id, dto.reason);
+  fail(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: FailDeliveryDto,
+  ) {
+    return this.admin.fail(actor, id, dto.reason);
   }
 
   @Post('deliveries/:id/refund')
   @ApiCreatedResponse({ type: AdminRefundResponseDto })
-  refund(@Param('id') id: string, @Body() dto: RefundDto) {
-    return this.admin.refund(id, dto.amount);
+  refund(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: RefundDto,
+  ) {
+    return this.admin.refund(actor, id, dto.amount);
   }
 
   // ── Drone commands (backend → drone) ──
   @Post('deliveries/:id/commands')
   @ApiCreatedResponse({ type: DroneCommandResponseDto })
   issueCommand(
-    @CurrentUser('sub') adminId: string,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: IssueCommandDto,
   ) {
-    return this.admin.issueDroneCommand(adminId, id, dto);
+    return this.admin.issueDroneCommand(actor, id, dto);
   }
 
   @Get('deliveries/:id/commands')
@@ -106,8 +123,8 @@ export class AdminController {
   }
 
   @Post('drones')
-  createDrone(@Body() dto: CreateDroneDto) {
-    return this.admin.createDrone(dto);
+  createDrone(@AuditActor() actor: AuditActor, @Body() dto: CreateDroneDto) {
+    return this.admin.createDrone(actor, dto);
   }
 
   @Get('drones/:id')
@@ -116,8 +133,12 @@ export class AdminController {
   }
 
   @Patch('drones/:id')
-  updateDrone(@Param('id') id: string, @Body() dto: UpdateDroneDto) {
-    return this.admin.updateDrone(id, dto);
+  updateDrone(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdateDroneDto,
+  ) {
+    return this.admin.updateDrone(actor, id, dto);
   }
 
   // ── Promo codes ──
@@ -129,8 +150,8 @@ export class AdminController {
 
   @Post('promos')
   @ApiCreatedResponse({ type: PromoResponseDto })
-  createPromo(@Body() dto: CreatePromoDto) {
-    return this.admin.createPromo(dto);
+  createPromo(@AuditActor() actor: AuditActor, @Body() dto: CreatePromoDto) {
+    return this.admin.createPromo(actor, dto);
   }
 
   @Get('promos/:id')
@@ -141,8 +162,12 @@ export class AdminController {
 
   @Patch('promos/:id')
   @ApiOkResponse({ type: PromoResponseDto })
-  updatePromo(@Param('id') id: string, @Body() dto: UpdatePromoDto) {
-    return this.admin.updatePromo(id, dto);
+  updatePromo(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdatePromoDto,
+  ) {
+    return this.admin.updatePromo(actor, id, dto);
   }
 
   // ── Users / roles ──
@@ -155,10 +180,20 @@ export class AdminController {
   @Patch('users/:id/role')
   @ApiOkResponse({ type: AdminUserRoleDto })
   setRole(
-    @CurrentUser('sub') adminId: string,
+    @AuditActor() actor: AuditActor,
     @Param('id') id: string,
     @Body() dto: SetRoleDto,
   ) {
-    return this.admin.setRole(adminId, id, dto.role);
+    return this.admin.setRole(actor, id, dto.role);
+  }
+
+  // ── Operator audit log ──
+  // ADMIN only, deliberately not AGENT: this log records agent actions, so agents
+  // reading it is a separation-of-duties problem. No :id-style wildcard exists on
+  // this controller for 'audit' to collide with — it is its own literal path segment.
+  @Get('audit')
+  @ApiOkResponse({ type: AdminPaginatedAuditDto })
+  listAudit(@Query() query: AuditQueryDto) {
+    return this.audit.list(query);
   }
 }
