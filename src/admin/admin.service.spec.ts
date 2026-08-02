@@ -806,6 +806,43 @@ describe('AdminService', () => {
       });
     });
 
+    it('runs the audit write inside the SAME transaction as promoCode.create, not after it', async () => {
+      // Same defect class as createDrone's equivalent test: "promoCode.create
+      // happened AND adminAuditLog.create happened" is satisfied just as well by an
+      // audit write hoisted to run right after `$transaction` resolves. Only the
+      // ORDER can tell a co-committed write apart from a bolted-on one.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.promoCode.create.mockImplementation(() => {
+        order.push('create');
+        return Promise.resolve({
+          id: 'p-9',
+          code: 'SAVE10',
+          discountType: 'PERCENT',
+          discountValue: 10,
+          maxRedemptions: null,
+          endsAt: null,
+        });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
+
+      await service.createPromo(actor, {
+        code: 'save10',
+        discountType: 'PERCENT',
+        discountValue: 10,
+      } as any);
+
+      expect(order).toEqual(['begin', 'create', 'audit', 'commit']);
+    });
+
     it('writes no audit row when updatePromo matches nothing', async () => {
       // Mirrors 'writes no audit row when the refund loses its single-winner gate'.
       // Neither half of this guard was pinned before: the PERCENT>100 test never
