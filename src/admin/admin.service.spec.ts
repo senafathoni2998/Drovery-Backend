@@ -623,6 +623,44 @@ describe('AdminService', () => {
       });
     });
 
+    it('records a hand-edited battery level rather than a row that reads "changed nothing"', async () => {
+      // batteryPercent was the one UpdateDroneDto field with no allowlist entry, and
+      // the result was worse than a missing field: pickAllowed returns `undefined`
+      // when nothing survives, so a battery-only edit produced before AND after as
+      // NULL — an audit row asserting an operator touched the aircraft and changed
+      // nothing. It is also the most consequential value on the row: flight-
+      // feasibility derates usable range by it and blocks dispatch below a floor, so
+      // raising it by hand is exactly the edit that makes an aircraft look
+      // dispatchable on a mission it cannot finish.
+      prisma.drone.findUnique.mockResolvedValue({
+        id: 'drone-7',
+        serial: 'DRV-001',
+        airworthy: true,
+        status: 'AVAILABLE',
+        batteryPercent: 11,
+      });
+      prisma.drone.update.mockResolvedValue({
+        id: 'drone-7',
+        serial: 'DRV-001',
+        airworthy: true,
+        status: 'AVAILABLE',
+        batteryPercent: 98,
+      });
+
+      await service.updateDrone(actor, 'drone-7', {
+        batteryPercent: 98,
+      } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'DRONE_UPDATE',
+          targetId: 'drone-7',
+          before: { batteryPercent: 11 },
+          after: { batteryPercent: 98 },
+        }),
+      });
+    });
+
     it('runs the audit write inside the SAME transaction as drone.update, not after it', async () => {
       // "drone.update happened AND adminAuditLog.create happened" cannot tell a
       // co-committed write apart from one hoisted out to run right after
@@ -747,6 +785,7 @@ describe('AdminService', () => {
         id: 'dr-9',
         serial: 'X9',
         model: 'Drovery X9',
+        firmwareVersion: '2.4.1',
         maxPayloadKg: 3,
         rangeKm: 20,
         homeBaseLat: 1,
@@ -756,6 +795,7 @@ describe('AdminService', () => {
       await service.createDrone(actor, {
         serial: 'X9',
         model: 'Drovery X9',
+        firmwareVersion: '2.4.1',
         maxPayloadKg: 3,
         rangeKm: 20,
         homeBaseLat: 1,
@@ -772,6 +812,10 @@ describe('AdminService', () => {
           args: {
             serial: 'X9',
             model: 'Drovery X9',
+            // DRONE_UPDATE allowlisted firmwareVersion from the start and
+            // DRONE_CREATE did not, so the firmware an airframe was REGISTERED with
+            // was the one point in its history nothing recorded.
+            firmwareVersion: '2.4.1',
             maxPayloadKg: 3,
             rangeKm: 20,
             homeBaseLat: 1,
@@ -830,6 +874,9 @@ describe('AdminService', () => {
         code: 'SAVE10',
         discountType: 'PERCENT',
         discountValue: 10,
+        minOrderTotal: 0,
+        maxDiscount: 25,
+        startsAt: new Date('2026-09-01T00:00:00.000Z'),
         maxRedemptions: null,
         endsAt: null,
       });
@@ -838,6 +885,8 @@ describe('AdminService', () => {
         code: 'save10',
         discountType: 'PERCENT',
         discountValue: 10,
+        maxDiscount: 25,
+        startsAt: '2026-09-01T00:00:00.000Z',
       } as any);
 
       expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
@@ -854,6 +903,15 @@ describe('AdminService', () => {
             code: 'SAVE10',
             discountType: 'PERCENT',
             discountValue: 10,
+            // The three below were absent from the allowlist while PROMO_UPDATE
+            // already carried two of them. `maxDiscount` is the one that matters:
+            // it caps a PERCENT promo's dollar exposure, so a promo created uncapped
+            // at 90% used to record the 90 and nothing about the missing cap.
+            minOrderTotal: 0,
+            maxDiscount: 25,
+            // A Date on the row, ISO in the log — normalize() keeps a JSONB round
+            // trip comparing equal to what went in.
+            startsAt: '2026-09-01T00:00:00.000Z',
             maxRedemptions: null,
             endsAt: null,
           },

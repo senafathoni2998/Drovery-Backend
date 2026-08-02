@@ -32,6 +32,10 @@ export const AUDIT_FIELD_ALLOWLIST: Record<
   DRONE_CREATE: [
     'serial',
     'model',
+    // `CreateDroneDto` accepts it and DRONE_UPDATE already allowlists it; leaving it
+    // off here meant the firmware an aircraft was REGISTERED with was the one value
+    // in its history nothing recorded.
+    'firmwareVersion',
     'maxPayloadKg',
     'rangeKm',
     'homeBaseLat',
@@ -44,6 +48,26 @@ export const AUDIT_FIELD_ALLOWLIST: Record<
     'firmwareVersion',
     'maxPayloadKg',
     'rangeKm',
+    /**
+     * Hand-editing an airframe's charge is the single most consequential drone edit
+     * an operator can make — `flight-feasibility.ts` derates usable range by it and
+     * refuses dispatch below `MIN_DISPATCH_BATTERY_PERCENT`, so raising it makes an
+     * aircraft look dispatchable on a mission it cannot complete. It was also the
+     * only `UpdateDroneDto` field with no allowlist entry, which meant a battery-only
+     * edit wrote `before: null, after: null` — a row that reads as "an operator
+     * touched this drone and changed nothing". Absence would have been better; that
+     * was worse.
+     *
+     * COST, accepted: `updateDrone` reads its `before` OUTSIDE the transaction (a
+     * documented, deliberate trade), and telemetry writes this column on every
+     * heartbeat for a drone with an active delivery
+     * (`flight-recorder.service.ts:114`). So an operator edit to an IN-FLIGHT drone
+     * can pick up a concurrent battery drift and attribute it to the operator. The
+     * pre-existing staleness window is unchanged; this field just makes it visible
+     * more often. Recording nothing about a deliberate battery edit is the worse of
+     * the two failures.
+     */
+    'batteryPercent',
     'maintenanceDueAt',
     'homeBaseLat',
     'homeBaseLng',
@@ -52,6 +76,14 @@ export const AUDIT_FIELD_ALLOWLIST: Record<
     'code',
     'discountType',
     'discountValue',
+    // The three below were missing while PROMO_UPDATE allowlisted two of them, so a
+    // promo's created shape was recorded less completely than any later edit to it.
+    // `maxDiscount` is the one that matters most: it caps a PERCENT promo's dollar
+    // exposure, and a promo created uncapped at 90% recorded `discountValue: 90` and
+    // nothing at all about the absent cap.
+    'minOrderTotal',
+    'maxDiscount',
+    'startsAt',
     'maxRedemptions',
     'endsAt',
   ],

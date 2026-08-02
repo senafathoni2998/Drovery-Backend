@@ -124,6 +124,57 @@ describe('audit field allowlist', () => {
     expect(after).toBeUndefined();
   });
 
+  it('captures a hand-edited batteryPercent, the drone edit that most changes dispatch', () => {
+    // Not allowlisted at first, and the omission was worse than a plain gap:
+    // pickAllowed returns undefined when nothing survives, so a battery-only edit
+    // wrote before AND after as NULL — a row saying an operator touched the aircraft
+    // and changed nothing. Battery is what flight-feasibility derates range by.
+    const { before, after } = diffAllowed(
+      AdminAuditAction.DRONE_UPDATE,
+      { batteryPercent: 12 },
+      { batteryPercent: 95 },
+    );
+
+    expect(before).toEqual({ batteryPercent: 12 });
+    expect(after).toEqual({ batteryPercent: 95 });
+  });
+
+  it('captures the firmware an aircraft was REGISTERED with, not just later changes to it', () => {
+    // DRONE_UPDATE allowlisted firmwareVersion from the start; DRONE_CREATE did not,
+    // so the initial value was the one point in an airframe's history with no record.
+    expect(
+      pickAllowed(AdminAuditAction.DRONE_CREATE, {
+        serial: 'DRV-002',
+        firmwareVersion: '2.4.1',
+      }),
+    ).toEqual({ serial: 'DRV-002', firmwareVersion: '2.4.1' });
+  });
+
+  it("captures a new promo's caps and start date, not just its headline discount", () => {
+    // maxDiscount is what bounds a PERCENT promo's dollar exposure, and PROMO_UPDATE
+    // allowlisted it while PROMO_CREATE did not — so the creation of an uncapped 90%
+    // promo recorded `discountValue: 90` and nothing about the missing cap.
+    const picked = pickAllowed(AdminAuditAction.PROMO_CREATE, {
+      code: 'SAVE90',
+      discountType: 'PERCENT',
+      discountValue: 90,
+      minOrderTotal: 25,
+      maxDiscount: 40,
+      startsAt: new Date('2026-09-01T00:00:00.000Z'),
+      description: 'internal note, deliberately not audited',
+    });
+
+    expect(picked).toEqual({
+      code: 'SAVE90',
+      discountType: 'PERCENT',
+      discountValue: 90,
+      minOrderTotal: 25,
+      maxDiscount: 40,
+      // Normalized to ISO on the way in, so a JSONB round-trip compares equal.
+      startsAt: '2026-09-01T00:00:00.000Z',
+    });
+  });
+
   it('never captures a support reply body, only its length', () => {
     // The content already lives in support_chat_messages with its own senderUserId.
     // Copying customer prose here widens what an audit read exposes for no forensic gain.
