@@ -1010,6 +1010,13 @@ export class DeliveriesService {
      *
      * `firedFrom` is the row's ACTUAL status, read inside the transaction immediately
      * before the CAS — not a guess derived from the allowed set.
+     *
+     * Precisely: it is a read-then-CAS, not the matched row's status. Under READ
+     * COMMITTED (the default here — this path sets no isolation level and takes no row
+     * lock) each statement gets a fresh snapshot, so a telemetry commit landing between
+     * the SELECT and the UPDATE would have the audit row say DRONE_ASSIGNED while the
+     * CAS actually fired from PICKUP_IN_PROGRESS. Sub-millisecond window, and not worth
+     * a FOR UPDATE lock on this path — but it is a read-then-CAS, not a guarantee.
      */
     auditWithinTx?: (
       tx: Prisma.TransactionClient,

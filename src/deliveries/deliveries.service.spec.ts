@@ -1322,6 +1322,18 @@ describe('DeliveriesService', () => {
      * A bare "findFirst was never called" assertion cannot express this: every failure
      * path ends in announceException, which reads the delivery to localize the comms.
      * That read is not the one being gated, so match on the projection instead.
+     *
+     * TWO WAYS THIS GOES VACUOUSLY GREEN — check both before trusting it:
+     *
+     * 1. It watches `findFirst` only. prisma-mock defines `findFirst` as DELEGATING to
+     *    `findUnique`, so `findUnique.mock.calls` carries identical args and watching
+     *    either one sees a `findFirst` read — but an implementation that read via
+     *    `delivery.findUnique` DIRECTLY would leave `findFirst.mock.calls` empty and
+     *    this helper would report zero reads for a read that happened.
+     * 2. The `{ where: { id }, select: { status: true } }` shape is NOT unique to the
+     *    gated read. adminForceCancel and adminFail both issue the identical projection
+     *    on their not-applied paths. This helper therefore identifies the gated read
+     *    only in tests that do not drive those two methods.
      */
     const statusReadsOf = (id: string) =>
       prisma.delivery.findFirst.mock.calls.filter(
@@ -1439,7 +1451,34 @@ describe('DeliveriesService', () => {
 
     it('runs the audit callback inside the CAS transaction, before any cleanup', async () => {
       deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
-      const audit = jest.fn().mockResolvedValue(undefined);
+
+      // Record the transaction boundary, not just the fact of a transaction.
+      //
+      // "$transaction was called AND audit was called" is satisfied just as well by a
+      // transaction containing only the two CASes with the audit write hoisted out
+      // after it — which reads as tidier, and would silently destroy the one property
+      // this increment exists to create: the CAS commits, the audit write then fails,
+      // and a delivery has been failed by an operator with no record of who. The mock
+      // aliases `tx` to `prisma`, so no assertion on the callback's arguments can see
+      // that either. Only the ordering can.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma);
+        order.push('commit');
+        return r;
+      });
+      prisma.drone.updateMany.mockImplementation(() => {
+        order.push('cleanup');
+        return Promise.resolve({ count: 1 });
+      });
+      // .mockImplementation rather than jest.fn(impl): the latter would infer the
+      // call tuple from a zero-arg implementation, and the firedFrom assertion below
+      // reads calls[0][1].
+      const audit = jest.fn().mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve();
+      });
 
       await service.failExceptional(
         'delivery-1',
@@ -1448,8 +1487,9 @@ describe('DeliveriesService', () => {
         audit,
       );
 
-      // Co-committed with the transition, not bolted on after it.
-      expect(prisma.$transaction).toHaveBeenCalled();
+      // Co-committed with the transition, not bolted on after it — and the cleanup,
+      // which does network I/O, is strictly outside the committed transaction.
+      expect(order).toEqual(['begin', 'audit', 'commit', 'cleanup']);
       expect(audit).toHaveBeenCalledTimes(1);
       // And it learns which status the transition fired FROM — the fact that decides
       // whether an aircraft was airborne. The row's ACTUAL status: the allowed set here
