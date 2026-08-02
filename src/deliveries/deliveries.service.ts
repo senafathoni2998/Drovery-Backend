@@ -996,6 +996,28 @@ export class DeliveriesService {
      * in-memory values from the original query, not the current status.
      */
     allowedStatuses: DeliveryStatus[] = FAILABLE_STATUSES,
+    /**
+     * Optional: write an audit row in the SAME transaction as the status CAS.
+     *
+     * Runs only when the CAS matched, and receives the status the transition fired
+     * FROM — the fact that decides whether an aircraft was airborne. Callers that pass
+     * nothing (the watchdog, the pre-flight abort) are byte-identical to before: those
+     * are not operator actions, and recording them would make "what did a human do?"
+     * unanswerable by dilution rather than absence.
+     *
+     * It runs INSIDE the transaction and OUTSIDE cleanupAfterTermination, which does
+     * network I/O (refunds, MQTT, queue writes) that must never be held in one.
+     *
+     * `firedFrom` is the FIRST status of the matching set, not necessarily the row's
+     * exact status when that set has more than one member — an updateMany cannot
+     * report which row-status it matched. It is named `firedFrom` rather than
+     * `previousStatus` for exactly that reason. A caller that needs the precise value
+     * must read it itself (adminForceCancel does).
+     */
+    auditWithinTx?: (
+      tx: Prisma.TransactionClient,
+      firedFrom: DeliveryStatus | null,
+    ) => Promise<void>,
   ): Promise<boolean> {
     // Split the caller's allowed set by whether a drone is AIRBORNE in that status,
     // and run whichever halves are non-empty. Every caller today passes a set that
@@ -1010,22 +1032,44 @@ export class DeliveriesService {
       (s) => !FAILABLE_STATUSES.includes(s),
     );
 
-    let matched = 0;
-    let airborne = false;
-    if (groundedAllowed.length) {
-      ({ count: matched } = await this.prisma.delivery.updateMany({
-        where: { id: deliveryId, status: { in: groundedAllowed } },
-        data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
-      }));
-    }
-    if (matched === 0 && airborneAllowed.length) {
-      ({ count: matched } = await this.prisma.delivery.updateMany({
-        where: { id: deliveryId, status: { in: airborneAllowed } },
-        data: { status: DeliveryStatus.DELIVERY_FAILED, failureReason: reason },
-      }));
-      airborne = matched > 0;
-    }
-    if (matched === 0) return false;
+    // The CAS and the audit row co-commit or neither happens; the cleanup that
+    // follows is deliberately OUTSIDE, because it does network I/O.
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      let matched = 0;
+      let firedFrom: DeliveryStatus | null = null;
+      let wasAirborne = false;
+
+      if (groundedAllowed.length) {
+        ({ count: matched } = await tx.delivery.updateMany({
+          where: { id: deliveryId, status: { in: groundedAllowed } },
+          data: {
+            status: DeliveryStatus.DELIVERY_FAILED,
+            failureReason: reason,
+          },
+        }));
+        if (matched > 0) firedFrom = groundedAllowed[0] ?? null;
+      }
+      if (matched === 0 && airborneAllowed.length) {
+        ({ count: matched } = await tx.delivery.updateMany({
+          where: { id: deliveryId, status: { in: airborneAllowed } },
+          data: {
+            status: DeliveryStatus.DELIVERY_FAILED,
+            failureReason: reason,
+          },
+        }));
+        if (matched > 0) {
+          wasAirborne = true;
+          firedFrom = airborneAllowed[0] ?? null;
+        }
+      }
+      if (matched === 0) return null;
+
+      if (auditWithinTx) await auditWithinTx(tx, firedFrom);
+      return { airborne: wasAirborne };
+    });
+
+    if (!outcome) return false;
+    const airborne = outcome.airborne;
 
     // TWO independent reasons to keep an aircraft out of the dispatchable pool,
     // and the second one used to be missing.

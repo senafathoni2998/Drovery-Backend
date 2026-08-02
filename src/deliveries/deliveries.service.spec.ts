@@ -1419,6 +1419,98 @@ describe('DeliveriesService', () => {
         status: 'AVAILABLE',
       });
     });
+
+    it('runs the audit callback inside the CAS transaction, before any cleanup', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        undefined,
+        audit,
+      );
+
+      // Co-committed with the transition, not bolted on after it.
+      expect(prisma.$transaction).toHaveBeenCalled();
+      expect(audit).toHaveBeenCalledTimes(1);
+      // And it learns which status the transition fired FROM — the fact that decides
+      // whether an aircraft was airborne.
+      //
+      // Read that literally: firedFrom is the FIRST member of the set the CAS matched,
+      // NOT a read-back of the row's exact status. The row here really is IN_TRANSIT,
+      // yet the callback is handed DRONE_ASSIGNED, because an updateMany over a
+      // five-member set cannot report which member it matched. What it DOES establish
+      // is the airborne-ness the aircraft disposition turns on: the value is always a
+      // member of the set that matched. A caller needing the precise status must read
+      // it itself — which is why the parameter is `firedFrom` and not `previousStatus`.
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.DRONE_ASSIGNED);
+      expect(FAILABLE_STATUSES).toContain(audit.mock.calls[0][1]);
+    });
+
+    it('hands the callback the exact status when the caller narrows to one', async () => {
+      // The corollary of the caveat above: firedFrom is precise exactly when the
+      // matching set is a singleton. The pre-flight abort passes [SCHEDULED], so a
+      // future operator-initiated caller narrowing the same way gets an exact answer.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        [DeliveryStatus.IN_TRANSIT],
+        audit,
+      );
+
+      expect(audit.mock.calls[0][1]).toBe(DeliveryStatus.IN_TRANSIT);
+    });
+
+    it('does not audit a transition that did not happen', async () => {
+      deliveryReallyIn(DeliveryStatus.DELIVERED); // outside FAILABLE_STATUSES
+      const audit = jest.fn().mockResolvedValue(undefined);
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+        undefined,
+        audit,
+      );
+
+      expect(applied).toBe(false);
+      expect(audit).not.toHaveBeenCalled();
+    });
+
+    it('rolls the failure back when the audit write throws', async () => {
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+      const audit = jest
+        .fn()
+        .mockRejectedValue(new Error('audit write failed'));
+
+      await expect(
+        service.failExceptional(
+          'delivery-1',
+          'MECHANICAL' as any,
+          undefined,
+          audit,
+        ),
+      ).rejects.toThrow('audit write failed');
+
+      // The cleanup must not have run — the transition it cleans up after never committed.
+      expect(prisma.drone.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('is byte-identical for callers that pass no callback', async () => {
+      // The watchdog and the pre-flight abort are not operator actions and get no row.
+      deliveryReallyIn(DeliveryStatus.IN_TRANSIT);
+
+      const applied = await service.failExceptional(
+        'delivery-1',
+        'MECHANICAL' as any,
+      );
+
+      expect(applied).toBe(true);
+      expect(prisma.drone.updateMany).toHaveBeenCalled(); // cleanup still ran
+    });
   });
 
   describe('create — serviceability gate', () => {
