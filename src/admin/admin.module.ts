@@ -6,6 +6,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { AdminController } from './admin.controller';
 import { AdminSupportController } from './admin-support.controller';
 import { AdminService } from './admin.service';
+import { AdminAuditService } from './audit/admin-audit.service';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { AdminService } from './admin.service';
     WalletModule, // WalletService (refund credit)
   ],
   controllers: [AdminController, AdminSupportController],
-  providers: [AdminService],
+  providers: [AdminService, AdminAuditService],
+  exports: [AdminAuditService],
 })
 export class AdminModule {}
