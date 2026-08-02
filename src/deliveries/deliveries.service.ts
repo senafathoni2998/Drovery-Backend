@@ -90,6 +90,14 @@ const MAX_TRACKING_ID_TRIES = 5;
 // shardCount>1. Orphaned reservations (a failure between reserve and delivery-create) are
 // reversed by the EXISTING idempotent compensations (releaseForDelivery/refundForDelivery).
 // Default OFF = today's single co-committing $transaction, byte-identical.
+//
+// ONE KNOWN EXCEPTION, taken deliberately: the operator audit row. When an admin route
+// supplies an `auditWithinTx` callback, an actor-rooted AdminAuditLog co-commits with the
+// delivery-rooted CAS — in `adminForceCancel`, in `failExceptional`, and in
+// `DroneCommandService.issue`. The reasoning and the cost it accepts are written once, in
+// the block comment above `adminForceCancel`'s `$transaction`. This pointer exists only
+// so the rule above is not read as unbroken. (Deliberately no line numbers: adding these
+// six lines moved every one of them.)
 const DELIVERY_DEBIT_FIRST = process.env.DELIVERY_DEBIT_FIRST === 'true';
 
 const CANCELABLE_STATUSES: DeliveryStatus[] = [
