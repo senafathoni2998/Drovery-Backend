@@ -392,7 +392,12 @@ export class AdminService {
           action: AdminAuditAction.DRONE_CREATE,
           targetType: AdminAuditTargetType.DRONE,
           targetId: drone.id,
-          args: pickAllowed(AdminAuditAction.DRONE_CREATE, dto as never),
+          // Sourced from the CREATED ROW, not the DTO — see createPromo below, which
+          // must do this because `code` is normalized on write. Doing the same here
+          // even though today's allowed fields pass through unchanged means Task 6
+          // and any later create route copy the invariant that survives a create
+          // gaining its own normalization, not the one that happens to work today.
+          args: pickAllowed(AdminAuditAction.DRONE_CREATE, drone as never),
         });
         return drone;
       });

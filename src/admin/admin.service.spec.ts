@@ -457,6 +457,7 @@ describe('AdminService', () => {
           discountValue: 5,
         } as any),
       ).rejects.toThrow(ConflictException);
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
 
     it('rejects updating a PERCENT promo above 100%', async () => {
@@ -549,16 +550,120 @@ describe('AdminService', () => {
 
     it('does not record a drone registration that failed on a duplicate serial', async () => {
       prisma.$transaction.mockImplementation((fn: any) => fn(prisma));
+      // A REAL PrismaClientKnownRequestError, not a look-alike — createDrone's catch
+      // guards on `instanceof`, and a plain Error with matching fields would rethrow
+      // raw and let this test pass for the wrong reason (it would prove nothing about
+      // the P2002 path specifically; only that createDrone doesn't audit on ANY throw).
       prisma.drone.create.mockRejectedValue(
-        Object.assign(new Error('dup'), {
+        new Prisma.PrismaClientKnownRequestError('dup', {
           code: 'P2002',
-          name: 'PrismaClientKnownRequestError',
+          clientVersion: 'x',
         }),
       );
 
       await expect(
         service.createDrone(actor, { serial: 'DRV-001' } as any),
       ).rejects.toThrow();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('records a DRONE_CREATE row — action, target and args, sourced from the created row', async () => {
+      // Positive assertion: nothing else in the file checks that createDrone writes a
+      // row at all — deleting the whole audit.recordWithinTx call left every other
+      // test green.
+      prisma.drone.create.mockResolvedValue({
+        id: 'dr-9',
+        serial: 'X9',
+        model: 'Drovery X9',
+        maxPayloadKg: 3,
+        rangeKm: 20,
+        homeBaseLat: 1,
+        homeBaseLng: 2,
+      });
+
+      await service.createDrone(actor, {
+        serial: 'X9',
+        model: 'Drovery X9',
+        maxPayloadKg: 3,
+        rangeKm: 20,
+        homeBaseLat: 1,
+        homeBaseLng: 2,
+      } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'DRONE_CREATE',
+          targetType: 'DRONE',
+          targetId: 'dr-9',
+          args: {
+            serial: 'X9',
+            model: 'Drovery X9',
+            maxPayloadKg: 3,
+            rangeKm: 20,
+            homeBaseLat: 1,
+            homeBaseLng: 2,
+          },
+        }),
+      });
+    });
+
+    it('records a PROMO_CREATE row sourced from the created row, so the audited code is the normalized one', async () => {
+      // Positive assertion (nothing else pins the write) AND the createPromo judgment
+      // call: pickAllowed reads the CREATED ROW, not the raw DTO, specifically because
+      // `code` is normalized on write (trim + uppercase). Submitting lowercase and
+      // asserting uppercase in the audit row pins both at once — reverting the source
+      // to `dto` would record 'save10' and fail this test.
+      prisma.promoCode.create.mockResolvedValue({
+        id: 'p-9',
+        code: 'SAVE10',
+        discountType: 'PERCENT',
+        discountValue: 10,
+        maxRedemptions: null,
+        endsAt: null,
+      });
+
+      await service.createPromo(actor, {
+        code: 'save10',
+        discountType: 'PERCENT',
+        discountValue: 10,
+      } as any);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'admin-1',
+          actorRole: 'ADMIN',
+          action: 'PROMO_CREATE',
+          targetType: 'PROMO',
+          targetId: 'p-9',
+          // maxRedemptions/endsAt come through as explicit null, not omitted: sourcing
+          // from the created row (not the DTO) means pickAllowed sees the persisted
+          // default, and pickAllowed only skips `undefined`, not `null`.
+          args: {
+            code: 'SAVE10',
+            discountType: 'PERCENT',
+            discountValue: 10,
+            maxRedemptions: null,
+            endsAt: null,
+          },
+        }),
+      });
+    });
+
+    it('writes no audit row when updatePromo matches nothing', async () => {
+      // Mirrors 'writes no audit row when the refund loses its single-winner gate'.
+      // Neither half of this guard was pinned before: the PERCENT>100 test never
+      // reaches updateMany, and the valid-update test mocks { count: 1 }. The mock's
+      // updateMany default is already { count: 0 } — no override needed.
+      prisma.promoCode.findUnique.mockResolvedValue({
+        id: 'p-1',
+        discountType: 'PERCENT',
+      });
+
+      await expect(
+        service.updatePromo(actor, 'p-1', { discountValue: 50 } as any),
+      ).rejects.toMatchObject({ status: 404 });
       expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
   });
