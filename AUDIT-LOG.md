@@ -1934,3 +1934,363 @@ Every task was reviewed, and the reviews are most of why the increment is worth 
 - Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
 - Per-aircraft ingest credentials (11.2); the saturation queue; Phase 12 items 12.4–12.6.
 - **Phase 10** still blocked on Stripe test keys.
+
+---
+
+## Phase 12 (increment 5) — Airspace as data — DONE
+
+**Date:** 2026-08-10
+**Branch:** `fix/audit-phase-12-airspace-as-data` (backend)
+**Covers plan items:** 12.4 (airspace as data), in full
+
+### Why this exists
+
+Restricted airspace was two hardcoded circles in `serviceability.constants.ts` — Soekarno-Hatta
+and Halim. A no-fly zone was a 2D disc with no altitude and no clock: a temporary flight
+restriction for an incident could not be expressed at all, and changing the airspace required a
+code change, a review, a build and a release. An emergency TFR on a deploy cycle is not a
+restriction anybody can rely on.
+
+### What changed
+
+**`airspace_zones`** — new table, and deliberately **not partitioned**: it is a small
+operator-maintained registry read on every quote, not an append-only log. One migration
+(`20260809133410_add_airspace_zones`) carries all of it — `CREATE TYPE "AirspaceZoneKind"`
+(`AIRPORT | MILITARY | TEMPORARY | EVENT`), the three `AdminAuditAction` values, the
+`AdminAuditTargetType.AIRSPACE_ZONE` value, the table, the `active` index and the seed. One file
+is safe here for a specific reason worth keeping: Postgres will not let `ALTER TYPE … ADD VALUE`
+have its new value *used* in the same transaction, and Prisma wraps each migration in one — the
+seed writes `AirspaceZoneKind`, which is created outright by this file, and never an
+`AdminAuditAction`, which is extended by it.
+
+**The seed is the load-bearing statement.** Deleting `NO_FLY_ZONES` without it would have opened
+the airspace this system protects with every test still green — the geometry would simply have
+found no zones. The two rows carry the constant's coordinates and radii verbatim, and the
+migration says so at the INSERT. The reviewer compared them against the deleted constant
+character by character rather than by eye.
+
+**`AirspaceService` — cached, and it fails CLOSED.** `inForceZones(now)` returns the zones that
+are switched on *and* inside their window, from an in-memory `{at, zones}` cache bounded by
+`AIRSPACE_CACHE_TTL_MS` (default 30 s, now documented in `.env.example`). It does not decide what
+a failure means: it logs and **throws**, and `ServiceabilityService` turns that into a hard block.
+Keeping the policy at the caller is what puts the fail-closed decision on screen next to the
+fail-open weather check it contradicts.
+
+The two halves of "in force" are split on purpose. `active` is the indexed kill-switch and is
+filtered in SQL; the time window is applied in memory on top. Pushing a `NOW()` comparison into a
+query whose result is then cached for 30 s would be false precision.
+
+**A failed query never populates the cache.** That is the fail-closed rule in the one place it is
+easiest to lose: caching `[]` after a throw converts a single bad query into a TTL-long window of
+open airspace.
+
+**`ServiceabilityService` reads the database, and the geometry is untouched.** All four geometry
+functions are byte-identical to what the constant fed; the spec diff for the swap was 75
+insertions and one deletion, the deletion being the constructor line. `NO_FLY_ZONES` is gone from
+`serviceability.constants.ts`, replaced by a pointer to the table and the migration — the ~110 km
+Bandung-demo rationale it carried stays there, because that reasoning is about `SERVICE_AREAS`
+and the demo route, both of which are still in that file.
+
+**Fail CLOSED, deliberately the inverse of weather, and both are right.** Weather is advisory: an
+unreachable forecast must never ground the fleet, so `WeatherService` fails open. Airspace is not
+advisory. If the zone list cannot be read we do not know whether the route crosses restricted
+airspace, and the only safe answer to "I don't know" is no. The asymmetry is commented at both
+catch sites so nobody later "fixes" it into consistency.
+
+**The time window is evaluated at quote time and again at pre-flight, and the pre-flight
+evaluation is the authoritative one.** For a delivery scheduled 60 days out, the quote answers
+"is this zone in force today", which is the wrong question — and is exactly why increment 2
+exists. The re-check immediately before rotor spin-up evaluates the window at launch time. This
+increment does not change that asymmetry; it is the reason a time-windowed zone is safe to model
+at all.
+
+**Altitude is stored, audited and validated — and it does NOT gate planning.** `floorM`/`ceilingM`
+are on the table, in the allowlist, and rejected as a 400 when inverted. They do not relax a
+block: a quote has no altitude, nothing decides a cruise level before launch, so **any active zone
+whose horizontal extent the route touches blocks regardless of the vertical bounds**. That is
+identical to today's behaviour for surface-to-unlimited zones and conservative for the rest. The
+400 on an inverted pair protects data quality for a future in-flight breach check, not today's
+routing decision. The schema comment says this at the columns themselves.
+
+**Four audited admin routes** — `GET/POST/PATCH/DELETE /admin/airspace`, ADMIN-only, actor from
+`@AuditActor()`. This is the first consumer of increment 4's audit machinery from outside the
+increment that built it, and it generalised: three `AUDIT_FIELD_ALLOWLIST` entries and nothing
+else. `recordWithinTx(tx, …)` co-committed, payloads through `pickAllowed`/`diffAllowed`, the
+404/400 guard before the audit call, and an `expectAuditedThrough` identity assertion per mutation.
+
+`DELETE` is a **deactivation**. `listAirspaceZones()` returns everything including deactivated
+zones, unpaginated, read from the primary. `invalidate()` runs **after** the transaction commits,
+in a `dropZoneCacheAfterCommit()` helper that carries the reasoning once.
+
+**An i18n defect found on the way and fixed.** The fail-closed block was passing the English
+phrase `'unverified airspace'` as `{zoneName}` into the `NO_FLY_ZONE` template, which rendered
+`"Rute dibatasi di dekat unverified airspace"` in the Indonesian catalog. `ServiceabilityResult`
+gained a presentation-only `messageKey?`, the catch sets
+`error.serviceability.AIRSPACE_UNVERIFIED` and passes no params, and the boundary prefers it over
+its derived `error.serviceability.<CODE>`. The machine code stays `NO_FLY_ZONE`. `messageKey` and
+`params` are now both declared on `ServiceabilityResultDto`; both were already being returned by
+`POST /pricing/estimate` and neither was in the OpenAPI contract.
+
+**`src/admin/admin.module.spec.ts`** — the repo's first module-compile test, added because
+nothing in the suite compiled a Nest graph and the new `AdminModule → ServiceabilityModule` edge
+was therefore unproven by anything but booting the app by hand. It resolves the real `AdminService`
+in ~3 s with no DB, Redis or MQTT, and exits without `--forceExit`.
+
+**`src/serviceability/airspace.db.spec.ts`** — the repo's first DB-backed spec. Every other
+serviceability test stubs `inForceZones`, so the whole suite would stay green with an empty
+`airspace_zones` table. This one runs the real chain `PrismaClient → AirspaceService →
+ServiceabilityService`. It needed no new CI machinery: `ci.yml` already starts Postgres, sets
+`DATABASE_URL` and runs `prisma migrate deploy` (which executes the seed) before `npm test`, and
+jest's `rootDir` is `src`. It guards itself against rotting with an assertion *outside* the
+`DATABASE_URL` guard — `if (process.env.CI) expect(DATABASE_URL).toBeDefined()` — because a
+skipped test reports green.
+
+### Verification
+```
+tsc (tsconfig.build.json): clean
+tsc (tsconfig.json):       1 pre-existing error (deliveries.controller.spec.ts:120), unchanged
+lint: 98 problems (0 errors, 98 warnings)   ← baseline unchanged
+Test Suites: 92 passed, 92 total            (+4)
+Tests:       1039 passed, 1039 total        (+57)
+  without DATABASE_URL: 1035 passed, 4 skipped, 1039 total, 92 suites
+  (the 4 are airspace.db.spec.ts's dbDescribe block; its anti-rot test is not one of them)
+prisma:drift-check: No difference detected
+npm run build (nest build): clean
+live catalog: airspace_zones → ORDINARY table (relkind 'r'), NOT partitioned, 2 rows
+  Halim Perdanakusuma Airport          | AIRPORT | -6.2647 | 106.9308 | 3 km | floor NULL | ceiling NULL | active | window NULL–NULL
+  Soekarno-Hatta International Airport | AIRPORT | -6.1256 | 106.6558 | 5 km | floor NULL | ceiling NULL | active | window NULL–NULL
+```
+
+Both seeded rows are permanent, surface-to-unlimited and switched on — which is to say the
+database reproduces the deleted constant's behaviour exactly, which was the regression that
+mattered.
+
+**Mutation testing — 15 mutations, 15 caught**, re-run as one consolidated sweep across the whole
+increment on top of the per-task sets each task ran for itself (21 in Task 4 alone). Every
+mutation was gated on `tsc -p tsconfig.json --noEmit` staying at its one-error baseline before
+jest ran, whole spec files were run, never `jest -t`, and the harness treats a run that executed
+zero tests as a failure rather than a pass. Each edit asserts its anchor text occurs exactly once,
+so a silently-unapplied mutation cannot be scored as killed.
+
+`inForceZones` returning `[]` instead of throwing; the `checkServiceability` catch proceeding with
+an empty zone list instead of blocking; a failed query populating the cache (throw preserved, so
+only the caching property changes); each half of the time-window filter dropped, separately;
+`where: { active: true }` widened to `{}`; `invalidate()` never called; `invalidate()` moved inside
+the transaction; the create's audit write hoisted out of its transaction as a thunk over `tx`;
+the same write handed `this.prisma` while staying lexically inside the callback; deactivate
+hard-`DELETE`ing the row; the inverted-window validation removed; the create audit payload sourced
+from the DTO instead of the created row; `ServiceabilityModule` removed from `AdminModule`; the
+migration-parity fixture drifted (`radiusKm` 5 → 8).
+
+Three results are worth reading rather than counting:
+
+- **The client-substitution mutation is caught by exactly one test**, and it is the fifth-marker
+  ordering test Task 4 added beyond its brief. This reproduces increment 4's central lesson at a
+  new call site: the ordering markers fire on `adminAuditLog.create`, which is the same `jest.fn`
+  on `prisma` and `prisma.txClient` by design, so only an identity assertion can see it.
+- **The fixture-drift mutation is caught by the two dedicated drift specs and by nothing in
+  `serviceability.service.spec.ts`** — all 18 of that file's tests stayed green with the fixture
+  claiming a radius the database does not have (2 red out of 26 across the three specs run, one
+  in each drift spec). That is precisely the failure those two specs exist for: the serviceability
+  suite would go on proving things about airspace that does not exist, green the whole time.
+- **Widening `where` to `{}` is invisible to the DB spec**, because both seeded rows are active.
+  The unit assertion on the `where` clause is the only thing that sees an operator's kill-switch
+  being ignored.
+
+### Decisions made
+
+- **Circles, not polygons.** The existing `inCircle`/`routeNearCircle` geometry is tested and
+  correct; polygon containment plus segment-polygon intersection is a materially larger problem
+  and nothing in the audit asks for it. A circle set approximates a real TFR adequately, and this
+  increment's job was to move airspace from code to data, not to change what a zone can be.
+- **Delete is a deactivation, never a row delete.** A zone that once existed is part of the record
+  of *why a past delivery was refused*. Hard-deleting it makes that refusal unexplainable
+  afterwards — the same reasoning that makes the audit log worth having. `active` is also
+  deliberately independent of the time window: an operator needs to switch a zone off *now*
+  without editing its dates, and to pre-stage a future TFR without it being live.
+- **The zone list is unpaginated and includes inactive zones, and reads the primary.** Hiding
+  deactivated zones from the operator's own registry would put the record of that past refusal
+  back out of reach; `readWithFallback` would let replica lag show an operator a registry without
+  the emergency restriction they just added. Both are conscious bets on this staying a small
+  hand-maintained registry, both are stated in the code, and **if TFRs accumulate the unpaginated
+  read is the first thing to revisit.** The decision is pinned by a test asserting `where` is
+  undefined, which will need a deliberate edit alongside any future filter.
+- **The i18n fix is a `messageKey` override, not a new `ServiceabilityCode`.** Promoting
+  `AIRSPACE_UNVERIFIED` to a real code is a client-visible contract change — it appears in the
+  duplicated union in `pricing/dto/pricing-response.dto.ts` and in every client switching on
+  `codes` — and it would silently drop pre-flight's abort reason from `UNSAFE_DROP_ZONE` to
+  `OTHER`, because `classifyPreflight` keys that mapping on `NO_FLY_ZONE`. A behaviour change of
+  that size must not travel inside an admin-CRUD task. The comment at the catch site says the key
+  is deliberately not a code, and links the open taxonomy question below, because whoever settles
+  that will want exactly this name promoted.
+- **Fail closed, and comment the inversion at both sites.** See *What changed*. The cost of the
+  choice is real and is filed as a follow-up, not hidden.
+- **The service throws; the caller decides.** `AirspaceService` could have returned a
+  discriminated result. Throwing keeps the policy — and the one-line justification for it — at the
+  call site, next to the weather catch that does the opposite three lines later.
+- **Validate the MERGED values on update, not the DTO.** `activeUntil` cannot be inverted on its
+  own, so a DTO-only check waves through `PATCH { activeUntil }` that closes the window before the
+  *stored* `activeFrom` opens it — storing exactly the never-in-force zone the 400 exists to
+  reject. Both bounds use `>=`, not `>`: a window whose ends coincide is in force for one instant
+  and a floor level with its ceiling is a zone of zero height. Neither is a restriction.
+- **Deactivation records `pickAllowed` pairs, not a diff**, matching `setRole` and
+  `setTicketStatus` as the other single-field setters. `diffAllowed` on an already-inactive zone
+  emits `before: null, after: null` — a row asserting that an operator touched the zone and
+  changed nothing, which the `batteryPercent` entry documents as worse than no row at all.
+- **Invalidate after the commit, not inside it.** Inside, it drops the cache for a write that may
+  still roll back, which is merely wasteful. Immediately *before* the commit is the real hazard: a
+  reader racing that gap refills the cache from a snapshot predating the new zone and then serves
+  it for a full TTL.
+- **`0` is an honored TTL, a negative one is not.** The original `Number(env) || 30_000` got both
+  branches wrong — it discarded an explicit `0` (which should mean "no caching") and passed a
+  negative value straight through (which disabled the cache by accident). It is now a pure
+  `resolveAirspaceCacheTtlMs(raw, fallback)` with four unit tests, following `retentionFor`'s
+  precedent rather than the single-branch `Number(x) || default` idiom used elsewhere — the
+  distinction being that this parse is multi-branch and has already been backwards once.
+
+### Deviations from the plan
+
+- **Two forward references in the plan would have broken `tsc` and nothing else.** The plan put
+  the `AdminAuditTargetType.AIRSPACE_ZONE` extension in Task 4 with a second migration, and left
+  the three `AUDIT_FIELD_ALLOWLIST` entries there too. `AUDIT_FIELD_ALLOWLIST` is a
+  `Record<AdminAuditAction, readonly string[]>` — a **total** map — so extending the enum breaks
+  the typechecker until the entries exist. Because `isolatedModules` makes ts-jest transpile-only,
+  **jest and eslint stay green through that break**; only a direct `tsc --noEmit` sees it. Both
+  were pulled into Task 1's single migration and its own gate. Mechanical, no design decision
+  changed.
+- **The applied migration was never edited.** Its checksum is what `migrate deploy` verifies, so
+  the demo-route rationale stayed in `serviceability.constants.ts` as a pointer rather than moving
+  into the SQL.
+- **The serviceability spec defaults to a `SEEDED_ZONES` fixture, not `[]`.** The brief's `[]`
+  default would have silently gutted `passes the Bandung demo route`: under the constant, every
+  test in that file ran with the two Jakarta zones in force, which is what made that test prove
+  the airports do not reach Bandung. The cost of getting this wrong was quantified rather than
+  asserted — with `[]`, a mutation multiplying every zone radius by 30 leaves that test green.
+- **`SEEDED_ZONES` lives in `__fixtures__/`, not in a spec.** Exporting it from a `*.spec.ts`
+  makes every importer re-register that file's whole `describe` block; the demonstration was 17
+  tests running where 1 should have.
+- **`fetchActiveRows()` was extracted from the brief's literal `let rows; try { … }` shape**,
+  which made type-aware eslint see `rows` as `any` and added warnings above baseline. The
+  reviewer reconstructed the brief's shape and measured exactly 17, so the justification is real
+  rather than rounded.
+- **A narrow `tsconfig.build.json` exclude was granted** for `**/*.fixture.ts`, so the fixture does
+  not ship in `dist/`. The standing no-tsconfig rule exists to stop ts-jest transform churn; a
+  build-output exclude changes what is bundled, not how anything compiles or how tests run.
+- **The DB spec asserts CONTAINMENT, not equality.** Demanding the table hold nothing else fails
+  for a developer with a local zone — punishing normal use rather than catching a bug, and a spec
+  that cries wolf locally gets ignore-listed within a week. The risk is a seeded row going
+  missing or drifting, and containment catches all of that; the values stay exact.
+- **Three specs are not in the plan at all**: `airspace-seed.spec.ts`, `airspace.db.spec.ts` and
+  `admin.module.spec.ts`. All three came out of review.
+
+### What the review caught
+
+- **A fix silently disarmed the test guarding this service's most important property.** Round 1
+  added an `at >= this.cache.at` freshness guard (correctly — the unsigned expiry check served the
+  cache forever for any `now` behind the fill time). Round 2 found that the cache-poisoning
+  mutation then compiled and passed 12/12. The mechanism: `does not cache a failure` used
+  **hardcoded absolute dates** that had aged into the past, a poisoning bug stamps the *real*
+  wall clock, and the new guard read the fixture's stale `at` as older than the poisoned entry and
+  re-queried — passing for the wrong reason. Before the fix, the unsigned comparison caught it on
+  any date forever. **A hardcoded-date fixture is a time bomb: it degrades with no code change at
+  all.** Fixed with relative timestamps, and the whole spec audited for the same shape; the
+  re-reviewer confirmed clock-independence by re-running with the system time faked to 2050.
+- **A comment licensed deleting code that is load-bearing.** Task 3 correctly found that dropping
+  the two endpoint checks kills no test — `zoneOnRoute` subsumes `zoneContaining` under exact
+  geometry — and wrote that down. The reviewer reimplemented the geometry and refuted the general
+  claim: `routeNearCircle` projects equirectangularly and `inCircle` uses haversine, so the
+  subsumption fails **0 times in 400k** inside the default Indonesian envelope but **308 in 600k**
+  at 70–84° latitude under the supported `SERVICE_AREA_GLOBAL`, and **5468 in 400k** with
+  `MAX_ROUTE_KM=2000`. The comment now says the absence of a failing test is a gap in the tests,
+  not evidence the lines are dead. No contrived test was added to force a kill — that would assert
+  implementation shape, not behaviour.
+- **`@IsOptional()` skips `null` as well as `undefined`, and the guard covered half the columns.**
+  An explicit `{"active": null}` was validated by nothing, kept by `whitelist: true`, passed
+  through by `!== undefined`, and reached Prisma as a 500. The defect was *inside the new
+  reasoning*: `AirspaceZonePatch` was built specifically because `@IsOptional()` skips null, that
+  reason was written into a file comment, and it was then applied to the five nullable columns and
+  not the six `NOT NULL` ones. Having named the hazard and guarded half of it is worse than not
+  noticing, because the comment reads as though the whole surface was considered.
+- **"From the created ROW, not the DTO" — the first invariant the task names — was pinned by
+  nothing.** Both mutations survived the entire suite, because the fixture mocked the created row
+  with the same values the DTO carried, making the two sources indistinguishable by construction.
+  The fixtures now disagree on purpose.
+- **"`AppModule` is too heavy to test" was false, and would have become received wisdom.** The
+  >120 s hang came from a `new Proxy({}, { get: () => jest.fn() })` stub: it answers `then` with a
+  function, Nest `await`s each factory result, and `await` on a thenable calls
+  `then(resolve, reject)` — which a bare `jest.fn()` never calls. Returning `undefined` for `then`
+  compiles the same graph in 27 ms. The spec that came out of it is worth the entry on its own:
+  removing `ServiceabilityModule` from `admin.module.ts` compiles clean and leaves
+  **94 green tests over an application that cannot boot**.
+- Smaller, all fixed: `return await` dropped (the fail-closed throw survives, but the ops warning
+  silently never fires); both cache boundary inclusivities flippable with all tests green; the
+  `>=` altitude/window boundary unpinned; a list assertion that passed when `findMany` was never
+  called at all; four routes without Swagger response types.
+
+One reporting slip, recorded because this file has a history of them: a round-2 report showed
+"12 total" copy-pasted from round 1 before four tests existed — the actual number was 16, and the
+claim it supported was correct. Task 4's own mutation table said 13 above 16 rows. Both were
+corrected in place.
+
+### Left undone / follow-ups
+
+- **In-flight breach detection against `floorM`/`ceilingM`.** The vertical extent is stored,
+  audited and validated, and **nothing reads it.** `FlightFrame.altitudeM` has existed since
+  increment 1, so the data to detect a drone at 400 m over a zone ceilinged at 150 m is already
+  being recorded — there is simply no detector. This is the follow-up the altitude columns exist
+  for, and until it lands the columns are documentation with a 400 attached.
+- **A transient DB blip currently maps to a HARD, non-retryable code, and permanently cancels a
+  paid delivery.** The fail-closed block returns `NO_FLY_ZONE`. `classifyPreflight`
+  (`simulation/preflight.ts`) maps that to `ABORT` + `UNSAFE_DROP_ZONE`, the processor ends the
+  delivery **with a refund**, and `deliveries.service.ts` maps it to a 422 rather than a 503. So an
+  airspace check that merely could not be *verified* gets the same treatment as a route that
+  genuinely crosses restricted airspace and always will — cancel and refund, instead of hold and
+  look again. **Failing closed is right; reusing a non-retryable code for a transient cause is
+  the flaw.** The honest fix is a distinct TRANSIENT code routed to `HOLD` through the machinery
+  the weather hold already uses, and `error.serviceability.AIRSPACE_UNVERIFIED` already exists as
+  a message key and is the natural name to promote. Deliberately deferred: it changes the
+  pre-flight taxonomy increment 2 established (today only `weatherHold` yields `HOLD`) and the
+  422-vs-503 split, and that must be a decision of its own, not a side effect of an airspace task.
+- **The `@IsOptional()` null hole is repo-wide, not local to airspace.** Every `@IsOptional()`
+  field patching a `NOT NULL` column has the same shape; `updateDrone` is a confirmed instance.
+  What shipped here is a service-local guard. The durable fix is at the DTO layer — a decorator
+  that skips only `undefined`, `@ValidateIf((_, v) => v !== undefined)` — which would also produce
+  the standard localized validation error instead of a bespoke one, and which touches every PATCH
+  DTO in the codebase. Its own increment.
+- **Polygons, and any geometry beyond circles.** A circle set approximates a TFR; a real one is a
+  polygon, sometimes a corridor.
+- **No import of real aeronautical data** (NOTAM/AIP feeds). The registry is hand-maintained.
+- **No admin UI for any of this** — the four routes exist and nothing renders them. That is 12.5,
+  which is also where the audit log finally gets a reader.
+- **The zone list is unpaginated** and becomes wrong the moment TFRs accumulate. Stated in the
+  code and pinned by a test, so the change will be deliberate rather than silent.
+- **`airspace.db.spec.ts` is the repo's FIRST DB-backed spec**, so it is the first thing to break
+  if CI's Postgres service or the `prisma migrate deploy` step is ever removed. Its anti-rot
+  assertion catches `DATABASE_URL` vanishing, but not the seed step being dropped with the
+  variable still set — that fails loudly rather than skipping, which is the right direction, but
+  it points at airspace rather than at the workflow.
+- **`admin.module.spec.ts` needs a new token override every time `AdminModule`'s graph gains a
+  queue.** It currently overrides `SIM_QUEUE` and `OUTBOX_QUEUE`; without them a real
+  `BullModule.forRoot` connection makes `moduleRef.close()` emit an unhandled
+  `Error: Connection is closed.` that **crashes the jest worker** rather than failing the test.
+  Loud, but not self-explanatory; the spec comment says why the overrides exist.
+- **`AirspaceZone.name` has no unique constraint**, so two zones may share a name. Arguably correct
+  — overlapping TFRs are legitimate — but it is why `createAirspaceZone` needs no P2002 handling
+  where `createDrone`/`createPromo` do.
+- **Deactivating an already-inactive zone is idempotent**, returning 200 and a row saying
+  `before: {active: false}, after: {active: false}`. Deliberate; if a 409 is ever wanted, the test
+  named `records a deactivation that changed nothing…` is where that choice is encoded.
+- **The cache's staleness bound is per-process.** A write invalidates immediately only on the
+  instance that served it; every other replica serves its own copy for up to one TTL. And a zone
+  that comes into force **by the clock** — a future `activeFrom` crossing `now` — has no write to
+  hang an invalidation on at that moment, so it is covered by the TTL on every instance including
+  the one that created it. Both are stated on the constant and in `.env.example`.
+
+### Next
+- **Phase 12 increment 6** — flight-ops console (12.5), which renders both the audit log and the
+  airspace registry, and/or incident management (12.6).
+- The transient-airspace-code decision above, before any deployment relies on scheduled
+  deliveries surviving a database blip.
+- Battery replenishment before `LIVE_DISPATCH` is turned on anywhere.
+- Per-aircraft ingest credentials (11.2); the saturation queue; Phase 12 items 12.5–12.6.
+- **Phase 10** still blocked on Stripe test keys.
