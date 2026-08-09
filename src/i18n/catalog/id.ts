@@ -254,6 +254,8 @@ export const id: Record<string, string> = {
   'error.admin.airspace.not_found': 'Zona ruang udara "{id}" tidak ditemukan',
   'error.admin.airspace.inverted_window':
     'activeUntil harus lebih lambat daripada activeFrom — zona yang jendela waktunya tertutup sebelum terbuka tidak pernah berlaku.',
+  'error.admin.airspace.past_window':
+    'activeUntil sudah berlalu, sehingga zona ini tidak akan pernah berlaku. Untuk menghentikan keberlakuan sebuah zona sekarang, nonaktifkan zona tersebut.',
   'error.admin.airspace.inverted_altitude':
     'ceilingM harus lebih besar daripada floorM.',
   'error.admin.airspace.null_not_allowed':

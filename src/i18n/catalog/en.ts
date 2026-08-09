@@ -248,6 +248,8 @@ export const en: Record<string, string> = {
   'error.admin.airspace.not_found': 'Airspace zone "{id}" not found',
   'error.admin.airspace.inverted_window':
     'activeUntil must be later than activeFrom — a zone whose window closes before it opens is never in force.',
+  'error.admin.airspace.past_window':
+    'activeUntil is already in the past, so this zone would never be in force. To take a zone out of force now, deactivate it instead.',
   'error.admin.airspace.inverted_altitude':
     'ceilingM must be greater than floorM.',
   'error.admin.airspace.null_not_allowed':

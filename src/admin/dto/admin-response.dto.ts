@@ -160,6 +160,17 @@ export class AirspaceZoneResponseDto {
   activeUntil: Date | null;
   /** Operator kill-switch, independent of the window. */
   active: boolean;
+  /**
+   * COMPUTED, not stored: is this zone stopping anything *right now*?
+   *
+   * `active` is what the operator switched; this is what the router is actually doing.
+   * They diverge whenever a window is involved — a pre-staged TFR reads
+   * `active: true, inForce: false`, and so does one whose window has already closed —
+   * and a console showing only `active` reports protection that does not exist. Derived
+   * from the same `isZoneInForce` predicate `AirspaceService` routes on, evaluated at
+   * response time.
+   */
+  inForce: boolean;
   notes: string | null;
   createdAt: Date;
   updatedAt: Date;

@@ -2012,10 +2012,11 @@ identical to today's behaviour for surface-to-unlimited zones and conservative f
 400 on an inverted pair protects data quality for a future in-flight breach check, not today's
 routing decision. The schema comment says this at the columns themselves.
 
-**Four audited admin routes** — `GET/POST/PATCH/DELETE /admin/airspace`, ADMIN-only, actor from
-`@AuditActor()`. This is the first consumer of increment 4's audit machinery from outside the
-increment that built it, and it generalised: three `AUDIT_FIELD_ALLOWLIST` entries and nothing
-else. `recordWithinTx(tx, …)` co-committed, payloads through `pickAllowed`/`diffAllowed`, the
+**Four admin routes, three of them audited** — `GET/POST/PATCH/DELETE /admin/airspace`,
+ADMIN-only. The three MUTATIONS take their actor from `@AuditActor()` and record; the `GET` has
+neither decorator nor audit row, because a read of the zone registry changes nothing. This is the
+first consumer of increment 4's audit machinery from outside the increment that built it, and it
+generalised: three `AUDIT_FIELD_ALLOWLIST` entries and nothing else. `recordWithinTx(tx, …)` co-committed, payloads through `pickAllowed`/`diffAllowed`, the
 404/400 guard before the audit call, and an `expectAuditedThrough` identity assertion per mutation.
 
 `DELETE` is a **deactivation**. `listAirspaceZones()` returns everything including deactivated

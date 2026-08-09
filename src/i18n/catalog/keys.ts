@@ -123,6 +123,7 @@ export const ERROR_KEYS = [
   'error.admin.user.last_admin',
   'error.admin.airspace.not_found',
   'error.admin.airspace.inverted_window',
+  'error.admin.airspace.past_window',
   'error.admin.airspace.inverted_altitude',
   'error.admin.airspace.null_not_allowed',
   'error.payment.method.not_found',

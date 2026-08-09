@@ -17,6 +17,7 @@ import {
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { isZoneInForce } from '../serviceability/airspace.constants';
 import { AirspaceService } from '../serviceability/airspace.service';
 import {
   SupportChatPublisher,
@@ -734,23 +735,42 @@ export class AdminService {
    * list must see it, and replica lag would show them a registry without the zone they
    * just created. If TFRs ever accumulate to the point where this list is long, it
    * wants a page and a filter — the unpaginated read is the thing to revisit first.
+   *
+   * Each row carries a COMPUTED `inForce`. `active` is the operator's switch; `inForce`
+   * is whether the zone is actually stopping anything right now. They come apart the
+   * moment a time window is involved — a pre-staged TFR is `active: true, inForce: false`
+   * and correctly so, and a zone whose window has closed is the same pair meaning the
+   * opposite thing — and a console that shows only `active` reports protection that does
+   * not exist. `active` alone was the whole of that display until now.
+   *
+   * Derived through `isZoneInForce`, the SAME predicate `AirspaceService` routes on, for
+   * the obvious reason: a console that disagrees with the router is worse than one that
+   * says less.
    */
-  listAirspaceZones() {
-    return this.prisma.airspaceZone.findMany({
+  async listAirspaceZones(now: Date = new Date()) {
+    const zones = await this.prisma.airspaceZone.findMany({
       orderBy: [{ active: 'desc' }, { name: 'asc' }],
     });
+    return zones.map((zone) => ({
+      ...zone,
+      inForce: isZoneInForce(zone, now),
+    }));
   }
 
   /** Declare a new restricted zone. Live on the next quote this instance serves. */
   async createAirspaceZone(actor: AuditActor, dto: CreateAirspaceZoneDto) {
     const activeFrom = toDateOrNull(dto.activeFrom);
     const activeUntil = toDateOrNull(dto.activeUntil);
-    this.assertZoneBounds({
-      activeFrom,
-      activeUntil,
-      floorM: dto.floorM ?? null,
-      ceilingM: dto.ceilingM ?? null,
-    });
+    // `true`: a create always writes the window, even when it writes it as null/null.
+    this.assertZoneBounds(
+      {
+        activeFrom,
+        activeUntil,
+        floorM: dto.floorM ?? null,
+        ceilingM: dto.ceilingM ?? null,
+      },
+      true,
+    );
 
     const zone = await this.prisma.$transaction(async (tx) => {
       const created = await tx.airspaceZone.create({
@@ -813,7 +833,10 @@ export class AdminService {
         : before.activeUntil;
     const floorM = mergeField(patch.floorM, before.floorM);
     const ceilingM = mergeField(patch.ceilingM, before.ceilingM);
-    this.assertZoneBounds({ activeFrom, activeUntil, floorM, ceilingM });
+    this.assertZoneBounds(
+      { activeFrom, activeUntil, floorM, ceilingM },
+      patch.activeFrom !== undefined || patch.activeUntil !== undefined,
+    );
 
     // `!= null` on the six NOT NULL columns, `!== undefined` on the nullable ones. The
     // guard above already rejects a null here, so this is belt as well as braces — but
@@ -940,19 +963,54 @@ export class AdminService {
    * `>=` on both, not `>`: a window whose ends coincide is in force for a single
    * instant, and a floor level with its ceiling is a zone of zero height. Neither is
    * a restriction; both are almost certainly a typo.
+   *
+   * THREE checks, not two. The inverted-window check only fires when BOTH bounds are
+   * present, and the seeded airports store `activeFrom: null` — so
+   * `PATCH {"activeUntil": "2020-01-01"}` on Soekarno-Hatta was a 200 that took a
+   * protected airport out of force on the next cache refresh, while the console kept
+   * showing `active: true`. Half the stated scope of a guard whose whole reason for
+   * existing is that "never in force" must not be reachable by accident.
+   *
+   * The rule, stated plainly: to take a zone out of force NOW you deactivate it — that
+   * is what `DELETE` is for, and it keeps the row as the record of why a past delivery
+   * was refused. A write that lands a zone in an already-expired state is therefore a
+   * mistake every time; there is no legitimate request it turns away.
+   *
+   * `windowWritten` scopes it to writes that actually SET a bound. Merging alone is not
+   * enough here, and this is the one place it differs from the two checks above: an
+   * inverted window can never be a zone's stored state (this guard prevents it), but an
+   * EXPIRED window is the normal resting state of every TFR that has run its course.
+   * Gating on the merged values unconditionally would 400 an operator fixing a typo in
+   * the `notes` of a zone that closed last week — bricking the historical record this
+   * surface deliberately keeps. Touch the window and it must not land in the past; leave
+   * the window alone and the past is just history.
    */
-  private assertZoneBounds(zone: {
-    activeFrom: Date | null;
-    activeUntil: Date | null;
-    floorM: number | null;
-    ceilingM: number | null;
-  }) {
+  private assertZoneBounds(
+    zone: {
+      activeFrom: Date | null;
+      activeUntil: Date | null;
+      floorM: number | null;
+      ceilingM: number | null;
+    },
+    windowWritten: boolean,
+    now: Date = new Date(),
+  ) {
     if (
       zone.activeFrom &&
       zone.activeUntil &&
       zone.activeFrom.getTime() >= zone.activeUntil.getTime()
     ) {
       throw new AppBadRequestException('error.admin.airspace.inverted_window');
+    }
+    // `<`, not `<=`: the window closes INCLUSIVELY (`isZoneInForce` uses `>=`), so a
+    // zone expiring at exactly this instant is in force, for an instant. Matching the
+    // reader's boundary matters more than the instant does.
+    if (
+      windowWritten &&
+      zone.activeUntil &&
+      zone.activeUntil.getTime() < now.getTime()
+    ) {
+      throw new AppBadRequestException('error.admin.airspace.past_window');
     }
     if (
       zone.floorM !== null &&
@@ -975,10 +1033,11 @@ export class AdminService {
    * is not live until a TTL expires is a restriction that is not enforced.
    *
    * SCOPE, and it is narrow: this clears only THIS process's cache. Every other
-   * instance keeps serving its own copy until `AIRSPACE_CACHE_TTL_MS` elapses. That
-   * bound — and the case it does not cover, a zone that comes into force by the clock
-   * with no write to hang an invalidation on — is stated on the constant itself
-   * (`serviceability/airspace.constants.ts`).
+   * instance keeps serving its own rows until `AIRSPACE_CACHE_TTL_MS` elapses. That bound
+   * is stated on the constant itself (`serviceability/airspace.constants.ts`), and it
+   * covers WRITES only — which is all this helper is about. A zone coming into force by
+   * the clock needs no invalidation at all: `AirspaceService` evaluates the window per
+   * call, after the cache.
    */
   private dropZoneCacheAfterCommit() {
     this.airspace.invalidate();
