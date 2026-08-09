@@ -666,11 +666,17 @@ export class DeliveriesService {
     // Localize the SPECIFIC blocking reason per code (error.serviceability.<CODE>, with
     // {zoneName}/{windKph} params); fall back to the generic key if no code is present.
     // The English reasons[] + code + retryAfter stay as machine passthrough.
+    //
+    // A blocker may name its own key, which WINS over the derivation — two situations
+    // can share a code without sharing a sentence (see ServiceabilityResult.messageKey
+    // and the fail-closed airspace catch). The code itself is passed through unchanged
+    // either way, so nothing downstream of `code` notices.
     throw new AppHttpException(
       status,
-      code
-        ? `error.serviceability.${code}`
-        : 'error.delivery.serviceability.not_flyable',
+      result.messageKey ??
+        (code
+          ? `error.serviceability.${code}`
+          : 'error.delivery.serviceability.not_flyable'),
       result.params,
       {
         reasons: result.reasons,

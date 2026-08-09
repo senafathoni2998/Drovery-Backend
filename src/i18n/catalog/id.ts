@@ -167,6 +167,10 @@ export const id: Record<string, string> = {
     'Rute ini sejauh {routeKm} km — melebihi jangkauan terbang kami yang {maxKm} km.',
   'error.serviceability.NO_FLY_ZONE':
     'Rute dibatasi di dekat {zoneName} (zona larangan terbang).',
+  // Tanpa {zoneName}: ini kasus gagal-tertutup, saat daftar zona sama sekali tidak
+  // dapat dibaca, sehingga tidak ada zona yang bisa disebut namanya.
+  'error.serviceability.AIRSPACE_UNVERIFIED':
+    'Ruang udara terbatas tidak dapat diverifikasi untuk rute ini.',
   'error.serviceability.WEATHER_STORM':
     'Badai sedang membuat drone tidak dapat terbang di lokasi ini saat ini.',
   'error.serviceability.WEATHER_HOLD':

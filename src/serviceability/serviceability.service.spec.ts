@@ -211,6 +211,47 @@ describe('ServiceabilityService', () => {
     expect(result.codes).toContain('NO_FLY_ZONE');
   });
 
+  it('names its own message key when airspace is UNVERIFIABLE, and passes no zoneName', async () => {
+    // The NO_FLY_ZONE template interpolates {zoneName}. The fail-closed path has no
+    // zone — it has an unread zone list — so it used to pass the English literal
+    // 'unverified airspace' as that param, which the Indonesian catalog then rendered
+    // verbatim inside an Indonesian sentence. A dedicated key with no params fixes it
+    // at the source: there is no zone to name.
+    airspace.inForceZones.mockRejectedValue(new Error('connection reset'));
+
+    const result = await service.checkServiceability(
+      -6.9125,
+      107.611,
+      -6.92,
+      107.62,
+    );
+
+    expect(result.messageKey).toBe('error.serviceability.AIRSPACE_UNVERIFIED');
+    expect(result.params).toBeUndefined();
+    // The MACHINE code deliberately stays NO_FLY_ZONE — this is a presentation-layer
+    // override only. Promoting it to a real ServiceabilityCode changes preflight's
+    // abort reason and the pricing DTO's union; see the note in serviceability.service.
+    expect(result.codes).toEqual(['NO_FLY_ZONE']);
+  });
+
+  it('leaves a NAMED zone block on the derived key, carrying its zoneName', async () => {
+    // The other half of the override: a real zone must NOT pick up the unverifiable
+    // key, or every no-fly rejection would stop naming the zone that caused it.
+    airspace.inForceZones.mockResolvedValue([
+      { name: 'Test TFR', lat: -6.9125, lng: 107.611, radiusKm: 5 },
+    ]);
+
+    const result = await service.checkServiceability(
+      -6.9125,
+      107.611,
+      -6.92,
+      107.62,
+    );
+
+    expect(result.messageKey).toBeUndefined();
+    expect(result.params).toEqual({ zoneName: 'Test TFR' });
+  });
+
   it('does not consult the weather API once airspace has blocked', async () => {
     // The no-fly check short-circuits, as it did when zones were a constant.
     airspace.inForceZones.mockRejectedValue(new Error('connection reset'));

@@ -86,10 +86,32 @@ export class ServiceabilityService {
       this.logger.error(
         `Airspace lookup failed — blocking the route: ${(error as Error).message}`,
       );
+      // The message is overridden rather than parameterised. `error.serviceability
+      // .NO_FLY_ZONE` interpolates {zoneName}, and there is no zone here — there is an
+      // unread zone list. Passing a stand-in phrase (this used to send the English
+      // literal 'unverified airspace') puts an untranslated fragment inside every
+      // non-English sentence, which is what the Indonesian catalog rendered.
+      //
+      // `AIRSPACE_UNVERIFIED` is deliberately NOT a ServiceabilityCode. The machine
+      // code stays NO_FLY_ZONE so `preflight.ts`'s NO_FLY_ZONE → UNSAFE_DROP_ZONE
+      // mapping, the duplicated union in `pricing/dto/pricing-response.dto.ts` and
+      // every client switching on `codes` keep working untouched. Promoting it to a
+      // real code is a separate, deliberate decision — not something to do because
+      // the key name looks like one.
+      //
+      // OPEN QUESTION that promotion would settle. A transient DB blip is currently
+      // classified HARD and non-retryable, so at pre-flight it ABORTs and refunds a
+      // paid delivery rather than holding and looking again — the same treatment as a
+      // route that genuinely crosses restricted airspace and never will not. Fixing
+      // that wants `AIRSPACE_UNVERIFIED` to be a real, TRANSIENT code, which means
+      // revisiting `classifyPreflight` (today only `weatherHold` yields HOLD) and the
+      // 422-vs-503 split in `deliveries.service.ts`. Blocking is still the right
+      // answer; only the retryability is wrong.
       return this.blocked(
         'NO_FLY_ZONE',
         'Restricted airspace could not be verified for this route.',
-        { zoneName: 'unverified airspace' },
+        undefined,
+        'error.serviceability.AIRSPACE_UNVERIFIED',
       );
     }
 
@@ -148,6 +170,10 @@ export class ServiceabilityService {
     code: ServiceabilityCode,
     reason: string,
     params?: Record<string, string | number>,
+    /** Presentation-only override of the key the boundary derives from `code` — see
+     *  ServiceabilityResult.messageKey. Omitted by every blocker but the fail-closed
+     *  airspace one. */
+    messageKey?: string,
   ): ServiceabilityResult {
     return {
       serviceable: false,
@@ -155,6 +181,7 @@ export class ServiceabilityService {
       codes: [code],
       weatherHold: code.startsWith('WEATHER'),
       ...(params ? { params } : {}),
+      ...(messageKey ? { messageKey } : {}),
     };
   }
 

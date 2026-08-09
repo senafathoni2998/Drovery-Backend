@@ -168,6 +168,10 @@ export const en: Record<string, string> = {
     'This route is {routeKm} km — beyond our {maxKm} km flight range.',
   'error.serviceability.NO_FLY_ZONE':
     'Route is restricted near {zoneName} (no-fly zone).',
+  // Takes NO {zoneName}: this is the fail-closed case, where the zone list could not
+  // be read at all, so there is no zone to name.
+  'error.serviceability.AIRSPACE_UNVERIFIED':
+    'Restricted airspace could not be verified for this route.',
   'error.serviceability.WEATHER_STORM':
     'A storm is grounding drones at this location right now.',
   'error.serviceability.WEATHER_HOLD':
