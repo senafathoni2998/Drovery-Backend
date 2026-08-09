@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 
 import { createMockPrismaService } from '../test/prisma-mock';
 import { AirspaceService } from './airspace.service';
+import { resolveAirspaceCacheTtlMs } from './airspace.constants';
 
 const zone = (over: Record<string, unknown> = {}) => ({
   id: 'z-1',
@@ -159,16 +160,47 @@ describe('AirspaceService', () => {
 
   it('does not cache a failure', async () => {
     // Otherwise one bad query opens the airspace for a whole TTL.
+    //
+    // `now` here is relative to Date.now() at test time, NOT a hardcoded calendar
+    // date. A mutant that poisons the cache stamps it with the real wall clock
+    // (`Date.now()`), not the caller's `now` — catching that requires this test's
+    // fixture times to stay near the real clock. A hardcoded past date drifts
+    // further behind Date.now() with every day this suite isn't touched, until the
+    // `at >= this.cache.at` freshness guard (added for the backwards-clock fix)
+    // rejects the poisoned entry outright and forces a legitimate re-query for the
+    // WRONG reason — silently disarming this test without it ever going red.
+    const t0 = Date.now();
     prisma.airspaceZone.findMany.mockRejectedValueOnce(
       new Error('connection reset'),
     );
 
+    await expect(service.inForceZones(new Date(t0))).rejects.toThrow();
     await expect(
-      service.inForceZones(new Date('2026-08-02T00:00:00Z')),
-    ).rejects.toThrow();
-    await expect(
-      service.inForceZones(new Date('2026-08-02T00:00:01Z')),
+      service.inForceZones(new Date(t0 + 1_000)),
     ).resolves.toHaveLength(1);
     expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('resolveAirspaceCacheTtlMs', () => {
+  it('passes through a positive override', () => {
+    expect(resolveAirspaceCacheTtlMs(1500)).toBe(1500);
+  });
+
+  it('honors an explicit 0 (no caching) rather than falling back', () => {
+    // `Number(env) || fallback` — the bug this function replaced — treats 0 as
+    // falsy and silently returns the fallback instead. This is the one case that
+    // bug got backwards in the "disable the cache" direction.
+    expect(resolveAirspaceCacheTtlMs(0)).toBe(0);
+  });
+
+  it('rejects a negative override in favor of the fallback', () => {
+    // The same old bug let a negative value through unchecked, which disables the
+    // cache too, but by accident and in the opposite direction from intent.
+    expect(resolveAirspaceCacheTtlMs(-5)).toBe(30_000);
+  });
+
+  it('rejects a non-finite override (NaN) in favor of the fallback', () => {
+    expect(resolveAirspaceCacheTtlMs(NaN)).toBe(30_000);
   });
 });

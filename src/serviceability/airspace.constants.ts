@@ -1,4 +1,23 @@
 /**
+ * Resolves a parsed env override against the default, honoring an explicit `0`
+ * (no caching, read on every call) and rejecting anything negative or non-finite
+ * in favor of the fallback rather than passing it through.
+ *
+ * Extracted as a plain function — like `retentionFor` in
+ * `partition-maintenance/partition.constants.ts` — so this multi-branch decision
+ * (positive / zero / negative / non-finite) is testable with plain arguments, no env
+ * mutation or module reset required. It already got one branch wrong once: the
+ * original `Number(env) || 30_000` silently discarded an explicit 0 AND let a
+ * negative value through unchecked.
+ */
+export function resolveAirspaceCacheTtlMs(
+  raw: number,
+  fallback: number = 30_000,
+): number {
+  return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+}
+
+/**
  * How long an in-force zone list may be served from memory.
  *
  * Serviceability runs on every quote, and this replaced a module constant, so an
@@ -19,7 +38,6 @@
  * or non-numeric override is rejected in favor of the default rather than silently
  * disabling the cache.
  */
-export const AIRSPACE_CACHE_TTL_MS = (() => {
-  const raw = Number(process.env.AIRSPACE_CACHE_TTL_MS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
-})();
+export const AIRSPACE_CACHE_TTL_MS = resolveAirspaceCacheTtlMs(
+  Number(process.env.AIRSPACE_CACHE_TTL_MS),
+);
