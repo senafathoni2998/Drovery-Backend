@@ -1,4 +1,5 @@
 import { ServiceabilityService } from './serviceability.service';
+import { GeoCircle } from './serviceability.types';
 import { WeatherConditions } from './weather.service';
 
 const flyable: WeatherConditions = {
@@ -8,13 +9,43 @@ const flyable: WeatherConditions = {
   source: 'mock',
 };
 
+/**
+ * The zones the migration seeds into `airspace_zones` — MUST mirror the INSERT in
+ * prisma/migrations/20260809133410_add_airspace_zones/migration.sql, verbatim.
+ *
+ * This is the default for every test here because it is what the deleted NO_FLY_ZONES
+ * constant used to be: under the constant these two zones were in force for the whole
+ * file, so `passes the Bandung demo route` proved the Jakarta airports do NOT reach the
+ * demo. Defaulting to [] instead would leave that test green while it silently stopped
+ * proving anything.
+ *
+ * If this fixture and the seed ever drift, every test in this file starts asserting
+ * against airspace that does not exist in the database.
+ */
+export const SEEDED_ZONES: GeoCircle[] = [
+  {
+    name: 'Soekarno-Hatta International Airport',
+    lat: -6.1256,
+    lng: 106.6558,
+    radiusKm: 5,
+  },
+  {
+    name: 'Halim Perdanakusuma Airport',
+    lat: -6.2647,
+    lng: 106.9308,
+    radiusKm: 3,
+  },
+];
+
 describe('ServiceabilityService', () => {
   let service: ServiceabilityService;
   let weather: { getConditions: jest.Mock };
+  let airspace: { inForceZones: jest.Mock };
 
   beforeEach(() => {
     weather = { getConditions: jest.fn().mockResolvedValue(flyable) };
-    service = new ServiceabilityService(weather as any);
+    airspace = { inForceZones: jest.fn().mockResolvedValue(SEEDED_ZONES) };
+    service = new ServiceabilityService(weather as never, airspace as never);
   });
 
   // The seeded demo route (DEFAULT_COORDS) is in Bandung — MUST be serviceable.
@@ -172,6 +203,49 @@ describe('ServiceabilityService', () => {
     // The zone name is surfaced as a localization param ({zoneName}), not just baked
     // into the English reason string.
     expect(r.params?.zoneName).toBeDefined();
+  });
+
+  it('blocks on a zone that came from the database', async () => {
+    airspace.inForceZones.mockResolvedValue([
+      { name: 'Test TFR', lat: -6.9125, lng: 107.611, radiusKm: 5 },
+    ]);
+
+    const result = await service.checkServiceability(
+      -6.9125,
+      107.611,
+      -6.92,
+      107.62,
+    );
+
+    expect(result.serviceable).toBe(false);
+    expect(result.codes).toContain('NO_FLY_ZONE');
+    expect(result.params).toMatchObject({ zoneName: 'Test TFR' });
+  });
+
+  it('blocks when the airspace lookup FAILS — the inverse of weather', async () => {
+    // WeatherService fails open on purpose: an unreachable forecast must not ground the
+    // fleet. Airspace is the opposite — a DB blip must never read as "no restricted
+    // airspace", because the consequence is a drone inside it.
+    airspace.inForceZones.mockRejectedValue(new Error('connection reset'));
+
+    const result = await service.checkServiceability(
+      -6.9125,
+      107.611,
+      -6.92,
+      107.62,
+    );
+
+    expect(result.serviceable).toBe(false);
+    expect(result.codes).toContain('NO_FLY_ZONE');
+  });
+
+  it('does not consult the weather API once airspace has blocked', async () => {
+    // The no-fly check short-circuits, as it did when zones were a constant.
+    airspace.inForceZones.mockRejectedValue(new Error('connection reset'));
+
+    await service.checkServiceability(-6.9125, 107.611, -6.92, 107.62);
+
+    expect(weather.getConditions).not.toHaveBeenCalled();
   });
 
   it('holds for a storm (soft, weatherHold) without a hard code', async () => {

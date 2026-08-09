@@ -1,11 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { EARTH_RADIUS_KM, haversineKm } from '../common/geo-distance';
-import {
-  maxRouteKm,
-  NO_FLY_ZONES,
-  SERVICE_AREAS,
-} from './serviceability.constants';
+import { AirspaceService } from './airspace.service';
+import { maxRouteKm, SERVICE_AREAS } from './serviceability.constants';
 import {
   GeoCircle,
   RouteSegment,
@@ -22,11 +19,14 @@ interface Pt {
 }
 
 /**
- * Decides whether a drone delivery can be flown. Two HARD, deterministic checks
- * (service area + no-fly zones — pure geometry, no I/O) and one SOFT check
- * (weather, via WeatherService). Weather is always fail-open and advisory: it
- * can only add a transient WEATHER_* hold, never a hard block, and a weather
- * outage never grounds a delivery.
+ * Decides whether a drone delivery can be flown. Two HARD checks (service area +
+ * no-fly zones) and one SOFT check (weather, via WeatherService). Weather is
+ * always fail-open and advisory: it can only add a transient WEATHER_* hold,
+ * never a hard block, and a weather outage never grounds a delivery.
+ *
+ * The geometry is still pure, but the no-fly zones it runs against are now read
+ * from the database via AirspaceService, so this method does I/O before the
+ * weather call — and fails CLOSED on it, unlike weather. See the no-fly block.
  *
  * Callers pass already-resolved coordinates (this never geocodes) and only call
  * when all four are present.
@@ -35,7 +35,10 @@ interface Pt {
 export class ServiceabilityService {
   private readonly logger = new Logger(ServiceabilityService.name);
 
-  constructor(private readonly weather: WeatherService) {}
+  constructor(
+    private readonly weather: WeatherService,
+    private readonly airspace: AirspaceService,
+  ) {}
 
   async checkServiceability(
     fromLat: number,
@@ -70,10 +73,36 @@ export class ServiceabilityService {
     }
 
     // --- HARD: no-fly zones (endpoints + route). Short-circuit. ---
+    //
+    // FAIL CLOSED, deliberately opposite to the weather check below. Weather is
+    // advisory and fails open: an unreachable forecast must not ground the fleet.
+    // Airspace is not advisory. If we cannot read the zone list we do not know
+    // whether this route crosses restricted airspace, and the only safe answer to
+    // "I don't know" is no. Do not "fix" this into consistency with weather.
+    let zones: GeoCircle[];
+    try {
+      zones = await this.airspace.inForceZones();
+    } catch (error) {
+      this.logger.error(
+        `Airspace lookup failed — blocking the route: ${(error as Error).message}`,
+      );
+      return this.blocked(
+        'NO_FLY_ZONE',
+        'Restricted airspace could not be verified for this route.',
+        { zoneName: 'unverified airspace' },
+      );
+    }
+
+    // The two endpoint checks are subsumed by the route check — if an endpoint is
+    // inside a circle, the segment's distance to that centre is <= the endpoint's,
+    // so zoneOnRoute alone would catch it. They are kept because they short-circuit
+    // cheaply on the common case and state the intent more clearly, but a reader
+    // should know they are not load-bearing on their own: no test can distinguish
+    // dropping them, and the route check is what actually guarantees the block.
     const zone =
-      this.zoneContaining(fromLat, fromLng) ??
-      this.zoneContaining(toLat, toLng) ??
-      this.zoneOnRoute({ fromLat, fromLng, toLat, toLng });
+      this.zoneContaining(fromLat, fromLng, zones) ??
+      this.zoneContaining(toLat, toLng, zones) ??
+      this.zoneOnRoute({ fromLat, fromLng, toLat, toLng }, zones);
     if (zone) {
       return this.blocked(
         'NO_FLY_ZONE',
@@ -135,8 +164,12 @@ export class ServiceabilityService {
     return SERVICE_AREAS.some((a) => this.inCircle(lat, lng, a));
   }
 
-  private zoneContaining(lat: number, lng: number): GeoCircle | undefined {
-    return NO_FLY_ZONES.find((z) => this.inCircle(lat, lng, z));
+  private zoneContaining(
+    lat: number,
+    lng: number,
+    zones: GeoCircle[],
+  ): GeoCircle | undefined {
+    return zones.find((z) => this.inCircle(lat, lng, z));
   }
 
   private inCircle(lat: number, lng: number, c: GeoCircle): boolean {
@@ -144,8 +177,11 @@ export class ServiceabilityService {
   }
 
   /** First no-fly zone the straight route passes within radiusKm of. */
-  private zoneOnRoute(route: RouteSegment): GeoCircle | undefined {
-    return NO_FLY_ZONES.find((z) => this.routeNearCircle(route, z));
+  private zoneOnRoute(
+    route: RouteSegment,
+    zones: GeoCircle[],
+  ): GeoCircle | undefined {
+    return zones.find((z) => this.routeNearCircle(route, z));
   }
 
   private routeNearCircle(route: RouteSegment, c: GeoCircle): boolean {

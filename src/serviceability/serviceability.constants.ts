@@ -1,4 +1,4 @@
-import { NoFlyZone, ServiceArea } from './serviceability.types';
+import { ServiceArea } from './serviceability.types';
 
 // Serviceable areas (hub + radius). Covers BOTH Greater Jakarta and Greater
 // Bandung — the seeded demo route (DEFAULT_COORDS in simulation.constants.ts) is
@@ -8,23 +8,17 @@ export const SERVICE_AREAS: ServiceArea[] = [
   { name: 'Greater Bandung', lat: -6.9125, lng: 107.611, radiusKm: 20 },
 ];
 
-// Restricted airspace the drone must not fly through. The two Jakarta airports
-// are ~110 km from the Bandung demo route, so the demo stays serviceable while
-// no-fly is still demonstrable with Jakarta coordinates.
-export const NO_FLY_ZONES: NoFlyZone[] = [
-  {
-    name: 'Soekarno-Hatta International Airport',
-    lat: -6.1256,
-    lng: 106.6558,
-    radiusKm: 5,
-  },
-  {
-    name: 'Halim Perdanakusuma Airport',
-    lat: -6.2647,
-    lng: 106.9308,
-    radiusKm: 3,
-  },
-];
+// Restricted airspace is NOT here. It lives in the `airspace_zones` table, read at
+// check time by AirspaceService — operators need to add a TFR without a deploy, and a
+// compiled-in constant cannot do that. NO_FLY_ZONES used to sit at this spot.
+//
+// The rationale that constant carried belongs with SERVICE_AREAS above, so it stays:
+// the two seeded zones are the Jakarta airports (Soekarno-Hatta, 5 km; Halim
+// Perdanakusuma, 3 km), ~110 km from the Bandung demo route, so the demo above stays
+// serviceable while no-fly is still demonstrable with Jakarta coordinates. Those rows
+// are seeded by prisma/migrations/20260809133410_add_airspace_zones/migration.sql —
+// they are what makes deleting the constant safe, and without them the geometry finds
+// no zones and the airspace this system protects opens silently.
 
 // Drones are grounded above this wind speed.
 export const MAX_WIND_KPH = 40;

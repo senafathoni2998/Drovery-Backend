@@ -6,7 +6,8 @@ export interface GeoCircle {
 }
 
 export type ServiceArea = GeoCircle;
-export type NoFlyZone = GeoCircle;
+// NoFlyZone was an alias for GeoCircle, used only by the deleted NO_FLY_ZONES constant.
+// Zones now come from the database as plain GeoCircles (AirspaceService.inForceZones).
 
 export interface RouteSegment {
   fromLat: number;
