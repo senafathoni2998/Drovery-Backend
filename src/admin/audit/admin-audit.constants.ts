@@ -98,6 +98,32 @@ export const AUDIT_FIELD_ALLOWLIST: Record<
   USER_ROLE_SET: ['role'],
   SUPPORT_TICKET_REPLY: ['contentLength'],
   SUPPORT_TICKET_STATUS_SET: ['status'],
+  // `notes` is deliberately excluded from all three below — free text, same
+  // reasoning as `description` on promos.
+  AIRSPACE_ZONE_CREATE: [
+    'name',
+    'kind',
+    'lat',
+    'lng',
+    'radiusKm',
+    'floorM',
+    'ceilingM',
+    'activeFrom',
+    'activeUntil',
+  ],
+  AIRSPACE_ZONE_UPDATE: [
+    'name',
+    'kind',
+    'lat',
+    'lng',
+    'radiusKm',
+    'floorM',
+    'ceilingM',
+    'activeFrom',
+    'activeUntil',
+    'active',
+  ],
+  AIRSPACE_ZONE_DEACTIVATE: ['active'],
 };
 
 type Fields = Record<string, unknown>;

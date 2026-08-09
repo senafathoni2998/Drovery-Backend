@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, OmitType } from '@nestjs/swagger';
 import {
+  AirspaceZoneKind,
   DeliveryFailureReason,
   DroneCommandStatus,
   DroneCommandType,
@@ -132,6 +133,58 @@ export class AdminPaginatedPromosDto {
   page: number;
   limit: number;
 }
+
+// ── Airspace ──────────────────────────────────────────────────────────────────
+
+/**
+ * A restricted-airspace zone as the operator console sees it.
+ *
+ * `active: false` rows ARE returned by the list: deactivation is how a zone is
+ * "deleted", precisely so a zone that once existed stays part of the record of why a
+ * past delivery was refused.
+ */
+export class AirspaceZoneResponseDto {
+  id: string;
+  name: string;
+  @ApiProperty({ enum: AirspaceZoneKind })
+  kind: AirspaceZoneKind;
+  lat: number;
+  lng: number;
+  radiusKm: number;
+  /** Null floor = surface; null ceiling = unlimited. Recorded, but they do NOT relax a
+   *  planning block — a quote has no altitude. */
+  floorM: number | null;
+  ceilingM: number | null;
+  /** Null = unbounded on that side. In force when `active` AND now is inside the window. */
+  activeFrom: Date | null;
+  activeUntil: Date | null;
+  /** Operator kill-switch, independent of the window. */
+  active: boolean;
+  /**
+   * COMPUTED, not stored: is this zone stopping anything *right now*?
+   *
+   * `active` is what the operator switched; this is what the router is actually doing.
+   * They diverge whenever a window is involved — a pre-staged TFR reads
+   * `active: true, inForce: false`, and so does one whose window has already closed —
+   * and a console showing only `active` reports protection that does not exist. Derived
+   * from the same `isZoneInForce` predicate `AirspaceService` routes on, evaluated at
+   * response time.
+   */
+  inForce: boolean;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * POST/PATCH/DELETE `/admin/airspace` return the raw stored row, not the
+ * `listAirspaceZones` projection — `inForce` is computed only for the GET list, so
+ * advertising it here would document a field these three routes never send.
+ */
+export class AirspaceZoneWriteResponseDto extends OmitType(
+  AirspaceZoneResponseDto,
+  ['inForce'] as const,
+) {}
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 

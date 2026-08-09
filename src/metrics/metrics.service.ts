@@ -93,6 +93,19 @@ export class MetricsService {
   readonly orphanReservationsReaped: Counter<string>;
   readonly orphanReaperLastScan: Gauge<string>;
   readonly orphanReaperSchedulerRegistered: Gauge<string>;
+  // Restricted airspace (API tier). Every other guard on this surface lives in CI, against
+  // a database `migrate deploy` just built. In PRODUCTION an empty zone list is
+  // indistinguishable from "there is no restricted airspace" — a failed seed, a truncated
+  // table and a correctly-empty registry all read identically, and nothing pages. This
+  // gauge makes that observable, but it is NOT a complete alert on its own: like any
+  // unlabelled prom-client Gauge it reads 0 from process start until the first `.set()`,
+  // so a replica that has never filled the cache reports 0 indistinguishably from a
+  // genuinely empty registry. That includes every worker pod (it builds the same
+  // AppModule and serves this registry on :9091/metrics, but never calls `inForceZones`)
+  // and any API replica before its first quote. An `== 0` alert would have to be scoped
+  // to replicas known to have served a quote, or paired with a separate "cache was ever
+  // filled" signal.
+  readonly airspaceZonesInForce: Gauge<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -303,6 +316,12 @@ export class MetricsService {
     this.orphanReaperSchedulerRegistered = new Gauge({
       name: 'drovery_orphan_reaper_scheduler_registered',
       help: '1 when this replica registered the orphan-reservation reaper scheduler',
+      registers: [this.registry],
+    });
+
+    this.airspaceZonesInForce = new Gauge({
+      name: 'drovery_airspace_zones_in_force',
+      help: 'Restricted-airspace zones in force at the last cache fill on this replica — reads 0 before this replica has ever filled the cache too, indistinguishable from a genuinely empty registry, so an alert must scope to replicas that have served a quote (or pair with a separate "cache ever filled" signal)',
       registers: [this.registry],
     });
 

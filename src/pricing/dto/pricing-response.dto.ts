@@ -24,6 +24,10 @@ export class ServiceabilityResultDto {
   codes: ServiceabilityCode[];
   /** True when any code is a transient weather hold (retryable). */
   weatherHold: boolean;
+  /** Interpolation params for the blocking reason ({zoneName}, {windKph}, …). */
+  params?: Record<string, string | number>;
+  /** Set only when a blocker overrides the `error.serviceability.<CODE>` message key. */
+  messageKey?: string;
 }
 
 /** Full price breakdown returned by POST /pricing/estimate. */

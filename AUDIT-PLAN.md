@@ -139,7 +139,7 @@ Keep this table current. It is the first thing a new session reads after §0/§1
 | 9 | Realtime durability | M | backend + admin | ◐ Backend done; admin socket + hot-store drain deferred (2026-07-26) |
 | 10 | Charge money for real | M | backend + mobile | ☐ Not started |
 | 11 | Drone entity + dispatch engine | L | backend + admin | ◐ Entity, claim, fleet surface + dispatch engine done; per-aircraft credentials + saturation queue remain (2026-08-01) |
-| 12 | Flight-ops layer | M | backend + admin | ◐ Flight log, energy management, pre-flight re-check, claim-release re-check + operator audit log (12.7, all 11 routes) done; airspace-as-data, ops console, incidents remain (2026-08-02) |
+| 12 | Flight-ops layer | M | backend + admin | ◐ Flight log, energy management, pre-flight re-check, claim-release re-check, operator audit log (12.7, all 11 routes) + airspace-as-data (12.4: DB-backed zones, time windows, audited CRUD; altitude stored but not enforced) done; ops console (12.5), incidents (12.6) remain (2026-08-10) |
 
 Status values: `☐ Not started` · `◐ In progress` · `☑ Done` · `⊘ Skipped (reason)`
 

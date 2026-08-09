@@ -1767,6 +1767,47 @@ describe('DeliveriesService', () => {
       expect(prisma.delivery.create).not.toHaveBeenCalled();
     });
 
+    it('prefers the messageKey serviceability names over the code-derived one', async () => {
+      // The fail-closed airspace path blocks under the NO_FLY_ZONE code but has no
+      // zone to name, so it overrides the message. Without the override the
+      // {zoneName} template renders with whatever param it is handed — which is how
+      // an English literal ended up inside an Indonesian sentence.
+      serviceability.checkServiceability.mockResolvedValue({
+        serviceable: false,
+        reasons: ['Restricted airspace could not be verified for this route.'],
+        codes: ['NO_FLY_ZONE'],
+        weatherHold: false,
+        messageKey: 'error.serviceability.AIRSPACE_UNVERIFIED',
+      });
+
+      const err = await service.create(userId, createDto).catch((e) => e);
+
+      expect(err.getResponse()).toMatchObject({
+        messageKey: 'error.serviceability.AIRSPACE_UNVERIFIED',
+        // The machine code is UNCHANGED — clients and preflight still see NO_FLY_ZONE.
+        code: 'NO_FLY_ZONE',
+      });
+    });
+
+    it('still derives the key from the code when serviceability names none', async () => {
+      // The other half: an override that fired unconditionally would stop every
+      // real no-fly rejection from naming the zone that caused it.
+      serviceability.checkServiceability.mockResolvedValue({
+        serviceable: false,
+        reasons: ['Route is restricted near CGK (no-fly zone).'],
+        codes: ['NO_FLY_ZONE'],
+        weatherHold: false,
+        params: { zoneName: 'CGK' },
+      });
+
+      const err = await service.create(userId, createDto).catch((e) => e);
+
+      expect(err.getResponse()).toMatchObject({
+        messageKey: 'error.serviceability.NO_FLY_ZONE',
+        messageParams: { zoneName: 'CGK' },
+      });
+    });
+
     it('rejects with 422 when coordinates cannot be resolved (no safety bypass)', async () => {
       geoService.geocode.mockResolvedValue(null);
       // address-only dto + geocode fails → no coords → can't verify → reject.

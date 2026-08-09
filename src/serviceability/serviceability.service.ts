@@ -1,11 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { EARTH_RADIUS_KM, haversineKm } from '../common/geo-distance';
-import {
-  maxRouteKm,
-  NO_FLY_ZONES,
-  SERVICE_AREAS,
-} from './serviceability.constants';
+import { AirspaceService } from './airspace.service';
+import { maxRouteKm, SERVICE_AREAS } from './serviceability.constants';
 import {
   GeoCircle,
   RouteSegment,
@@ -22,11 +19,14 @@ interface Pt {
 }
 
 /**
- * Decides whether a drone delivery can be flown. Two HARD, deterministic checks
- * (service area + no-fly zones — pure geometry, no I/O) and one SOFT check
- * (weather, via WeatherService). Weather is always fail-open and advisory: it
- * can only add a transient WEATHER_* hold, never a hard block, and a weather
- * outage never grounds a delivery.
+ * Decides whether a drone delivery can be flown. Two HARD checks (service area +
+ * no-fly zones) and one SOFT check (weather, via WeatherService). Weather is
+ * always fail-open and advisory: it can only add a transient WEATHER_* hold,
+ * never a hard block, and a weather outage never grounds a delivery.
+ *
+ * The geometry is still pure, but the no-fly zones it runs against are now read
+ * from the database via AirspaceService, so this method does I/O before the
+ * weather call — and fails CLOSED on it, unlike weather. See the no-fly block.
  *
  * Callers pass already-resolved coordinates (this never geocodes) and only call
  * when all four are present.
@@ -35,7 +35,10 @@ interface Pt {
 export class ServiceabilityService {
   private readonly logger = new Logger(ServiceabilityService.name);
 
-  constructor(private readonly weather: WeatherService) {}
+  constructor(
+    private readonly weather: WeatherService,
+    private readonly airspace: AirspaceService,
+  ) {}
 
   async checkServiceability(
     fromLat: number,
@@ -70,10 +73,62 @@ export class ServiceabilityService {
     }
 
     // --- HARD: no-fly zones (endpoints + route). Short-circuit. ---
+    //
+    // FAIL CLOSED, deliberately opposite to the weather check below. Weather is
+    // advisory and fails open: an unreachable forecast must not ground the fleet.
+    // Airspace is not advisory. If we cannot read the zone list we do not know
+    // whether this route crosses restricted airspace, and the only safe answer to
+    // "I don't know" is no. Do not "fix" this into consistency with weather.
+    let zones: GeoCircle[];
+    try {
+      zones = await this.airspace.inForceZones();
+    } catch (error) {
+      this.logger.error(
+        `Airspace lookup failed — blocking the route: ${(error as Error).message}`,
+      );
+      // The message is overridden rather than parameterised. `error.serviceability
+      // .NO_FLY_ZONE` interpolates {zoneName}, and there is no zone here — there is an
+      // unread zone list. Passing a stand-in phrase (this used to send the English
+      // literal 'unverified airspace') puts an untranslated fragment inside every
+      // non-English sentence, which is what the Indonesian catalog rendered.
+      //
+      // `AIRSPACE_UNVERIFIED` is deliberately NOT a ServiceabilityCode. The machine
+      // code stays NO_FLY_ZONE so `preflight.ts`'s NO_FLY_ZONE → UNSAFE_DROP_ZONE
+      // mapping, the duplicated union in `pricing/dto/pricing-response.dto.ts` and
+      // every client switching on `codes` keep working untouched. Promoting it to a
+      // real code is a separate, deliberate decision — not something to do because
+      // the key name looks like one.
+      //
+      // OPEN QUESTION that promotion would settle. A transient DB blip is currently
+      // classified HARD and non-retryable, so at pre-flight it ABORTs and refunds a
+      // paid delivery rather than holding and looking again — the same treatment as a
+      // route that genuinely crosses restricted airspace and never will not. Fixing
+      // that wants `AIRSPACE_UNVERIFIED` to be a real, TRANSIENT code, which means
+      // revisiting `classifyPreflight` (today only `weatherHold` yields HOLD) and the
+      // 422-vs-503 split in `deliveries.service.ts`. Blocking is still the right
+      // answer; only the retryability is wrong.
+      return this.blocked(
+        'NO_FLY_ZONE',
+        'Restricted airspace could not be verified for this route.',
+        undefined,
+        'error.serviceability.AIRSPACE_UNVERIFIED',
+      );
+    }
+
+    // DO NOT delete the two endpoint checks as "redundant". Within the default
+    // envelope (MAX_ROUTE_KM=50, Indonesian latitudes) they are indeed unkillable by
+    // test — zoneOnRoute subsumes them there, so dropping them fails nothing, and no
+    // test in this repo can tell the difference. Outside it they are load-bearing:
+    // routeNearCircle projects equirectangularly, whose error grows with latitude and
+    // route length, so with SERVICE_AREA_GLOBAL=true (supported, and exercised below)
+    // an endpoint INSIDE a circle by haversine can measure outside it once projected —
+    // ~1 route in 2000 at 70-84° latitude, and far more with MAX_ROUTE_KM raised.
+    // zoneContaining uses haversine directly and has no such error. The absence of a
+    // failing test here is a gap in the tests, not evidence these lines are dead.
     const zone =
-      this.zoneContaining(fromLat, fromLng) ??
-      this.zoneContaining(toLat, toLng) ??
-      this.zoneOnRoute({ fromLat, fromLng, toLat, toLng });
+      this.zoneContaining(fromLat, fromLng, zones) ??
+      this.zoneContaining(toLat, toLng, zones) ??
+      this.zoneOnRoute({ fromLat, fromLng, toLat, toLng }, zones);
     if (zone) {
       return this.blocked(
         'NO_FLY_ZONE',
@@ -115,6 +170,10 @@ export class ServiceabilityService {
     code: ServiceabilityCode,
     reason: string,
     params?: Record<string, string | number>,
+    /** Presentation-only override of the key the boundary derives from `code` — see
+     *  ServiceabilityResult.messageKey. Omitted by every blocker but the fail-closed
+     *  airspace one. */
+    messageKey?: string,
   ): ServiceabilityResult {
     return {
       serviceable: false,
@@ -122,6 +181,7 @@ export class ServiceabilityService {
       codes: [code],
       weatherHold: code.startsWith('WEATHER'),
       ...(params ? { params } : {}),
+      ...(messageKey ? { messageKey } : {}),
     };
   }
 
@@ -135,8 +195,12 @@ export class ServiceabilityService {
     return SERVICE_AREAS.some((a) => this.inCircle(lat, lng, a));
   }
 
-  private zoneContaining(lat: number, lng: number): GeoCircle | undefined {
-    return NO_FLY_ZONES.find((z) => this.inCircle(lat, lng, z));
+  private zoneContaining(
+    lat: number,
+    lng: number,
+    zones: GeoCircle[],
+  ): GeoCircle | undefined {
+    return zones.find((z) => this.inCircle(lat, lng, z));
   }
 
   private inCircle(lat: number, lng: number, c: GeoCircle): boolean {
@@ -144,8 +208,11 @@ export class ServiceabilityService {
   }
 
   /** First no-fly zone the straight route passes within radiusKm of. */
-  private zoneOnRoute(route: RouteSegment): GeoCircle | undefined {
-    return NO_FLY_ZONES.find((z) => this.routeNearCircle(route, z));
+  private zoneOnRoute(
+    route: RouteSegment,
+    zones: GeoCircle[],
+  ): GeoCircle | undefined {
+    return zones.find((z) => this.routeNearCircle(route, z));
   }
 
   private routeNearCircle(route: RouteSegment, c: GeoCircle): boolean {

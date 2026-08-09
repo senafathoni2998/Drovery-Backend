@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -26,6 +27,10 @@ import {
   UpdateDroneDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import {
+  CreateAirspaceZoneDto,
+  UpdateAirspaceZoneDto,
+} from './dto/airspace.dto';
 import { AuditActor } from './audit/audit-actor.decorator';
 import { AdminAuditService } from './audit/admin-audit.service';
 import { AuditQueryDto } from './audit/dto/audit-query.dto';
@@ -33,6 +38,8 @@ import { AdminPaginatedAuditDto } from './audit/dto/audit-response.dto';
 import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
+  AirspaceZoneResponseDto,
+  AirspaceZoneWriteResponseDto,
   AdminPaginatedDeliveriesDto,
   AdminPaginatedPromosDto,
   AdminPaginatedUsersDto,
@@ -168,6 +175,42 @@ export class AdminController {
     @Body() dto: UpdatePromoDto,
   ) {
     return this.admin.updatePromo(actor, id, dto);
+  }
+
+  // ── Airspace ──
+  // DELETE is wired to a DEACTIVATION, not a row delete. A zone that once existed is
+  // part of the record of why a past delivery was refused.
+  @Get('airspace')
+  @ApiOkResponse({ type: [AirspaceZoneResponseDto] })
+  listAirspace() {
+    return this.admin.listAirspaceZones();
+  }
+
+  @Post('airspace')
+  @ApiCreatedResponse({ type: AirspaceZoneWriteResponseDto })
+  createAirspace(
+    @AuditActor() actor: AuditActor,
+    @Body() dto: CreateAirspaceZoneDto,
+  ) {
+    return this.admin.createAirspaceZone(actor, dto);
+  }
+
+  @Patch('airspace/:id')
+  @ApiOkResponse({ type: AirspaceZoneWriteResponseDto })
+  updateAirspace(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdateAirspaceZoneDto,
+  ) {
+    return this.admin.updateAirspaceZone(actor, id, dto);
+  }
+
+  // 200 with the DEACTIVATED row, not 204: the response is the zone as it now stands,
+  // which is the point — the row still exists.
+  @Delete('airspace/:id')
+  @ApiOkResponse({ type: AirspaceZoneWriteResponseDto })
+  deactivateAirspace(@AuditActor() actor: AuditActor, @Param('id') id: string) {
+    return this.admin.deactivateAirspaceZone(actor, id);
   }
 
   // ── Users / roles ──

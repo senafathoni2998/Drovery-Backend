@@ -168,6 +168,10 @@ export const en: Record<string, string> = {
     'This route is {routeKm} km — beyond our {maxKm} km flight range.',
   'error.serviceability.NO_FLY_ZONE':
     'Route is restricted near {zoneName} (no-fly zone).',
+  // Takes NO {zoneName}: this is the fail-closed case, where the zone list could not
+  // be read at all, so there is no zone to name.
+  'error.serviceability.AIRSPACE_UNVERIFIED':
+    'Restricted airspace could not be verified for this route.',
   'error.serviceability.WEATHER_STORM':
     'A storm is grounding drones at this location right now.',
   'error.serviceability.WEATHER_HOLD':
@@ -241,6 +245,15 @@ export const en: Record<string, string> = {
     'A PERCENT discountValue must be between 0 and 100.',
   'error.admin.user.not_found': 'User "{id}" not found',
   'error.admin.user.last_admin': 'Cannot demote the last remaining admin.',
+  'error.admin.airspace.not_found': 'Airspace zone "{id}" not found',
+  'error.admin.airspace.inverted_window':
+    'activeUntil must be later than activeFrom — a zone whose window closes before it opens is never in force.',
+  'error.admin.airspace.past_window':
+    'activeUntil is already in the past, so this zone would never be in force. To take a zone out of force now, deactivate it instead.',
+  'error.admin.airspace.inverted_altitude':
+    'ceilingM must be greater than floorM.',
+  'error.admin.airspace.null_not_allowed':
+    'These fields cannot be set to null: {fields}. Omit them to leave them unchanged.',
 
   // Payment.
   'error.payment.method.not_found': 'Payment method with id "{id}" not found',

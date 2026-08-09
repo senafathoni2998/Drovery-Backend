@@ -984,6 +984,9 @@ enum AdminAuditAction {
   USER_ROLE_SET
   SUPPORT_TICKET_REPLY
   SUPPORT_TICKET_STATUS_SET
+  AIRSPACE_ZONE_CREATE
+  AIRSPACE_ZONE_UPDATE
+  AIRSPACE_ZONE_DEACTIVATE
 }
 
 enum AdminAuditTargetType {
@@ -992,6 +995,7 @@ enum AdminAuditTargetType {
   PROMO
   USER
   SUPPORT_TICKET
+  AIRSPACE_ZONE
 }
 
 /// Operator actions, append-only. Partitioned from birth by RANGE("createdAt").
@@ -1031,4 +1035,55 @@ model AdminAuditLog {
   @@index([targetType, targetId, createdAt])
   @@index([action, createdAt])
   @@map("admin_audit_logs")
+}
+
+// ==================== AIRSPACE ZONES ====================
+
+enum AirspaceZoneKind {
+  AIRPORT
+  MILITARY
+  TEMPORARY
+  EVENT
+}
+
+/// Restricted airspace, as data rather than a module constant.
+///
+/// NOT partitioned, unlike the other tables added in this phase: this is a small
+/// operator-maintained registry read on every quote, not an append-only log. It wants
+/// a plain single-column PK so `findUnique`/`update` by id work normally.
+model AirspaceZone {
+  id       String           @id @default(uuid())
+  name     String           @db.VarChar(120)
+  kind     AirspaceZoneKind
+  lat      Float
+  lng      Float
+  radiusKm Float
+
+  /// Vertical extent. Null floor = surface; null ceiling = unlimited.
+  ///
+  /// Stored and surfaced, but it does NOT relax a planning block: a quote has no
+  /// altitude, so any zone the route touches horizontally blocks regardless of these.
+  /// They exist so an in-flight breach can be detected against recorded frame altitude
+  /// (the flight recorder has carried altitude since increment 1).
+  floorM   Int?
+  ceilingM Int?
+
+  /// Null = unbounded on that side. A zone is IN FORCE when `active` is true AND now
+  /// falls inside the window.
+  activeFrom  DateTime?
+  activeUntil DateTime?
+
+  /// Operator kill-switch, deliberately independent of the window: a zone can be
+  /// disabled now without editing its dates, and a future TFR can be staged without
+  /// being live. Deactivation is also how a zone is "deleted" — the row is kept,
+  /// because a zone that once existed is part of why a past delivery was refused.
+  active Boolean @default(true)
+
+  notes String? @db.VarChar(500)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+  @@map("airspace_zones")
 }

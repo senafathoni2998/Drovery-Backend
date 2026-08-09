@@ -1,9 +1,10 @@
 import { PartitionMaintenanceService } from './partition-maintenance.service';
 import { PARTITIONED_TABLES, retentionFor } from './partition.constants';
 
-// DB-free: the plpgsql routines are exercised by scripts/verify-partitions.sql + the
-// guarded integration spec; here we assert the service's orchestration (order, per-table
-// isolation, metrics, heartbeat) against a mocked $queryRawUnsafe.
+// DB-free: the plpgsql partition routines have NO automated coverage. They are exercised
+// only by scripts/verify-partitions.sql, run by hand. Here we assert the service's
+// orchestration (order, per-table isolation, metrics, heartbeat) against a mocked
+// $queryRawUnsafe — nothing below proves the SQL those calls emit actually works.
 describe('PartitionMaintenanceService', () => {
   let prisma: { $queryRawUnsafe: jest.Mock };
   let metrics: {

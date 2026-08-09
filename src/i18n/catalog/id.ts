@@ -167,6 +167,10 @@ export const id: Record<string, string> = {
     'Rute ini sejauh {routeKm} km — melebihi jangkauan terbang kami yang {maxKm} km.',
   'error.serviceability.NO_FLY_ZONE':
     'Rute dibatasi di dekat {zoneName} (zona larangan terbang).',
+  // Tanpa {zoneName}: ini kasus gagal-tertutup, saat daftar zona sama sekali tidak
+  // dapat dibaca, sehingga tidak ada zona yang bisa disebut namanya.
+  'error.serviceability.AIRSPACE_UNVERIFIED':
+    'Ruang udara terbatas tidak dapat diverifikasi untuk rute ini.',
   'error.serviceability.WEATHER_STORM':
     'Badai sedang membuat drone tidak dapat terbang di lokasi ini saat ini.',
   'error.serviceability.WEATHER_HOLD':
@@ -247,6 +251,15 @@ export const id: Record<string, string> = {
   'error.admin.user.not_found': 'Pengguna "{id}" tidak ditemukan',
   'error.admin.user.last_admin':
     'Tidak dapat menurunkan admin terakhir yang tersisa.',
+  'error.admin.airspace.not_found': 'Zona ruang udara "{id}" tidak ditemukan',
+  'error.admin.airspace.inverted_window':
+    'activeUntil harus lebih lambat daripada activeFrom — zona yang jendela waktunya tertutup sebelum terbuka tidak pernah berlaku.',
+  'error.admin.airspace.past_window':
+    'activeUntil sudah berlalu, sehingga zona ini tidak akan pernah berlaku. Untuk menghentikan keberlakuan sebuah zona sekarang, nonaktifkan zona tersebut.',
+  'error.admin.airspace.inverted_altitude':
+    'ceilingM harus lebih besar daripada floorM.',
+  'error.admin.airspace.null_not_allowed':
+    'Bidang berikut tidak boleh diisi null: {fields}. Hilangkan bidang tersebut agar nilainya tidak berubah.',
 
   // Pembayaran.
   'error.payment.method.not_found':

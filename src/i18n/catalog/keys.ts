@@ -72,6 +72,11 @@ export const ERROR_KEYS = [
   'error.serviceability.OUT_OF_AREA',
   'error.serviceability.ROUTE_TOO_LONG',
   'error.serviceability.NO_FLY_ZONE',
+  // NOT a ServiceabilityCode — see the note in serviceability.service.ts. It is a
+  // presentation-layer override for the one NO_FLY_ZONE block that has no zone to
+  // name, and it deliberately sits next to its siblings despite not being derived
+  // from a code the way they are.
+  'error.serviceability.AIRSPACE_UNVERIFIED',
   'error.serviceability.WEATHER_STORM',
   'error.serviceability.WEATHER_HOLD',
   'error.delivery.cancel.bad_status',
@@ -116,6 +121,11 @@ export const ERROR_KEYS = [
   'error.admin.promo.percent_range',
   'error.admin.user.not_found',
   'error.admin.user.last_admin',
+  'error.admin.airspace.not_found',
+  'error.admin.airspace.inverted_window',
+  'error.admin.airspace.past_window',
+  'error.admin.airspace.inverted_altitude',
+  'error.admin.airspace.null_not_allowed',
   'error.payment.method.not_found',
   'error.recurring.end_before_start',
   'error.recurring.weekly_needs_days',
