@@ -93,6 +93,13 @@ export class MetricsService {
   readonly orphanReservationsReaped: Counter<string>;
   readonly orphanReaperLastScan: Gauge<string>;
   readonly orphanReaperSchedulerRegistered: Gauge<string>;
+  // Restricted airspace (API tier). Every other guard on this surface lives in CI, against
+  // a database `migrate deploy` just built. In PRODUCTION an empty zone list is
+  // indistinguishable from "there is no restricted airspace" — a failed seed, a truncated
+  // table and a correctly-empty registry all read identically, and nothing pages. This
+  // gauge is the difference between that and an alertable signal (`== 0` is the alert;
+  // the seeded airports mean it should never be 0 in any real deployment).
+  readonly airspaceZonesInForce: Gauge<string>;
 
   constructor(
     @InjectQueue(SIM_QUEUE) simQueue: Queue,
@@ -303,6 +310,12 @@ export class MetricsService {
     this.orphanReaperSchedulerRegistered = new Gauge({
       name: 'drovery_orphan_reaper_scheduler_registered',
       help: '1 when this replica registered the orphan-reservation reaper scheduler',
+      registers: [this.registry],
+    });
+
+    this.airspaceZonesInForce = new Gauge({
+      name: 'drovery_airspace_zones_in_force',
+      help: 'Restricted-airspace zones in force at the last cache fill on this replica (alert if 0 — the seeded airports mean an empty list is a broken read, not clear skies)',
       registers: [this.registry],
     });
 

@@ -1,8 +1,12 @@
 import { Logger } from '@nestjs/common';
 
+import { MetricsService } from '../metrics/metrics.service';
 import { createMockPrismaService } from '../test/prisma-mock';
 import { AirspaceService } from './airspace.service';
-import { resolveAirspaceCacheTtlMs } from './airspace.constants';
+import {
+  AIRSPACE_CACHE_TTL_MAX_MS,
+  resolveAirspaceCacheTtlMs,
+} from './airspace.constants';
 
 const zone = (over: Record<string, unknown> = {}) => ({
   id: 'z-1',
@@ -21,12 +25,17 @@ const zone = (over: Record<string, unknown> = {}) => ({
 
 describe('AirspaceService', () => {
   let prisma: ReturnType<typeof createMockPrismaService>;
+  let metrics: { airspaceZonesInForce: { set: jest.Mock } };
   let service: AirspaceService;
 
   beforeEach(() => {
     prisma = createMockPrismaService();
     prisma.airspaceZone.findMany.mockResolvedValue([zone()]);
-    service = new AirspaceService(prisma as never);
+    metrics = { airspaceZonesInForce: { set: jest.fn() } };
+    service = new AirspaceService(
+      prisma as never,
+      metrics as unknown as MetricsService,
+    );
   });
 
   it('returns in-force zones as the geometry shape the checker already uses', async () => {
@@ -125,6 +134,87 @@ describe('AirspaceService', () => {
     expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(2);
   });
 
+  it('applies the window to CACHED rows, so a zone entering force by the clock needs no re-read', async () => {
+    // The one fail-OPEN window this service used to have, in a service written to fail
+    // closed. The cache held the already-window-filtered list, so the window was
+    // evaluated once per fill: a pre-staged TFR — the entire reason a window exists —
+    // went unenforced for up to a full TTL on EVERY instance, including the one that
+    // created it. The database read is cached; the clock is not.
+    //
+    // Times are relative to Date.now() so the default 30s TTL genuinely spans them and
+    // this cannot rot into passing for the wrong reason.
+    const t0 = Date.now();
+    prisma.airspaceZone.findMany.mockResolvedValue([
+      zone({ activeFrom: new Date(t0 + 5_000) }),
+    ]);
+
+    await expect(service.inForceZones(new Date(t0))).resolves.toEqual([]);
+    await expect(
+      service.inForceZones(new Date(t0 + 10_000)),
+    ).resolves.toHaveLength(1);
+
+    // Still one query: the row never left memory, only the answer changed.
+    expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a zone whose window closes mid-TTL, also without a re-read', async () => {
+    // The same property in the other direction. Both matter: caching the ANSWER makes
+    // the service wrong at both edges of the window, not just the opening one.
+    const t0 = Date.now();
+    prisma.airspaceZone.findMany.mockResolvedValue([
+      zone({ activeUntil: new Date(t0 + 5_000) }),
+    ]);
+
+    await expect(service.inForceZones(new Date(t0))).resolves.toHaveLength(1);
+    await expect(service.inForceZones(new Date(t0 + 10_000))).resolves.toEqual(
+      [],
+    );
+
+    expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes the IN-FORCE count to the gauge on a cache fill', async () => {
+    // In production an empty zone list is indistinguishable from "there is no restricted
+    // airspace" — a failed seed, a truncated table and a genuinely clear registry all
+    // read identically, and every guard on this branch lives in CI against a database
+    // `migrate deploy` just built. This gauge is what makes `== 0` alertable.
+    const t0 = Date.now();
+    prisma.airspaceZone.findMany.mockResolvedValue([
+      zone({ name: 'In force' }),
+      // Fetched (it is `active`) but expired — counted as protection it would overstate
+      // exactly the thing the gauge exists to measure.
+      zone({ name: 'Expired', activeUntil: new Date(t0 - 1_000) }),
+    ]);
+
+    await service.inForceZones(new Date(t0));
+
+    expect(metrics.airspaceZonesInForce.set).toHaveBeenCalledWith(1);
+  });
+
+  it('leaves the gauge untouched when the query throws', async () => {
+    // A stale reading is recoverable. A confident `0` published from a failed read is
+    // strictly worse than none: it looks freshly measured, and it silences the alert
+    // that should be firing at the exact moment the airspace can no longer be verified.
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    prisma.airspaceZone.findMany.mockRejectedValue(
+      new Error('connection reset'),
+    );
+
+    await expect(service.inForceZones()).rejects.toThrow('connection reset');
+
+    expect(metrics.airspaceZonesInForce.set).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('works without a MetricsService (it is optional)', async () => {
+    // Observability must never be the reason an airspace read fails, and the DB-backed
+    // spec constructs this service with prisma alone.
+    const bare = new AirspaceService(prisma as never);
+    await expect(bare.inForceZones()).resolves.toHaveLength(1);
+  });
+
   it('serves a fresh read immediately after an invalidate', async () => {
     // An operator adding an emergency TFR needs it live in seconds, not at TTL expiry.
     await service.inForceZones(new Date('2026-08-02T00:00:00Z'));
@@ -202,5 +292,33 @@ describe('resolveAirspaceCacheTtlMs', () => {
 
   it('rejects a non-finite override (NaN) in favor of the fallback', () => {
     expect(resolveAirspaceCacheTtlMs(NaN)).toBe(30_000);
+  });
+
+  it('accepts the maximum exactly', () => {
+    // The bound is inclusive; the rejection starts one millisecond later.
+    expect(resolveAirspaceCacheTtlMs(AIRSPACE_CACHE_TTL_MAX_MS)).toBe(
+      AIRSPACE_CACHE_TTL_MAX_MS,
+    );
+  });
+
+  it('rejects an absurdly large override in favor of the fallback', () => {
+    // `AIRSPACE_CACHE_TTL_MS=999999999` used to be accepted in silence: an eleven-day
+    // cache on a safety surface, from a typo nobody would ever see. The TTL bounds how
+    // long a replica can keep serving zone rows before re-reading them, so an unbounded
+    // override is an unbounded window in which an operator's new restriction is invisible
+    // everywhere but the instance that wrote it.
+    expect(resolveAirspaceCacheTtlMs(999_999_999)).toBe(30_000);
+    expect(resolveAirspaceCacheTtlMs(AIRSPACE_CACHE_TTL_MAX_MS + 1)).toBe(
+      30_000,
+    );
+  });
+
+  it('falls back rather than CLAMPING an over-large override', () => {
+    // Clamping would honor half of a value that was plainly a mistake, and leave the
+    // deployment running at a five-minute TTL nobody chose. The default is the only
+    // number anyone reviewed.
+    expect(resolveAirspaceCacheTtlMs(999_999_999)).not.toBe(
+      AIRSPACE_CACHE_TTL_MAX_MS,
+    );
   });
 });

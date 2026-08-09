@@ -118,6 +118,16 @@ describe('MetricsService', () => {
     expect(out).toContain('drovery_http_request_duration_seconds');
   }, 5000);
 
+  it('exposes the restricted-airspace in-force gauge', async () => {
+    // The signal that separates "no restricted airspace" from "the zone read is broken".
+    // Unlabelled and unconditional, so `drovery_airspace_zones_in_force == 0` is a
+    // complete alert expression on its own — the seeded airports mean a real deployment
+    // is never legitimately at zero.
+    service.airspaceZonesInForce.set(2);
+    const out = await service.metrics();
+    expect(out).toContain('drovery_airspace_zones_in_force 2');
+  });
+
   it('records http requests with method/status/route labels', async () => {
     const labels = { method: 'GET', status: '200', route: '/api/v1/health' };
     service.httpTotal.inc(labels);
