@@ -1,4 +1,4 @@
-import { SEEDED_ZONES } from './__fixtures__/seeded-zones';
+import { SEEDED_ZONES } from './__fixtures__/seeded-zones.fixture';
 import { ServiceabilityService } from './serviceability.service';
 import { WeatherConditions } from './weather.service';
 

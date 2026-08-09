@@ -2,10 +2,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 
-import { SEEDED_ZONES } from './__fixtures__/seeded-zones';
+import { SEEDED_ZONES } from './__fixtures__/seeded-zones.fixture';
 import { AirspaceService } from './airspace.service';
 import { ServiceabilityService } from './serviceability.service';
-import { GeoCircle } from './serviceability.types';
 import { WeatherService } from './weather.service';
 
 /**
@@ -23,9 +22,6 @@ import { WeatherService } from './weather.service';
  * and then runs `npm test`, and jest's rootDir is `src`.
  */
 const dbDescribe = process.env.DATABASE_URL ? describe : describe.skip;
-
-const byName = (zones: GeoCircle[]): GeoCircle[] =>
-  [...zones].sort((a, b) => a.name.localeCompare(b.name));
 
 // Soekarno-Hatta, from the seed: -6.1256, 106.6558, 5 km.
 const CGK = { lat: -6.1256, lng: 106.6558 };
@@ -70,14 +66,28 @@ dbDescribe('airspace, against a real seeded database', () => {
     await pool?.end();
   });
 
-  it('reads exactly the seeded zones out of the database', async () => {
+  it('holds every seeded zone, in force and unchanged', async () => {
     const zones = await airspace.inForceZones();
 
     // Chains this to airspace-seed.spec.ts: that one proves the fixture matches the
     // migration, this one proves the database matches the fixture. Together they
     // pin migration -> database -> geometry.
+    //
+    // CONTAINMENT, not equality. The risk here is a seeded row going missing, drifting
+    // or never arriving, and containment catches all three. Demanding the database hold
+    // nothing else would fail for a developer who added a local zone — punishing normal
+    // use rather than catching a bug, and a test that cries wolf locally gets ignored
+    // into uselessness. CI loses nothing: it rebuilds from `migrate deploy` every run.
+    //
+    // The VALUES stay strict. Drift hides in a radius quietly becoming 3 when it should
+    // be 5, not in the row count.
     expect(zones.length).toBeGreaterThan(0);
-    expect(byName(zones)).toEqual(byName(SEEDED_ZONES));
+
+    for (const seeded of SEEDED_ZONES) {
+      const match = zones.find((z) => z.name === seeded.name);
+      expect(match).toBeDefined(); // present and in force at all
+      expect(match).toEqual(seeded); // name, lat, lng and radius all exact
+    }
   }, 30_000);
 
   it('refuses a route ENDING at Soekarno-Hatta', async () => {

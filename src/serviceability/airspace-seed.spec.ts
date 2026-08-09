@@ -4,7 +4,7 @@ import { join } from 'path';
 import {
   AIRSPACE_SEED_MIGRATION,
   SEEDED_ZONES,
-} from './__fixtures__/seeded-zones';
+} from './__fixtures__/seeded-zones.fixture';
 import { GeoCircle } from './serviceability.types';
 
 /**
