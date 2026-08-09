@@ -39,6 +39,7 @@ import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
   AirspaceZoneResponseDto,
+  AirspaceZoneWriteResponseDto,
   AdminPaginatedDeliveriesDto,
   AdminPaginatedPromosDto,
   AdminPaginatedUsersDto,
@@ -186,7 +187,7 @@ export class AdminController {
   }
 
   @Post('airspace')
-  @ApiCreatedResponse({ type: AirspaceZoneResponseDto })
+  @ApiCreatedResponse({ type: AirspaceZoneWriteResponseDto })
   createAirspace(
     @AuditActor() actor: AuditActor,
     @Body() dto: CreateAirspaceZoneDto,
@@ -195,7 +196,7 @@ export class AdminController {
   }
 
   @Patch('airspace/:id')
-  @ApiOkResponse({ type: AirspaceZoneResponseDto })
+  @ApiOkResponse({ type: AirspaceZoneWriteResponseDto })
   updateAirspace(
     @AuditActor() actor: AuditActor,
     @Param('id') id: string,
@@ -207,7 +208,7 @@ export class AdminController {
   // 200 with the DEACTIVATED row, not 204: the response is the zone as it now stands,
   // which is the point — the row still exists.
   @Delete('airspace/:id')
-  @ApiOkResponse({ type: AirspaceZoneResponseDto })
+  @ApiOkResponse({ type: AirspaceZoneWriteResponseDto })
   deactivateAirspace(@AuditActor() actor: AuditActor, @Param('id') id: string) {
     return this.admin.deactivateAirspaceZone(actor, id);
   }

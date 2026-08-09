@@ -97,8 +97,14 @@ export class MetricsService {
   // a database `migrate deploy` just built. In PRODUCTION an empty zone list is
   // indistinguishable from "there is no restricted airspace" — a failed seed, a truncated
   // table and a correctly-empty registry all read identically, and nothing pages. This
-  // gauge is the difference between that and an alertable signal (`== 0` is the alert;
-  // the seeded airports mean it should never be 0 in any real deployment).
+  // gauge makes that observable, but it is NOT a complete alert on its own: like any
+  // unlabelled prom-client Gauge it reads 0 from process start until the first `.set()`,
+  // so a replica that has never filled the cache reports 0 indistinguishably from a
+  // genuinely empty registry. That includes every worker pod (it builds the same
+  // AppModule and serves this registry on :9091/metrics, but never calls `inForceZones`)
+  // and any API replica before its first quote. An `== 0` alert would have to be scoped
+  // to replicas known to have served a quote, or paired with a separate "cache was ever
+  // filled" signal.
   readonly airspaceZonesInForce: Gauge<string>;
 
   constructor(
@@ -315,7 +321,7 @@ export class MetricsService {
 
     this.airspaceZonesInForce = new Gauge({
       name: 'drovery_airspace_zones_in_force',
-      help: 'Restricted-airspace zones in force at the last cache fill on this replica (alert if 0 — the seeded airports mean an empty list is a broken read, not clear skies)',
+      help: 'Restricted-airspace zones in force at the last cache fill on this replica — reads 0 before this replica has ever filled the cache too, indistinguishable from a genuinely empty registry, so an alert must scope to replicas that have served a quote (or pair with a separate "cache ever filled" signal)',
       registers: [this.registry],
     });
 

@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, OmitType } from '@nestjs/swagger';
 import {
   AirspaceZoneKind,
   DeliveryFailureReason,
@@ -175,6 +175,16 @@ export class AirspaceZoneResponseDto {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * POST/PATCH/DELETE `/admin/airspace` return the raw stored row, not the
+ * `listAirspaceZones` projection — `inForce` is computed only for the GET list, so
+ * advertising it here would document a field these three routes never send.
+ */
+export class AirspaceZoneWriteResponseDto extends OmitType(
+  AirspaceZoneResponseDto,
+  ['inForce'] as const,
+) {}
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 

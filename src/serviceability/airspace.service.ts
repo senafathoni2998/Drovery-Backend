@@ -71,7 +71,7 @@ export class AirspaceService {
       // confident "0 restricted zones" produced by a DB blip is the exact false
       // all-clear the throw above exists to prevent, and it would silence the alert
       // that should be firing.
-      this.metrics?.airspaceZonesInForce.set(inForce.length);
+      this.metrics?.airspaceZonesInForce.set?.(inForce.length);
     }
 
     return inForce.map(({ name, lat, lng, radiusKm }) => ({
