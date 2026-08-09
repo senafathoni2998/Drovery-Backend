@@ -38,11 +38,13 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: Prisma model `AirspaceZone` (fields below); enum `AirspaceZoneKind` = `AIRPORT | MILITARY | TEMPORARY | EVENT`; three new `AdminAuditAction` values `AIRSPACE_ZONE_CREATE`, `AIRSPACE_ZONE_UPDATE`, `AIRSPACE_ZONE_DEACTIVATE`; `prisma.airspaceZone` on the test mock.
+- Produces: Prisma model `AirspaceZone` (fields below); enum `AirspaceZoneKind` = `AIRPORT | MILITARY | TEMPORARY | EVENT`; three new `AdminAuditAction` values `AIRSPACE_ZONE_CREATE`, `AIRSPACE_ZONE_UPDATE`, `AIRSPACE_ZONE_DEACTIVATE`; one new `AdminAuditTargetType` value `AIRSPACE_ZONE`; `prisma.airspaceZone` on the test mock.
 
-- [ ] **Step 1: Add the enum and model to `prisma/schema.prisma`**
+- [ ] **Step 1: Add the enums and model to `prisma/schema.prisma`**
 
-Place `AirspaceZoneKind` next to the model, matching the file's convention of enums adjacent to their model. Add the three new values to the existing `AdminAuditAction` enum.
+Place `AirspaceZoneKind` next to the model, matching the file's convention of enums adjacent to their model.
+
+**Both audit enums are extended here, in this one migration** — the three `AdminAuditAction` values AND the `AIRSPACE_ZONE` value on `AdminAuditTargetType`. Task 4 uses them; splitting the target type into its own later migration would mean two `ALTER TYPE` migrations for one feature and would leave Task 4's tests unable to reference the value they assert on.
 
 ```prisma
 enum AirspaceZoneKind {
@@ -845,7 +847,7 @@ Validation (`activeFrom < activeUntil`, `floorM < ceilingM`) lives in a private 
 
 Each mutation: validate → (for update/deactivate) read the row for `before` and its 404 → `$transaction` wrapping the write plus `recordWithinTx` → **`this.airspace.invalidate()` after the transaction commits**, not inside it. Invalidating inside would drop the cache for a write that then rolls back, which is merely wasteful — but invalidating before the commit is also racy, so put it after and say why.
 
-Add `AIRSPACE_ZONE` to the `AdminAuditTargetType` enum in `prisma/schema.prisma`, with a migration. That is a fourth `ALTER TYPE … ADD VALUE`; the same Postgres rule from Task 1 applies, so do not write a row using it in that migration.
+`AIRSPACE_ZONE` already exists on `AdminAuditTargetType` — Task 1 added it in the same migration as the three action values. No migration is needed in this task.
 
 - [ ] **Step 6: Add the four routes**
 
