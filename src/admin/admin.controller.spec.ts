@@ -22,6 +22,10 @@ describe('AdminController', () => {
     updatePromo: jest.Mock;
     setRole: jest.Mock;
     issueDroneCommand: jest.Mock;
+    listAirspaceZones: jest.Mock;
+    createAirspaceZone: jest.Mock;
+    updateAirspaceZone: jest.Mock;
+    deactivateAirspaceZone: jest.Mock;
   };
   let audit: { list: jest.Mock };
 
@@ -38,6 +42,12 @@ describe('AdminController', () => {
       updatePromo: jest.fn().mockResolvedValue({ id: 'p-1' }),
       setRole: jest.fn().mockResolvedValue({ id: 'u-2', role: Role.ADMIN }),
       issueDroneCommand: jest.fn().mockResolvedValue({ id: 'c-1' }),
+      listAirspaceZones: jest.fn().mockResolvedValue([]),
+      createAirspaceZone: jest.fn().mockResolvedValue({ id: 'z-1' }),
+      updateAirspaceZone: jest.fn().mockResolvedValue({ id: 'z-1' }),
+      deactivateAirspaceZone: jest
+        .fn()
+        .mockResolvedValue({ id: 'z-1', active: false }),
     };
     audit = {
       list: jest
@@ -122,6 +132,33 @@ describe('AdminController', () => {
       const dto = { type: 'RETURN_TO_BASE' } as any;
       await controller.issueCommand(ACTOR, 'd-1', dto);
       expect(admin.issueDroneCommand).toHaveBeenCalledWith(ACTOR, 'd-1', dto);
+    });
+  });
+
+  // Same actor-first shape again. The delete route is the one worth pinning: it is
+  // wired to a DEACTIVATION, so a controller that ever grew its own hard delete would
+  // be visible here as a call to something other than deactivateAirspaceZone.
+  describe('the audited airspace mutations forward the actor', () => {
+    it('listAirspace — no actor, it mutates nothing', async () => {
+      await controller.listAirspace();
+      expect(admin.listAirspaceZones).toHaveBeenCalledWith();
+    });
+
+    it('createAirspace — actor, then the body', async () => {
+      const dto = { name: 'Bandung Air Show' } as any;
+      await controller.createAirspace(ACTOR, dto);
+      expect(admin.createAirspaceZone).toHaveBeenCalledWith(ACTOR, dto);
+    });
+
+    it('updateAirspace — actor, then id, then the body', async () => {
+      const dto = { radiusKm: 7 } as any;
+      await controller.updateAirspace(ACTOR, 'z-1', dto);
+      expect(admin.updateAirspaceZone).toHaveBeenCalledWith(ACTOR, 'z-1', dto);
+    });
+
+    it('deactivateAirspace — actor, then id, routed to the DEACTIVATION', async () => {
+      await controller.deactivateAirspace(ACTOR, 'z-1');
+      expect(admin.deactivateAirspaceZone).toHaveBeenCalledWith(ACTOR, 'z-1');
     });
   });
 

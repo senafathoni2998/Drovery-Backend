@@ -251,6 +251,11 @@ export const id: Record<string, string> = {
   'error.admin.user.not_found': 'Pengguna "{id}" tidak ditemukan',
   'error.admin.user.last_admin':
     'Tidak dapat menurunkan admin terakhir yang tersisa.',
+  'error.admin.airspace.not_found': 'Zona ruang udara "{id}" tidak ditemukan',
+  'error.admin.airspace.inverted_window':
+    'activeUntil harus lebih lambat daripada activeFrom — zona yang jendela waktunya tertutup sebelum terbuka tidak pernah berlaku.',
+  'error.admin.airspace.inverted_altitude':
+    'ceilingM harus lebih besar daripada floorM.',
 
   // Pembayaran.
   'error.payment.method.not_found':

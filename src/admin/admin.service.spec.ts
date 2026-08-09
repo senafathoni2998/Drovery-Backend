@@ -1,10 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AirspaceService } from '../serviceability/airspace.service';
 import { SupportChatPublisher } from '../support/chat/support-chat.publisher';
 import { WalletService } from '../wallet/wallet.service';
 import { createMockPrismaService } from '../test/prisma-mock';
@@ -26,6 +31,7 @@ describe('AdminService', () => {
   let wallet: { creditWithinTx: jest.Mock };
   let publisher: { publishMessage: jest.Mock };
   let droneCommands: { issue: jest.Mock; listForDelivery: jest.Mock };
+  let airspace: { invalidate: jest.Mock; inForceZones: jest.Mock };
   let recordWithinTx: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -46,6 +52,7 @@ describe('AdminService', () => {
       issue: jest.fn().mockResolvedValue({ id: 'c-1' }),
       listForDelivery: jest.fn().mockResolvedValue([]),
     };
+    airspace = { invalidate: jest.fn(), inForceZones: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
@@ -65,6 +72,7 @@ describe('AdminService', () => {
         { provide: WalletService, useValue: wallet },
         { provide: SupportChatPublisher, useValue: publisher },
         { provide: DroneCommandService, useValue: droneCommands },
+        { provide: AirspaceService, useValue: airspace },
       ],
     }).compile();
     service = module.get(AdminService);
@@ -1288,6 +1296,408 @@ describe('AdminService', () => {
         }),
       });
       expectAuditedThrough(prisma.txClient, 'DRONE_COMMAND_ISSUE');
+    });
+  });
+
+  describe('airspace zones', () => {
+    const ACTOR = { userId: 'admin-1', role: 'ADMIN' as const };
+
+    it('rejects a window that closes before it opens', async () => {
+      // Unlike the audit-log query's inverted range, which returns an empty 200, this
+      // one is a 400: it silently creates a zone that is never in force, which on an
+      // airspace surface reads as protection that does not exist.
+      await expect(
+        service.createAirspaceZone(ACTOR, {
+          name: 'Bad TFR',
+          kind: 'TEMPORARY',
+          lat: -6.9,
+          lng: 107.6,
+          radiusKm: 2,
+          activeFrom: '2026-09-02T00:00:00Z',
+          activeUntil: '2026-09-01T00:00:00Z',
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.create).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a floor above its ceiling', async () => {
+      await expect(
+        service.createAirspaceZone(ACTOR, {
+          name: 'Inverted',
+          kind: 'EVENT',
+          lat: -6.9,
+          lng: 107.6,
+          radiusKm: 2,
+          floorM: 500,
+          ceilingM: 100,
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.create).not.toHaveBeenCalled();
+    });
+
+    it('records a created zone from the stored row and invalidates the cache', async () => {
+      prisma.airspaceZone.create.mockResolvedValue({
+        id: 'z-9',
+        name: 'Bandung Air Show',
+        kind: 'EVENT',
+        lat: -6.9,
+        lng: 107.6,
+        radiusKm: 3,
+        floorM: null,
+        ceilingM: null,
+        activeFrom: null,
+        activeUntil: null,
+        active: true,
+      });
+
+      await service.createAirspaceZone(ACTOR, {
+        name: 'Bandung Air Show',
+        kind: 'EVENT',
+        lat: -6.9,
+        lng: 107.6,
+        radiusKm: 3,
+      } as never);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'AIRSPACE_ZONE_CREATE',
+          targetType: 'AIRSPACE_ZONE',
+          targetId: 'z-9',
+          args: expect.objectContaining({
+            name: 'Bandung Air Show',
+            radiusKm: 3,
+          }),
+        }),
+      });
+      // A new restriction that is not live until a TTL expires is a restriction that
+      // is not enforced.
+      expect(airspace.invalidate).toHaveBeenCalled();
+    });
+
+    it('deactivates rather than deleting', async () => {
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        active: true,
+      });
+      prisma.airspaceZone.update.mockResolvedValue({
+        id: 'z-9',
+        active: false,
+      });
+
+      await service.deactivateAirspaceZone(ACTOR, 'z-9');
+
+      // A zone that once existed is part of why a past delivery was refused.
+      expect(prisma.airspaceZone.delete).not.toHaveBeenCalled();
+      expect(prisma.airspaceZone.update.mock.calls[0][0].data).toMatchObject({
+        active: false,
+      });
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'AIRSPACE_ZONE_DEACTIVATE',
+          before: { active: true },
+          after: { active: false },
+        }),
+      });
+    });
+
+    it('writes no audit row when the zone does not exist', async () => {
+      prisma.airspaceZone.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.updateAirspaceZone(ACTOR, 'missing', { radiusKm: 4 } as never),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('runs the audit write inside the SAME transaction as the zone create', async () => {
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.airspaceZone.create.mockImplementation(() => {
+        order.push('create');
+        return Promise.resolve({
+          id: 'z-9',
+          name: 'X',
+          kind: 'EVENT',
+          lat: 0,
+          lng: 0,
+          radiusKm: 1,
+          active: true,
+        });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve({});
+      });
+
+      await service.createAirspaceZone(ACTOR, {
+        name: 'X',
+        kind: 'EVENT',
+        lat: 0,
+        lng: 0,
+        radiusKm: 1,
+      } as never);
+
+      expect(order).toEqual(['begin', 'create', 'audit', 'commit']);
+    });
+
+    // ── Beyond the brief ──
+
+    it('drops the cache only AFTER the transaction commits, never inside it', async () => {
+      // Strictly stronger than "invalidate was called": invalidating INSIDE the
+      // transaction drops the cache for a write that may still roll back, and
+      // invalidating before the commit races the next reader, which can refill the
+      // cache from a snapshot that predates the new zone — and then serve it for a
+      // full TTL. Only the position of the marker relative to 'commit' sees that.
+      const order: string[] = [];
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.airspaceZone.create.mockImplementation(() => {
+        order.push('create');
+        return Promise.resolve({
+          id: 'z-9',
+          name: 'X',
+          kind: 'EVENT',
+          lat: 0,
+          lng: 0,
+          radiusKm: 1,
+          active: true,
+        });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve({});
+      });
+      airspace.invalidate.mockImplementation(() => order.push('invalidate'));
+
+      await service.createAirspaceZone(ACTOR, {
+        name: 'X',
+        kind: 'EVENT',
+        lat: 0,
+        lng: 0,
+        radiusKm: 1,
+      } as never);
+
+      expect(order).toEqual([
+        'begin',
+        'create',
+        'audit',
+        'commit',
+        'invalidate',
+      ]);
+      expectAuditedThrough(prisma.txClient, 'AIRSPACE_ZONE_CREATE');
+    });
+
+    it('rejects a PATCH whose new activeUntil closes before the STORED activeFrom', async () => {
+      // The hole a DTO-only check leaves open. Nothing in this patch is inverted on
+      // its own — `activeUntil` alone cannot be — so validating the DTO in isolation
+      // waves it through and stores exactly the never-in-force zone the 400 exists to
+      // reject. Only the MERGED effective values can see it.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        activeFrom: new Date('2026-09-02T00:00:00.000Z'),
+        activeUntil: null,
+        floorM: null,
+        ceilingM: null,
+      });
+
+      await expect(
+        service.updateAirspaceZone(ACTOR, 'z-9', {
+          activeUntil: '2026-09-01T00:00:00Z',
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.update).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a PATCH whose new ceiling sits below the STORED floor', async () => {
+      // Same defect class as the window above, on the vertical axis.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        activeFrom: null,
+        activeUntil: null,
+        floorM: 500,
+        ceilingM: null,
+      });
+
+      await expect(
+        service.updateAirspaceZone(ACTOR, 'z-9', { ceilingM: 100 } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.update).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('records a zone edit as a diff sourced from the UPDATED row, then invalidates', async () => {
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        name: 'Bandung Air Show',
+        kind: 'EVENT',
+        lat: -6.9,
+        lng: 107.6,
+        radiusKm: 3,
+        floorM: null,
+        ceilingM: null,
+        activeFrom: null,
+        activeUntil: null,
+        active: true,
+      });
+      prisma.airspaceZone.update.mockResolvedValue({
+        id: 'z-9',
+        name: 'Bandung Air Show',
+        kind: 'EVENT',
+        lat: -6.9,
+        lng: 107.6,
+        radiusKm: 7,
+        floorM: null,
+        ceilingM: null,
+        activeFrom: null,
+        activeUntil: null,
+        active: true,
+      });
+
+      await service.updateAirspaceZone(ACTOR, 'z-9', {
+        radiusKm: 7,
+      } as never);
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'AIRSPACE_ZONE_UPDATE',
+          targetType: 'AIRSPACE_ZONE',
+          targetId: 'z-9',
+          before: { radiusKm: 3 },
+          after: { radiusKm: 7 },
+        }),
+      });
+      // Widening a no-fly zone that stays cached for a TTL is a zone that is not
+      // enforced at its new radius.
+      expect(airspace.invalidate).toHaveBeenCalled();
+    });
+
+    it('co-commits the zone edit audit row and invalidates after the commit', async () => {
+      const order: string[] = [];
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        radiusKm: 3,
+        activeFrom: null,
+        activeUntil: null,
+        floorM: null,
+        ceilingM: null,
+        active: true,
+      });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.airspaceZone.update.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ id: 'z-9', radiusKm: 7, active: true });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve({});
+      });
+      airspace.invalidate.mockImplementation(() => order.push('invalidate'));
+
+      await service.updateAirspaceZone(ACTOR, 'z-9', { radiusKm: 7 } as never);
+
+      expect(order).toEqual([
+        'begin',
+        'update',
+        'audit',
+        'commit',
+        'invalidate',
+      ]);
+      expectAuditedThrough(prisma.txClient, 'AIRSPACE_ZONE_UPDATE');
+    });
+
+    it('co-commits the deactivation audit row and invalidates after the commit', async () => {
+      const order: string[] = [];
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        active: true,
+      });
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        order.push('begin');
+        const r = await fn(prisma.txClient);
+        order.push('commit');
+        return r;
+      });
+      prisma.airspaceZone.update.mockImplementation(() => {
+        order.push('update');
+        return Promise.resolve({ id: 'z-9', active: false });
+      });
+      prisma.adminAuditLog.create.mockImplementation(() => {
+        order.push('audit');
+        return Promise.resolve({});
+      });
+      airspace.invalidate.mockImplementation(() => order.push('invalidate'));
+
+      await service.deactivateAirspaceZone(ACTOR, 'z-9');
+
+      expect(order).toEqual([
+        'begin',
+        'update',
+        'audit',
+        'commit',
+        'invalidate',
+      ]);
+      expectAuditedThrough(prisma.txClient, 'AIRSPACE_ZONE_DEACTIVATE');
+    });
+
+    it('404s a deactivation of a zone that does not exist, writing nothing', async () => {
+      prisma.airspaceZone.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.deactivateAirspaceZone(ACTOR, 'missing'),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.airspaceZone.update).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+      expect(airspace.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('records a deactivation that changed nothing rather than a row that says nothing', async () => {
+      // `diffAllowed` would emit before: null / after: null here — a row asserting an
+      // operator touched the zone and changed nothing, which is the failure the
+      // batteryPercent allowlist entry documents as worse than no row at all. The
+      // operator DID act; the row must say what state the zone was already in.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        active: false,
+      });
+      prisma.airspaceZone.update.mockResolvedValue({
+        id: 'z-9',
+        active: false,
+      });
+
+      await service.deactivateAirspaceZone(ACTOR, 'z-9');
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'AIRSPACE_ZONE_DEACTIVATE',
+          before: { active: false },
+          after: { active: false },
+        }),
+      });
+    });
+
+    it('lists deactivated zones too — they are the record of a past refusal', async () => {
+      prisma.airspaceZone.findMany.mockResolvedValue([]);
+
+      await service.listAirspaceZones();
+
+      const args = prisma.airspaceZone.findMany.mock.calls[0]?.[0] ?? {};
+      expect(args.where).toBeUndefined();
     });
   });
 });

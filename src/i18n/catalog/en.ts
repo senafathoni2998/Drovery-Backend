@@ -245,6 +245,11 @@ export const en: Record<string, string> = {
     'A PERCENT discountValue must be between 0 and 100.',
   'error.admin.user.not_found': 'User "{id}" not found',
   'error.admin.user.last_admin': 'Cannot demote the last remaining admin.',
+  'error.admin.airspace.not_found': 'Airspace zone "{id}" not found',
+  'error.admin.airspace.inverted_window':
+    'activeUntil must be later than activeFrom — a zone whose window closes before it opens is never in force.',
+  'error.admin.airspace.inverted_altitude':
+    'ceilingM must be greater than floorM.',
 
   // Payment.
   'error.payment.method.not_found': 'Payment method with id "{id}" not found',

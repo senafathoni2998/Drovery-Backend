@@ -17,6 +17,7 @@ import {
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { DroneCommandService } from '../deliveries/commands/drone-command.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AirspaceService } from '../serviceability/airspace.service';
 import {
   SupportChatPublisher,
   toSupportChatPayload,
@@ -33,10 +34,36 @@ import {
   IssueCommandDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import {
+  CreateAirspaceZoneDto,
+  UpdateAirspaceZoneDto,
+} from './dto/airspace.dto';
 import { AdminAuditService, AuditActor } from './audit/admin-audit.service';
 import { diffAllowed, pickAllowed } from './audit/admin-audit.constants';
 
 const USER_SELECT = { id: true, name: true, email: true } as const;
+
+/**
+ * The shape an airspace PATCH actually arrives in.
+ *
+ * `@IsOptional()` skips validation for `null` as well as `undefined`, so an explicit
+ * `null` in the body reaches the service untouched and means "clear this bound" — a
+ * distinction `UpdateAirspaceZoneDto` cannot express, since it types every field as
+ * merely absent. Reading the patch through this type is what makes "unset the ceiling"
+ * expressible without it being confused with "leave the ceiling alone".
+ */
+type AirspaceZonePatch = {
+  [K in keyof UpdateAirspaceZoneDto]: UpdateAirspaceZoneDto[K] | null;
+};
+
+const toDateOrNull = (value: string | null | undefined): Date | null =>
+  value == null ? null : new Date(value);
+
+/** Absent key → keep what is stored; present key (even as `null`) → take the patch. */
+const mergeField = <T>(
+  patched: T | null | undefined,
+  current: T | null,
+): T | null => (patched === undefined ? current : (patched ?? null));
 
 @Injectable()
 export class AdminService {
@@ -49,6 +76,7 @@ export class AdminService {
     private readonly chatPublisher: SupportChatPublisher,
     private readonly droneCommands: DroneCommandService,
     private readonly audit: AdminAuditService,
+    private readonly airspace: AirspaceService,
   ) {}
 
   // ── Support inbox (AGENT + ADMIN) ──
@@ -668,6 +696,247 @@ export class AdminService {
     if (type === 'PERCENT' && (value <= 0 || value > 100)) {
       throw new AppBadRequestException('error.admin.promo.percent_range');
     }
+  }
+
+  // ── Airspace (ADMIN) ──
+  //
+  // Restricted airspace as DATA. A no-fly zone that needs a deploy to change is not
+  // data, and these four routes are what make it so. They are also the first consumer
+  // of the audit machinery outside the increment that built it.
+
+  /**
+   * The zone registry, INCLUDING deactivated zones.
+   *
+   * Deactivation is how a zone is "deleted" here, precisely so a zone that once
+   * existed stays part of the record of why a past delivery was refused. Filtering the
+   * inactive ones out of the operator's own list would put that record back out of
+   * reach and defeat the reason the row is kept.
+   *
+   * UNPAGINATED, and read from the PRIMARY rather than through `readWithFallback`.
+   * Both are deliberate and both are bets on this staying a small, hand-maintained
+   * registry: an operator who has just added an emergency restriction and reloads the
+   * list must see it, and replica lag would show them a registry without the zone they
+   * just created. If TFRs ever accumulate to the point where this list is long, it
+   * wants a page and a filter — the unpaginated read is the thing to revisit first.
+   */
+  listAirspaceZones() {
+    return this.prisma.airspaceZone.findMany({
+      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+    });
+  }
+
+  /** Declare a new restricted zone. Live on the next quote this instance serves. */
+  async createAirspaceZone(actor: AuditActor, dto: CreateAirspaceZoneDto) {
+    const activeFrom = toDateOrNull(dto.activeFrom);
+    const activeUntil = toDateOrNull(dto.activeUntil);
+    this.assertZoneBounds({
+      activeFrom,
+      activeUntil,
+      floorM: dto.floorM ?? null,
+      ceilingM: dto.ceilingM ?? null,
+    });
+
+    const zone = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.airspaceZone.create({
+        data: {
+          name: dto.name,
+          kind: dto.kind,
+          lat: dto.lat,
+          lng: dto.lng,
+          radiusKm: dto.radiusKm,
+          floorM: dto.floorM ?? null,
+          ceilingM: dto.ceilingM ?? null,
+          activeFrom,
+          activeUntil,
+          notes: dto.notes ?? null,
+        },
+      });
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.AIRSPACE_ZONE_CREATE,
+        targetType: AdminAuditTargetType.AIRSPACE_ZONE,
+        targetId: created.id,
+        // From the CREATED ROW, not the DTO — same invariant as createDrone/createPromo.
+        args: pickAllowed(
+          AdminAuditAction.AIRSPACE_ZONE_CREATE,
+          created as never,
+        ),
+      });
+      return created;
+    });
+
+    this.dropZoneCacheAfterCommit();
+    this.logger.log(
+      `admin ${actor.userId} declared airspace zone ${zone.id} (${zone.kind}, ${zone.radiusKm} km)`,
+    );
+    return zone;
+  }
+
+  /** Edit a zone — including re-enabling one, via `active: true`. */
+  async updateAirspaceZone(
+    actor: AuditActor,
+    id: string,
+    dto: UpdateAirspaceZoneDto,
+  ) {
+    const before = await this.findZoneOr404(id); // 404; now also the audit's before
+    const patch = dto as AirspaceZonePatch;
+
+    // Validate the MERGED values, not the patch alone. `activeUntil` cannot be
+    // inverted on its own, so a DTO-only check waves through a PATCH that closes the
+    // window before the STORED activeFrom opens it — storing exactly the never-in-force
+    // zone the 400 exists to reject. Same on the vertical axis.
+    const activeFrom =
+      patch.activeFrom !== undefined
+        ? toDateOrNull(patch.activeFrom)
+        : before.activeFrom;
+    const activeUntil =
+      patch.activeUntil !== undefined
+        ? toDateOrNull(patch.activeUntil)
+        : before.activeUntil;
+    const floorM = mergeField(patch.floorM, before.floorM);
+    const ceilingM = mergeField(patch.ceilingM, before.ceilingM);
+    this.assertZoneBounds({ activeFrom, activeUntil, floorM, ceilingM });
+
+    const data: Prisma.AirspaceZoneUpdateInput = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
+      ...(dto.lat !== undefined ? { lat: dto.lat } : {}),
+      ...(dto.lng !== undefined ? { lng: dto.lng } : {}),
+      ...(dto.radiusKm !== undefined ? { radiusKm: dto.radiusKm } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+      ...(patch.floorM !== undefined ? { floorM } : {}),
+      ...(patch.ceilingM !== undefined ? { ceilingM } : {}),
+      ...(patch.activeFrom !== undefined ? { activeFrom } : {}),
+      ...(patch.activeUntil !== undefined ? { activeUntil } : {}),
+      ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    };
+
+    const zone = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.airspaceZone.update({ where: { id }, data });
+      const diff = diffAllowed(
+        AdminAuditAction.AIRSPACE_ZONE_UPDATE,
+        before as never,
+        updated as never,
+      );
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.AIRSPACE_ZONE_UPDATE,
+        targetType: AdminAuditTargetType.AIRSPACE_ZONE,
+        targetId: id,
+        before: diff.before,
+        after: diff.after,
+      });
+      return updated;
+    });
+
+    this.dropZoneCacheAfterCommit();
+    this.logger.log(`admin ${actor.userId} edited airspace zone ${id}`);
+    return zone;
+  }
+
+  /**
+   * "Delete" a zone. It is a DEACTIVATION and never a row delete: a zone that once
+   * existed is part of the record of why a past delivery was refused, and hard-deleting
+   * it makes that refusal unexplainable afterwards.
+   *
+   * Records with `pickAllowed` PAIRS rather than `diffAllowed`, matching setRole and
+   * setTicketStatus as the other single-field setters. `diffAllowed` on an
+   * already-inactive zone emits `before: null, after: null` — a row asserting an
+   * operator touched the zone and changed nothing, which the batteryPercent allowlist
+   * entry documents as worse than no row at all. The operator DID act; the row says
+   * what state the zone was already in.
+   */
+  async deactivateAirspaceZone(actor: AuditActor, id: string) {
+    const before = await this.findZoneOr404(id); // 404 BEFORE anything is recorded
+
+    const zone = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.airspaceZone.update({
+        where: { id },
+        data: { active: false },
+      });
+      await this.audit.recordWithinTx(tx, {
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        action: AdminAuditAction.AIRSPACE_ZONE_DEACTIVATE,
+        targetType: AdminAuditTargetType.AIRSPACE_ZONE,
+        targetId: id,
+        before: pickAllowed(AdminAuditAction.AIRSPACE_ZONE_DEACTIVATE, {
+          active: before.active,
+        }),
+        // From the UPDATED ROW, not the literal `false` written above.
+        after: pickAllowed(AdminAuditAction.AIRSPACE_ZONE_DEACTIVATE, {
+          active: updated.active,
+        }),
+      });
+      return updated;
+    });
+
+    this.dropZoneCacheAfterCommit();
+    this.logger.log(`admin ${actor.userId} deactivated airspace zone ${id}`);
+    return zone;
+  }
+
+  private async findZoneOr404(id: string) {
+    const zone = await this.prisma.airspaceZone.findUnique({ where: { id } });
+    if (!zone) {
+      throw new AppNotFoundException('error.admin.airspace.not_found', { id });
+    }
+    return zone;
+  }
+
+  /**
+   * Both bounds rejected LOUDLY, as a 400 — deliberately unlike the audit-log query's
+   * inverted `from`/`to` range, which returns an empty 200. A zone that is never in
+   * force reads to an operator as protection that exists, and the whole surface is
+   * about protection existing.
+   *
+   * `>=` on both, not `>`: a window whose ends coincide is in force for a single
+   * instant, and a floor level with its ceiling is a zone of zero height. Neither is
+   * a restriction; both are almost certainly a typo.
+   */
+  private assertZoneBounds(zone: {
+    activeFrom: Date | null;
+    activeUntil: Date | null;
+    floorM: number | null;
+    ceilingM: number | null;
+  }) {
+    if (
+      zone.activeFrom &&
+      zone.activeUntil &&
+      zone.activeFrom.getTime() >= zone.activeUntil.getTime()
+    ) {
+      throw new AppBadRequestException('error.admin.airspace.inverted_window');
+    }
+    if (
+      zone.floorM !== null &&
+      zone.ceilingM !== null &&
+      zone.floorM >= zone.ceilingM
+    ) {
+      throw new AppBadRequestException(
+        'error.admin.airspace.inverted_altitude',
+      );
+    }
+  }
+
+  /**
+   * Drop the cached zone list. Call this AFTER the transaction has committed.
+   *
+   * Inside the transaction it would drop the cache for a write that may still roll
+   * back, which is merely wasteful. Immediately BEFORE the commit is the real hazard:
+   * a reader racing in that gap refills the cache from a snapshot that predates the
+   * new zone, and then serves that stale list for a full TTL. A new restriction that
+   * is not live until a TTL expires is a restriction that is not enforced.
+   *
+   * SCOPE, and it is narrow: this clears only THIS process's cache. Every other
+   * instance keeps serving its own copy until `AIRSPACE_CACHE_TTL_MS` elapses. That
+   * bound — and the case it does not cover, a zone that comes into force by the clock
+   * with no write to hang an invalidation on — is stated on the constant itself
+   * (`serviceability/airspace.constants.ts`).
+   */
+  private dropZoneCacheAfterCommit() {
+    this.airspace.invalidate();
   }
 
   // ── Overview (ADMIN) ──

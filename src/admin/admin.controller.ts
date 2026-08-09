@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -26,6 +27,10 @@ import {
   UpdateDroneDto,
   UpdatePromoDto,
 } from './dto/admin.dto';
+import {
+  CreateAirspaceZoneDto,
+  UpdateAirspaceZoneDto,
+} from './dto/airspace.dto';
 import { AuditActor } from './audit/audit-actor.decorator';
 import { AdminAuditService } from './audit/admin-audit.service';
 import { AuditQueryDto } from './audit/dto/audit-query.dto';
@@ -168,6 +173,36 @@ export class AdminController {
     @Body() dto: UpdatePromoDto,
   ) {
     return this.admin.updatePromo(actor, id, dto);
+  }
+
+  // ── Airspace ──
+  // DELETE is wired to a DEACTIVATION, not a row delete. A zone that once existed is
+  // part of the record of why a past delivery was refused.
+  @Get('airspace')
+  listAirspace() {
+    return this.admin.listAirspaceZones();
+  }
+
+  @Post('airspace')
+  createAirspace(
+    @AuditActor() actor: AuditActor,
+    @Body() dto: CreateAirspaceZoneDto,
+  ) {
+    return this.admin.createAirspaceZone(actor, dto);
+  }
+
+  @Patch('airspace/:id')
+  updateAirspace(
+    @AuditActor() actor: AuditActor,
+    @Param('id') id: string,
+    @Body() dto: UpdateAirspaceZoneDto,
+  ) {
+    return this.admin.updateAirspaceZone(actor, id, dto);
+  }
+
+  @Delete('airspace/:id')
+  deactivateAirspace(@AuditActor() actor: AuditActor, @Param('id') id: string) {
+    return this.admin.deactivateAirspaceZone(actor, id);
   }
 
   // ── Users / roles ──
