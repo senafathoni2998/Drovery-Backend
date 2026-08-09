@@ -135,6 +135,44 @@ psql "$U" -At -c "SELECT unnest(enum_range(NULL::\"AdminAuditAction\"));" | grep
 
 Expected: drift-check "No difference detected"; two AIRPORT rows with radii 5 and 3; three `AIRSPACE_ZONE_*` values present.
 
+- [ ] **Step 4b: Extend the audit allowlist IN THIS TASK — the enum change forces it**
+
+`AUDIT_FIELD_ALLOWLIST` in `src/admin/audit/admin-audit.constants.ts` is typed
+`Record<AdminAuditAction, readonly string[]>` — a total map over the enum. Adding three
+values to `AdminAuditAction` therefore breaks `tsc` until the three entries exist, and this
+task's own gate requires a clean typecheck. Jest and ESLint do NOT catch it (`isolatedModules`
+makes ts-jest transpile-only), so the break is silent except to a direct `tsc --noEmit`.
+
+Add all three now. `notes` is deliberately excluded from every one — free text, same reasoning
+as `description` on promos.
+
+```typescript
+  AIRSPACE_ZONE_CREATE: [
+    'name',
+    'kind',
+    'lat',
+    'lng',
+    'radiusKm',
+    'floorM',
+    'ceilingM',
+    'activeFrom',
+    'activeUntil',
+  ],
+  AIRSPACE_ZONE_UPDATE: [
+    'name',
+    'kind',
+    'lat',
+    'lng',
+    'radiusKm',
+    'floorM',
+    'ceilingM',
+    'activeFrom',
+    'activeUntil',
+    'active',
+  ],
+  AIRSPACE_ZONE_DEACTIVATE: ['active'],
+```
+
 - [ ] **Step 5: Add the mock delegate**
 
 In `src/test/prisma-mock.ts`, add `| 'airspaceZone'` to the model-name union and `airspaceZone: createModelMock(),` to the object literal, exactly as `adminAuditLog` was added.
@@ -607,38 +645,15 @@ consistency fix to make airspace match it."
 - the guard that makes a mutation fail (404) placed BEFORE the audit call;
 - `@AuditActor()` on the route, never a `@CurrentUser` pair.
 
-- [ ] **Step 1: Extend the audit allowlist**
+- [ ] **Step 1: Verify the audit allowlist (already added in Task 1)**
 
-In `src/admin/audit/admin-audit.constants.ts`:
+Task 1 had to add all three `AIRSPACE_ZONE_*` entries to `AUDIT_FIELD_ALLOWLIST`, because
+`Record<AdminAuditAction, readonly string[]>` is a total map and extending the enum broke the
+typecheck immediately. Do NOT re-add them.
 
-```typescript
-  AIRSPACE_ZONE_CREATE: [
-    'name',
-    'kind',
-    'lat',
-    'lng',
-    'radiusKm',
-    'floorM',
-    'ceilingM',
-    'activeFrom',
-    'activeUntil',
-  ],
-  AIRSPACE_ZONE_UPDATE: [
-    'name',
-    'kind',
-    'lat',
-    'lng',
-    'radiusKm',
-    'floorM',
-    'ceilingM',
-    'activeFrom',
-    'activeUntil',
-    'active',
-  ],
-  AIRSPACE_ZONE_DEACTIVATE: ['active'],
-```
-
-`notes` is deliberately excluded — free text, same reasoning as `description` on promos.
+Confirm they are present and correct, and that `notes` appears in none of them (free text, same
+reasoning as `description` on promos). If a field you need for the tests below is missing, add
+it here.
 
 - [ ] **Step 2: Write the DTOs**
 
