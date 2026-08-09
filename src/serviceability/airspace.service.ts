@@ -27,7 +27,11 @@ export class AirspaceService {
    */
   async inForceZones(now: Date = new Date()): Promise<GeoCircle[]> {
     const at = now.getTime();
-    if (this.cache && at - this.cache.at < AIRSPACE_CACHE_TTL_MS) {
+    if (
+      this.cache &&
+      at >= this.cache.at &&
+      at - this.cache.at < AIRSPACE_CACHE_TTL_MS
+    ) {
       return this.cache.zones;
     }
 

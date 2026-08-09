@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+
 import { createMockPrismaService } from '../test/prisma-mock';
 import { AirspaceService } from './airspace.service';
 
@@ -81,12 +83,44 @@ describe('AirspaceService', () => {
     ).resolves.toHaveLength(1);
   });
 
+  it('includes a zone exactly at its activeFrom boundary (the window opens inclusively)', async () => {
+    prisma.airspaceZone.findMany.mockResolvedValue([
+      zone({ activeFrom: new Date('2026-08-02T00:00:00Z') }),
+    ]);
+
+    await expect(
+      service.inForceZones(new Date('2026-08-02T00:00:00Z')),
+    ).resolves.toHaveLength(1);
+  });
+
+  it('includes a zone exactly at its activeUntil boundary (the window closes inclusively)', async () => {
+    prisma.airspaceZone.findMany.mockResolvedValue([
+      zone({ activeUntil: new Date('2026-08-02T00:00:00Z') }),
+    ]);
+
+    await expect(
+      service.inForceZones(new Date('2026-08-02T00:00:00Z')),
+    ).resolves.toHaveLength(1);
+  });
+
   it('caches within the TTL, then refreshes', async () => {
     await service.inForceZones(new Date('2026-08-02T00:00:00Z'));
     await service.inForceZones(new Date('2026-08-02T00:00:10Z'));
     expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(1);
 
     await service.inForceZones(new Date('2026-08-02T00:01:00Z'));
+    expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-queries rather than serving the cache when `now` is earlier than the fill time', async () => {
+    // The unsigned form of the TTL check (`at - cache.at < TTL`) is always true for a
+    // negative difference, so a caller passing a `now` behind the fill time would get
+    // served the cache forever. `now` is a caller-supplied parameter precisely so a
+    // future caller (Task 3) can pass one — a clock that appears to run backwards must
+    // not be treated as "still within the TTL".
+    await service.inForceZones(new Date('2026-08-02T00:01:00Z'));
+    await service.inForceZones(new Date('2026-08-02T00:00:00Z'));
+
     expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(2);
   });
 
@@ -103,11 +137,24 @@ describe('AirspaceService', () => {
     // The caller turns this into a hard block. Returning [] here would mean a DB blip
     // reads as "no restricted airspace anywhere", which is the one answer that must
     // never be produced by accident.
+    //
+    // Also asserts the ops warning actually fires: `fetchActiveRows` MUST `return
+    // await` the query rather than just `return` it — otherwise its try/catch never
+    // observes the rejection (it resolves the method's own promise immediately with
+    // the still-pending one), the warn silently never runs, and the only symptom is a
+    // missing log line during a real incident.
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
     prisma.airspaceZone.findMany.mockRejectedValue(
       new Error('connection reset'),
     );
 
     await expect(service.inForceZones()).rejects.toThrow('connection reset');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('connection reset'),
+    );
+    warnSpy.mockRestore();
   });
 
   it('does not cache a failure', async () => {
