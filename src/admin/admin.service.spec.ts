@@ -1337,16 +1337,22 @@ describe('AdminService', () => {
     });
 
     it('records a created zone from the stored row and invalidates the cache', async () => {
+      // The mocked row deliberately DISAGREES with the DTO on two fields — radiusKm
+      // 3.5 against the submitted 3, and activeFrom as a Date where the DTO carried a
+      // second-precision string. Contrived on purpose, the same construction setRole
+      // uses: with a fixture that echoes the DTO on every field the two SOURCES are
+      // indistinguishable, and `args: pickAllowed(..., dto)` passes. That invariant is
+      // the first one the brief names, and it was asserted only by a comment.
       prisma.airspaceZone.create.mockResolvedValue({
         id: 'z-9',
         name: 'Bandung Air Show',
         kind: 'EVENT',
         lat: -6.9,
         lng: 107.6,
-        radiusKm: 3,
+        radiusKm: 3.5,
         floorM: null,
         ceilingM: null,
-        activeFrom: null,
+        activeFrom: new Date('2026-09-01T00:00:00.000Z'),
         activeUntil: null,
         active: true,
       });
@@ -1357,6 +1363,7 @@ describe('AdminService', () => {
         lat: -6.9,
         lng: 107.6,
         radiusKm: 3,
+        activeFrom: '2026-09-01T00:00:00Z',
       } as never);
 
       expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
@@ -1366,7 +1373,11 @@ describe('AdminService', () => {
           targetId: 'z-9',
           args: expect.objectContaining({
             name: 'Bandung Air Show',
-            radiusKm: 3,
+            // The STORED radius, not the requested one.
+            radiusKm: 3.5,
+            // A Date on the row, ISO in the log — normalize() keeps a JSONB round trip
+            // comparing equal. Sourcing from the DTO would record '2026-09-01T00:00:00Z'.
+            activeFrom: '2026-09-01T00:00:00.000Z',
           }),
         }),
       });
@@ -1399,6 +1410,127 @@ describe('AdminService', () => {
           after: { active: false },
         }),
       });
+    });
+
+    it('reports the STORED active flag, not the value it asked for', async () => {
+      // The mock resolves `active: true` — contrived, since deactivate writes
+      // `{ active: false }`. An implementation sourcing `after` from that literal
+      // instead of from the row Prisma handed back records `false` and no assertion in
+      // this file catches it, because every other fixture agrees with the intent. Same
+      // construction as setRole's 'after sourced from the UPDATED ROW'.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        active: true,
+      });
+      prisma.airspaceZone.update.mockResolvedValue({ id: 'z-9', active: true });
+
+      await service.deactivateAirspaceZone(ACTOR, 'z-9');
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'AIRSPACE_ZONE_DEACTIVATE',
+          after: { active: true },
+        }),
+      });
+    });
+
+    it('rejects an explicit null on a column that cannot hold one', async () => {
+      // `@IsOptional()` skips validation for `null` as well as `undefined`, and
+      // `whitelist: true` keeps the property, so `{"active": null}` reaches the service
+      // unvalidated. `active`, `name` and `radiusKm` are NOT NULL, and letting a null
+      // through to Prisma raises an unmapped PrismaClientValidationError — a 500 for a
+      // malformed request. It is a 400, and it names the fields.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        activeFrom: null,
+        activeUntil: null,
+        floorM: null,
+        ceilingM: null,
+        active: true,
+      });
+
+      await expect(
+        service.updateAirspaceZone(ACTOR, 'z-9', { active: null } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.update).not.toHaveBeenCalled();
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('never hands Prisma a null for a NOT NULL column', async () => {
+      // The write-side half of the same guard. Asserts on the `data` actually built,
+      // so a future edit that drops the 400 but keeps `!= null` still fails loudly
+      // rather than 500ing.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        activeFrom: null,
+        activeUntil: null,
+        floorM: null,
+        ceilingM: null,
+        active: true,
+      });
+
+      await expect(
+        service.updateAirspaceZone(ACTOR, 'z-9', {
+          name: null,
+          radiusKm: null,
+          active: null,
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.airspaceZone.update).not.toHaveBeenCalled();
+    });
+
+    it('still clears a NULLABLE bound when the patch says null', async () => {
+      // The other side of the line: `floorM`, `ceilingM`, the window pair and `notes`
+      // ARE nullable, and an explicit null there means "unset this", which the guard
+      // must not swallow. Without this, tightening the six above to `!= null` could be
+      // over-applied to all eleven and nothing would notice.
+      prisma.airspaceZone.findUnique.mockResolvedValue({
+        id: 'z-9',
+        activeFrom: null,
+        activeUntil: null,
+        floorM: 100,
+        ceilingM: 500,
+        active: true,
+      });
+      prisma.airspaceZone.update.mockResolvedValue({ id: 'z-9', active: true });
+
+      await service.updateAirspaceZone(ACTOR, 'z-9', {
+        ceilingM: null,
+      } as never);
+
+      expect(prisma.airspaceZone.update.mock.calls[0][0].data).toEqual({
+        ceilingM: null,
+      });
+    });
+
+    it('rejects a window whose ends coincide, and a zone of zero height', async () => {
+      // `>=`, not `>`. A window in force for a single instant and a floor level with
+      // its ceiling are both stated decisions, and both are almost certainly a typo.
+      const base = {
+        name: 'Coincident',
+        kind: 'EVENT',
+        lat: -6.9,
+        lng: 107.6,
+        radiusKm: 2,
+      };
+
+      await expect(
+        service.createAirspaceZone(ACTOR, {
+          ...base,
+          activeFrom: '2026-09-01T00:00:00Z',
+          activeUntil: '2026-09-01T00:00:00Z',
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+
+      await expect(
+        service.createAirspaceZone(ACTOR, {
+          ...base,
+          floorM: 300,
+          ceilingM: 300,
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prisma.airspaceZone.create).not.toHaveBeenCalled();
     });
 
     it('writes no audit row when the zone does not exist', async () => {
@@ -1696,8 +1828,24 @@ describe('AdminService', () => {
 
       await service.listAirspaceZones();
 
-      const args = prisma.airspaceZone.findMany.mock.calls[0]?.[0] ?? {};
+      // Assert the call HAPPENED first. `mock.calls[0]?.[0] ?? {}` also passes when
+      // findMany was never called at all, which is not what this test is about.
+      expect(prisma.airspaceZone.findMany).toHaveBeenCalledTimes(1);
+      const args = prisma.airspaceZone.findMany.mock.calls[0][0];
       expect(args.where).toBeUndefined();
+      expect(args.orderBy).toEqual([{ active: 'desc' }, { name: 'asc' }]);
+    });
+
+    it('reads the registry from the PRIMARY, not a replica', async () => {
+      // The sibling decision, justified with a concrete hazard and until now unpinned:
+      // an operator who has just declared an emergency restriction and reloads the list
+      // must see it. Routing this through readWithFallback would let replica lag show
+      // them a registry without the zone they just created.
+      prisma.airspaceZone.findMany.mockResolvedValue([]);
+
+      await service.listAirspaceZones();
+
+      expect(prisma.readWithFallback).not.toHaveBeenCalled();
     });
   });
 });

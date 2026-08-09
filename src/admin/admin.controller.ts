@@ -38,6 +38,7 @@ import { AdminPaginatedAuditDto } from './audit/dto/audit-response.dto';
 import {
   AdminDeliveryResponseDto,
   AdminOverviewDto,
+  AirspaceZoneResponseDto,
   AdminPaginatedDeliveriesDto,
   AdminPaginatedPromosDto,
   AdminPaginatedUsersDto,
@@ -179,11 +180,13 @@ export class AdminController {
   // DELETE is wired to a DEACTIVATION, not a row delete. A zone that once existed is
   // part of the record of why a past delivery was refused.
   @Get('airspace')
+  @ApiOkResponse({ type: [AirspaceZoneResponseDto] })
   listAirspace() {
     return this.admin.listAirspaceZones();
   }
 
   @Post('airspace')
+  @ApiCreatedResponse({ type: AirspaceZoneResponseDto })
   createAirspace(
     @AuditActor() actor: AuditActor,
     @Body() dto: CreateAirspaceZoneDto,
@@ -192,6 +195,7 @@ export class AdminController {
   }
 
   @Patch('airspace/:id')
+  @ApiOkResponse({ type: AirspaceZoneResponseDto })
   updateAirspace(
     @AuditActor() actor: AuditActor,
     @Param('id') id: string,
@@ -200,7 +204,10 @@ export class AdminController {
     return this.admin.updateAirspaceZone(actor, id, dto);
   }
 
+  // 200 with the DEACTIVATED row, not 204: the response is the zone as it now stands,
+  // which is the point — the row still exists.
   @Delete('airspace/:id')
+  @ApiOkResponse({ type: AirspaceZoneResponseDto })
   deactivateAirspace(@AuditActor() actor: AuditActor, @Param('id') id: string) {
     return this.admin.deactivateAirspaceZone(actor, id);
   }

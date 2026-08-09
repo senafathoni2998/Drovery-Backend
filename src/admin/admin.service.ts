@@ -56,6 +56,22 @@ type AirspaceZonePatch = {
   [K in keyof UpdateAirspaceZoneDto]: UpdateAirspaceZoneDto[K] | null;
 };
 
+/**
+ * The `airspace_zones` columns declared NOT NULL. `notes`, the altitude pair and the
+ * window pair are all nullable, and an explicit `null` there legitimately clears them.
+ *
+ * These six need naming because nothing upstream rejects a `null` for them: see
+ * `assertNoNullOnRequiredFields`.
+ */
+const REQUIRED_ZONE_FIELDS = [
+  'name',
+  'kind',
+  'lat',
+  'lng',
+  'radiusKm',
+  'active',
+] as const;
+
 const toDateOrNull = (value: string | null | undefined): Date | null =>
   value == null ? null : new Date(value);
 
@@ -781,6 +797,7 @@ export class AdminService {
   ) {
     const before = await this.findZoneOr404(id); // 404; now also the audit's before
     const patch = dto as AirspaceZonePatch;
+    this.assertNoNullOnRequiredFields(patch);
 
     // Validate the MERGED values, not the patch alone. `activeUntil` cannot be
     // inverted on its own, so a DTO-only check waves through a PATCH that closes the
@@ -798,13 +815,17 @@ export class AdminService {
     const ceilingM = mergeField(patch.ceilingM, before.ceilingM);
     this.assertZoneBounds({ activeFrom, activeUntil, floorM, ceilingM });
 
+    // `!= null` on the six NOT NULL columns, `!== undefined` on the nullable ones. The
+    // guard above already rejects a null here, so this is belt as well as braces — but
+    // it is the line that decides whether a null REACHES Prisma, so it states the
+    // nullability of each column rather than leaning on a check made 20 lines earlier.
     const data: Prisma.AirspaceZoneUpdateInput = {
-      ...(dto.name !== undefined ? { name: dto.name } : {}),
-      ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
-      ...(dto.lat !== undefined ? { lat: dto.lat } : {}),
-      ...(dto.lng !== undefined ? { lng: dto.lng } : {}),
-      ...(dto.radiusKm !== undefined ? { radiusKm: dto.radiusKm } : {}),
-      ...(dto.active !== undefined ? { active: dto.active } : {}),
+      ...(dto.name != null ? { name: dto.name } : {}),
+      ...(dto.kind != null ? { kind: dto.kind } : {}),
+      ...(dto.lat != null ? { lat: dto.lat } : {}),
+      ...(dto.lng != null ? { lng: dto.lng } : {}),
+      ...(dto.radiusKm != null ? { radiusKm: dto.radiusKm } : {}),
+      ...(dto.active != null ? { active: dto.active } : {}),
       ...(patch.floorM !== undefined ? { floorM } : {}),
       ...(patch.ceilingM !== undefined ? { ceilingM } : {}),
       ...(patch.activeFrom !== undefined ? { activeFrom } : {}),
@@ -876,6 +897,30 @@ export class AdminService {
     this.dropZoneCacheAfterCommit();
     this.logger.log(`admin ${actor.userId} deactivated airspace zone ${id}`);
     return zone;
+  }
+
+  /**
+   * Reject an explicit `null` on a column that cannot hold one.
+   *
+   * `@IsOptional()` skips validation when the value is `null` as well as when it is
+   * `undefined`, and `whitelist: true` KEEPS a decorated property whose validators were
+   * skipped. So `{"active": null}` arrives here having been checked by nothing at all.
+   * Six of these columns are NOT NULL, and handing Prisma a null for one raises a
+   * `PrismaClientValidationError` that no filter maps — a 500 for what is a malformed
+   * request. `createAirspaceZone` is unaffected: its five required fields carry no
+   * `@IsOptional()`, so class-validator rejects a null there itself.
+   *
+   * Rejected, not dropped. Dropping the key would turn the operator's edit into a
+   * silent no-op — they asked for something, got a 200, and nothing changed.
+   */
+  private assertNoNullOnRequiredFields(patch: AirspaceZonePatch) {
+    const nulled = REQUIRED_ZONE_FIELDS.filter((f) => patch[f] === null);
+    if (nulled.length) {
+      throw new AppBadRequestException(
+        'error.admin.airspace.null_not_allowed',
+        { fields: nulled.join(', ') },
+      );
+    }
   }
 
   private async findZoneOr404(id: string) {

@@ -124,6 +124,7 @@ export const ERROR_KEYS = [
   'error.admin.airspace.not_found',
   'error.admin.airspace.inverted_window',
   'error.admin.airspace.inverted_altitude',
+  'error.admin.airspace.null_not_allowed',
   'error.payment.method.not_found',
   'error.recurring.end_before_start',
   'error.recurring.weekly_needs_days',

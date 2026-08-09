@@ -250,6 +250,8 @@ export const en: Record<string, string> = {
     'activeUntil must be later than activeFrom — a zone whose window closes before it opens is never in force.',
   'error.admin.airspace.inverted_altitude':
     'ceilingM must be greater than floorM.',
+  'error.admin.airspace.null_not_allowed':
+    'These fields cannot be set to null: {fields}. Omit them to leave them unchanged.',
 
   // Payment.
   'error.payment.method.not_found': 'Payment method with id "{id}" not found',

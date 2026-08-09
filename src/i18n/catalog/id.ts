@@ -256,6 +256,8 @@ export const id: Record<string, string> = {
     'activeUntil harus lebih lambat daripada activeFrom — zona yang jendela waktunya tertutup sebelum terbuka tidak pernah berlaku.',
   'error.admin.airspace.inverted_altitude':
     'ceilingM harus lebih besar daripada floorM.',
+  'error.admin.airspace.null_not_allowed':
+    'Bidang berikut tidak boleh diisi null: {fields}. Hilangkan bidang tersebut agar nilainya tidak berubah.',
 
   // Pembayaran.
   'error.payment.method.not_found':
