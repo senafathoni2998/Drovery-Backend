@@ -1,5 +1,5 @@
+import { SEEDED_ZONES } from './__fixtures__/seeded-zones';
 import { ServiceabilityService } from './serviceability.service';
-import { GeoCircle } from './serviceability.types';
 import { WeatherConditions } from './weather.service';
 
 const flyable: WeatherConditions = {
@@ -8,34 +8,6 @@ const flyable: WeatherConditions = {
   flyable: true,
   source: 'mock',
 };
-
-/**
- * The zones the migration seeds into `airspace_zones` — MUST mirror the INSERT in
- * prisma/migrations/20260809133410_add_airspace_zones/migration.sql, verbatim.
- *
- * This is the default for every test here because it is what the deleted NO_FLY_ZONES
- * constant used to be: under the constant these two zones were in force for the whole
- * file, so `passes the Bandung demo route` proved the Jakarta airports do NOT reach the
- * demo. Defaulting to [] instead would leave that test green while it silently stopped
- * proving anything.
- *
- * If this fixture and the seed ever drift, every test in this file starts asserting
- * against airspace that does not exist in the database.
- */
-export const SEEDED_ZONES: GeoCircle[] = [
-  {
-    name: 'Soekarno-Hatta International Airport',
-    lat: -6.1256,
-    lng: 106.6558,
-    radiusKm: 5,
-  },
-  {
-    name: 'Halim Perdanakusuma Airport',
-    lat: -6.2647,
-    lng: 106.9308,
-    radiusKm: 3,
-  },
-];
 
 describe('ServiceabilityService', () => {
   let service: ServiceabilityService;

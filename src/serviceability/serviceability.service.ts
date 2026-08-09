@@ -93,12 +93,16 @@ export class ServiceabilityService {
       );
     }
 
-    // The two endpoint checks are subsumed by the route check — if an endpoint is
-    // inside a circle, the segment's distance to that centre is <= the endpoint's,
-    // so zoneOnRoute alone would catch it. They are kept because they short-circuit
-    // cheaply on the common case and state the intent more clearly, but a reader
-    // should know they are not load-bearing on their own: no test can distinguish
-    // dropping them, and the route check is what actually guarantees the block.
+    // DO NOT delete the two endpoint checks as "redundant". Within the default
+    // envelope (MAX_ROUTE_KM=50, Indonesian latitudes) they are indeed unkillable by
+    // test — zoneOnRoute subsumes them there, so dropping them fails nothing, and no
+    // test in this repo can tell the difference. Outside it they are load-bearing:
+    // routeNearCircle projects equirectangularly, whose error grows with latitude and
+    // route length, so with SERVICE_AREA_GLOBAL=true (supported, and exercised below)
+    // an endpoint INSIDE a circle by haversine can measure outside it once projected —
+    // ~1 route in 2000 at 70-84° latitude, and far more with MAX_ROUTE_KM raised.
+    // zoneContaining uses haversine directly and has no such error. The absence of a
+    // failing test here is a gap in the tests, not evidence these lines are dead.
     const zone =
       this.zoneContaining(fromLat, fromLng, zones) ??
       this.zoneContaining(toLat, toLng, zones) ??
