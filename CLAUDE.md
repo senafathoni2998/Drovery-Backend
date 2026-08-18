@@ -18,10 +18,23 @@ Proyek portofolio: sistem pengiriman drone, dirancang **dan** diimplementasikan 
 
 ## Branch
 
-- `main` **tidak diproteksi** di GitHub (diperiksa 18 Agu 2026 lewat API: ketiga repo produk
-  mengembalikan "Branch not protected"). Merge commit **ada** di `main` — 8 dari 30 commit terakhir.
-  Jadi tidak ada aturan linear-history yang berlaku, meskipun `HANDOFF.md` lama mengklaim begitu.
-- Praktik yang sebenarnya dipakai: kerja di branch `fix/…`, `feat/…`, `docs/…`, lalu di-merge.
+- **`main` DIPROTEKSI lewat GitHub ruleset**, bukan branch protection klasik. Diperiksa 18 Agu 2026:
+
+  | Repo | Aturan aktif di `main` |
+  |---|---|
+  | Drovery-Backend | `pull_request` · `required_linear_history` · `non_fast_forward` · `creation` · `deletion` · `update` |
+  | drovery-mobile | sama |
+  | Drovery-Admin-Frontend | tidak ada aturan |
+
+  ⚠️ Endpoint `GET /repos/{slug}/branches/main/protection` menjawab **"Branch not protected"**
+  meskipun ruleset aktif — ia hanya melaporkan proteksi klasik. Pakai
+  `GET /repos/{slug}/rules/branches/main` untuk melihat yang sebenarnya berlaku.
+
+- **Jangan push langsung ke `main`.** Sebagai admin, push-mu akan *berhasil* tapi ditandai
+  `Bypassed rule violations` di sisi remote — melanggar aturan sambil terlihat sukses.
+  Kerjakan di branch `fix/…`, `feat/…`, `docs/…`, lalu **merge lewat PR dengan squash/rebase**.
+- `required_linear_history` aktif, jadi merge commit ditolak. (Ada 8 merge commit lama di `main` —
+  peninggalan dari sebelum ruleset dipasang, atau hasil bypass. Jangan jadikan preseden.)
 - Kerja belajar/kurikulum **tidak** masuk `main` — lihat branch `docs/kurikulum-belajar`.
 
 ## PR tanpa `gh`
